@@ -33,6 +33,31 @@ yarn test
 yarn build
 ```
 
+## Demo Server
+
+Run the demo HTTP server to test the pipeline:
+
+```bash
+yarn demo
+```
+
+Then test with curl:
+
+```bash
+# Health check
+curl http://localhost:3030/health
+
+# Run prediction
+curl -X POST http://localhost:3030/api/predict \
+  -H "Content-Type: application/json" \
+  -d '{"input": "create assessment module"}'
+
+# With custom config
+curl -X POST http://localhost:3030/api/predict \
+  -H "Content-Type: application/json" \
+  -d '{"input": "add safety checklist", "config": {"enableAutoFix": true}}'
+```
+
 ## Usage
 
 ```typescript

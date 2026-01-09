@@ -6,6 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
+    "demo": "ts-node src/demo-server.ts",
+    "demo:prod": "node dist/demo-server.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -32,6 +34,7 @@
     "@types/node": "^22.0.0",
     "jest": "^29.7.0",
     "ts-jest": "^29.2.0",
+    "ts-node": "^10.9.0",
     "typescript": "^5.7.0"
   },
   "jest": {

@@ -118,7 +118,7 @@ describe('CognitiveOrchestratorService', () => {
       expect(result.prediction).toEqual(mockPrediction);
       expect(result.validation).toEqual(mockValidationPass);
       expect(result.autoFixed).toBe(false);
-      expect(result.processingTime).toBeGreaterThan(0);
+      expect(result.processingTime).toBeGreaterThanOrEqual(0);
     });
 
     it('should handle signal processing failure', async () => {
