@@ -6,8 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "demo": "ts-node src/demo-server.ts",
-    "demo:prod": "node dist/demo-server.js",
+    "serve": "ts-node src/server.ts",
+    "serve:prod": "node dist/server.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",

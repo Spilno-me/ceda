@@ -33,12 +33,12 @@ yarn test
 yarn build
 ```
 
-## Demo Server
+## Server
 
-Run the demo HTTP server to test the pipeline:
+Run the HTTP server to test the pipeline:
 
 ```bash
-yarn demo
+yarn serve
 ```
 
 Then test with curl:
