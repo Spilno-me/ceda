@@ -19,7 +19,7 @@ User Input → Signal Processor → Pattern Library → Prediction Engine → Va
 | Service | Purpose |
 |---------|---------|
 | `SignalProcessorService` | Classifies intent, extracts entities, routes decisions |
-| `PatternLibraryService` | Maintains domain patterns for HSE modules |
+| `PatternLibraryService` | Maintains extensible domain patterns |
 | `PredictionEngineService` | Generates structure predictions from signals |
 | `CognitiveValidationService` | Validates predictions with auto-fix capability |
 | `CognitiveOrchestratorService` | Pipeline orchestration with observability |
