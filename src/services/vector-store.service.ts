@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { QdrantClient } from '@qdrant/js-client-rest';
 import { Pattern, PatternMatch } from '../interfaces';
 import { EmbeddingService } from './embedding.service';
 
@@ -19,9 +18,66 @@ interface SearchResult {
   score: number;
 }
 
+/**
+ * Lightweight Qdrant client using native fetch
+ * Bypasses @qdrant/js-client-rest Undici issues on Railway
+ */
+class QdrantHttpClient {
+  constructor(
+    private readonly baseUrl: string,
+    private readonly apiKey?: string,
+  ) {}
+
+  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (this.apiKey) {
+      headers['api-key'] = this.apiKey;
+    }
+
+    console.log(`[QdrantHttpClient] ${method} ${url}`);
+
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Qdrant API error: ${response.status} ${text}`);
+    }
+
+    const data = await response.json();
+    return data.result as T;
+  }
+
+  async getCollections(): Promise<{ collections: { name: string }[] }> {
+    return this.request('GET', '/collections');
+  }
+
+  async createCollection(name: string, config: { vectors: { size: number; distance: string } }): Promise<void> {
+    await this.request('PUT', `/collections/${name}`, config);
+  }
+
+  async upsert(collection: string, points: { id: number; vector: number[]; payload: unknown }[]): Promise<void> {
+    await this.request('PUT', `/collections/${collection}/points`, { points });
+  }
+
+  async search(collection: string, vector: number[], limit: number): Promise<{ id: number; score: number; payload: unknown }[]> {
+    return this.request('POST', `/collections/${collection}/points/search`, {
+      vector,
+      limit,
+      with_payload: true,
+    });
+  }
+}
+
 @Injectable()
 export class VectorStoreService {
-  private client: QdrantClient | null = null;
+  private client: QdrantHttpClient | null = null;
   private readonly collectionName = 'ceda_patterns';
   private patterns: Map<string, Pattern> = new Map();
   private initialized = false;
@@ -38,11 +94,7 @@ export class VectorStoreService {
     console.log(`[VectorStoreService] API key present: ${!!qdrantApiKey} (${qdrantApiKey?.slice(0, 20)}...)`);
 
     try {
-      this.client = new QdrantClient({
-        url: qdrantUrl,
-        apiKey: qdrantApiKey,
-        checkCompatibility: false,
-      });
+      this.client = new QdrantHttpClient(qdrantUrl, qdrantApiKey);
     } catch (error) {
       console.warn('[VectorStoreService] Failed to initialize Qdrant client:', error instanceof Error ? error.message : error);
     }
@@ -74,6 +126,8 @@ export class VectorStoreService {
           },
         });
         console.log(`[VectorStoreService] Created collection: ${this.collectionName}`);
+      } else {
+        console.log(`[VectorStoreService] Collection exists: ${this.collectionName}`);
       }
 
       this.initialized = true;
@@ -119,14 +173,7 @@ export class VectorStoreService {
       }
 
       if (points.length > 0) {
-        await this.client.upsert(this.collectionName, {
-          wait: true,
-          points: points.map(p => ({
-            id: p.id,
-            vector: p.vector,
-            payload: p.payload,
-          })),
-        });
+        await this.client.upsert(this.collectionName, points);
         console.log(`[VectorStoreService] Seeded ${points.length} patterns to Qdrant`);
       }
 
@@ -148,11 +195,7 @@ export class VectorStoreService {
         return [];
       }
 
-      const searchResult = await this.client.search(this.collectionName, {
-        vector: queryEmbedding,
-        limit,
-        with_payload: true,
-      });
+      const searchResult = await this.client.search(this.collectionName, queryEmbedding, limit);
 
       const results: SearchResult[] = [];
       for (const hit of searchResult) {
