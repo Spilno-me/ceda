@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PredictionEngineService } from './prediction-engine.service';
 import { PatternLibraryService } from './pattern-library.service';
 import { IntentType, ProcessedSignal } from '../interfaces';
+import { HSE_PATTERNS } from '../seed';
 
 describe('PredictionEngineService', () => {
   let service: PredictionEngineService;
@@ -14,6 +15,8 @@ describe('PredictionEngineService', () => {
 
     service = module.get<PredictionEngineService>(PredictionEngineService);
     patternLibrary = module.get<PatternLibraryService>(PatternLibraryService);
+    // CEDA is domain-agnostic - load HSE patterns for these tests
+    patternLibrary.loadPatterns(HSE_PATTERNS);
   });
 
   it('should be defined', () => {

@@ -12,6 +12,7 @@ import { PredictionEngineService } from '../services/prediction-engine.service';
 import { CognitiveValidationService } from '../services/validation.service';
 import { CognitiveOrchestratorService } from '../services/orchestrator.service';
 import { FeedbackService } from '../services/feedback.service';
+import { HSE_PATTERNS } from '../seed';
 
 describe('CEDA E2E Pipeline', () => {
   let orchestrator: CognitiveOrchestratorService;
@@ -21,6 +22,8 @@ describe('CEDA E2E Pipeline', () => {
     // Wire up real services - no mocks
     const signalProcessor = new SignalProcessorService();
     const patternLibrary = new PatternLibraryService();
+    // CEDA is domain-agnostic - load HSE patterns for E2E tests
+    patternLibrary.loadPatterns(HSE_PATTERNS);
     const predictionEngine = new PredictionEngineService(patternLibrary);
     const validationService = new CognitiveValidationService();
 

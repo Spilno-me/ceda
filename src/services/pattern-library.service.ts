@@ -13,19 +13,32 @@ import {
 export class PatternLibraryService {
   private patterns: Map<string, Pattern> = new Map();
 
+  /**
+   * CEDA is domain-agnostic. Patterns are injected by the application layer.
+   * For HSE: load HSE patterns externally
+   * For HR: load HR patterns externally
+   * etc.
+   */
   constructor() {
-    this.initializeDefaultPatterns();
+    // No default patterns - CEDA is domain-agnostic
+    // Use loadPatterns() or registerPattern() to inject domain-specific patterns
   }
 
   /**
-   * Initialize with default HSE patterns
+   * Load multiple patterns at once (bulk registration)
+   * Called by application layer to inject domain-specific patterns
    */
-  private initializeDefaultPatterns(): void {
-    this.registerPattern(this.createAssessmentPattern());
-    this.registerPattern(this.createIncidentPattern());
-    this.registerPattern(this.createPermitPattern());
-    this.registerPattern(this.createAuditPattern());
-    this.registerPattern(this.createActionPattern());
+  loadPatterns(patterns: Pattern[]): void {
+    for (const pattern of patterns) {
+      this.registerPattern(pattern);
+    }
+  }
+
+  /**
+   * Clear all patterns (useful for testing or domain switching)
+   */
+  clearPatterns(): void {
+    this.patterns.clear();
   }
 
   /**
@@ -165,286 +178,16 @@ export class PatternLibraryService {
   }
 
   /**
-   * Create Safety Assessment pattern
+   * Check if any patterns are loaded
    */
-  private createAssessmentPattern(): Pattern {
-    return {
-      id: 'assessment-default',
-      name: 'Safety Assessment',
-      category: PatternCategory.ASSESSMENT,
-      description: 'Standard safety assessment form',
-      structure: {
-        sections: [
-          {
-            name: 'General Information',
-            fieldTypes: ['text', 'date', 'select'],
-            required: true,
-          },
-          {
-            name: 'Hazard Identification',
-            fieldTypes: ['checklist', 'text'],
-            required: true,
-          },
-          {
-            name: 'Risk Evaluation',
-            fieldTypes: ['matrix', 'number'],
-            required: true,
-          },
-          {
-            name: 'Control Measures',
-            fieldTypes: ['text', 'checklist'],
-            required: true,
-          },
-        ],
-        workflows: ['review', 'approve'],
-        defaultFields: ['assessor', 'date', 'location', 'department'],
-      },
-      applicabilityRules: [
-        {
-          field: 'intent',
-          operator: 'equals',
-          value: IntentType.CREATE,
-          weight: 0.5,
-        },
-        { field: 'domain', operator: 'contains', value: 'assessment', weight: 1.0 },
-        { field: 'domain', operator: 'contains', value: 'safety', weight: 0.8 },
-      ],
-      confidenceFactors: [],
-      metadata: {
-        version: '1.0.0',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        usageCount: 0,
-        successRate: 0,
-      },
-    };
+  hasPatterns(): boolean {
+    return this.patterns.size > 0;
   }
 
   /**
-   * Create Incident Report pattern
+   * Get pattern count
    */
-  private createIncidentPattern(): Pattern {
-    return {
-      id: 'incident-default',
-      name: 'Incident Report',
-      category: PatternCategory.INCIDENT,
-      description: 'Standard incident reporting form',
-      structure: {
-        sections: [
-          {
-            name: 'Incident Details',
-            fieldTypes: ['text', 'date', 'time', 'select'],
-            required: true,
-          },
-          {
-            name: 'Investigation',
-            fieldTypes: ['text', 'checklist'],
-            required: true,
-          },
-          {
-            name: 'Root Cause',
-            fieldTypes: ['text', 'select'],
-            required: true,
-          },
-          {
-            name: 'Corrective Actions',
-            fieldTypes: ['text', 'date', 'select'],
-            required: true,
-          },
-        ],
-        workflows: ['investigate', 'review', 'close'],
-        defaultFields: ['reporter', 'date', 'location', 'severity', 'type'],
-      },
-      applicabilityRules: [
-        {
-          field: 'intent',
-          operator: 'equals',
-          value: IntentType.CREATE,
-          weight: 0.5,
-        },
-        { field: 'domain', operator: 'contains', value: 'incident', weight: 1.0 },
-        { field: 'domain', operator: 'contains', value: 'report', weight: 0.6 },
-        { field: 'domain', operator: 'contains', value: 'accident', weight: 0.8 },
-      ],
-      confidenceFactors: [],
-      metadata: {
-        version: '1.0.0',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        usageCount: 0,
-        successRate: 0,
-      },
-    };
-  }
-
-  /**
-   * Create Work Permit pattern
-   */
-  private createPermitPattern(): Pattern {
-    return {
-      id: 'permit-default',
-      name: 'Work Permit',
-      category: PatternCategory.PERMIT,
-      description: 'Standard work permit form',
-      structure: {
-        sections: [
-          {
-            name: 'Permit Type',
-            fieldTypes: ['select', 'text'],
-            required: true,
-          },
-          {
-            name: 'Work Conditions',
-            fieldTypes: ['checklist', 'text'],
-            required: true,
-          },
-          {
-            name: 'Approvals',
-            fieldTypes: ['signature', 'date'],
-            required: true,
-          },
-          {
-            name: 'Duration',
-            fieldTypes: ['date', 'time'],
-            required: true,
-          },
-        ],
-        workflows: ['request', 'approve', 'activate', 'close'],
-        defaultFields: ['requester', 'approver', 'startDate', 'endDate', 'location'],
-      },
-      applicabilityRules: [
-        {
-          field: 'intent',
-          operator: 'equals',
-          value: IntentType.CREATE,
-          weight: 0.5,
-        },
-        { field: 'domain', operator: 'contains', value: 'permit', weight: 1.0 },
-        { field: 'domain', operator: 'contains', value: 'work', weight: 0.6 },
-        { field: 'domain', operator: 'contains', value: 'authorization', weight: 0.7 },
-      ],
-      confidenceFactors: [],
-      metadata: {
-        version: '1.0.0',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        usageCount: 0,
-        successRate: 0,
-      },
-    };
-  }
-
-  /**
-   * Create Safety Audit pattern
-   */
-  private createAuditPattern(): Pattern {
-    return {
-      id: 'audit-default',
-      name: 'Safety Audit',
-      category: PatternCategory.AUDIT,
-      description: 'Standard safety audit form',
-      structure: {
-        sections: [
-          {
-            name: 'Audit Scope',
-            fieldTypes: ['text', 'select', 'date'],
-            required: true,
-          },
-          {
-            name: 'Findings',
-            fieldTypes: ['text', 'checklist', 'select'],
-            required: true,
-          },
-          {
-            name: 'Non-conformances',
-            fieldTypes: ['text', 'select', 'number'],
-            required: true,
-          },
-          {
-            name: 'Follow-up',
-            fieldTypes: ['text', 'date', 'select'],
-            required: true,
-          },
-        ],
-        workflows: ['plan', 'execute', 'report', 'follow-up'],
-        defaultFields: ['auditor', 'auditDate', 'area', 'standard'],
-      },
-      applicabilityRules: [
-        {
-          field: 'intent',
-          operator: 'equals',
-          value: IntentType.CREATE,
-          weight: 0.5,
-        },
-        { field: 'domain', operator: 'contains', value: 'audit', weight: 1.0 },
-        { field: 'domain', operator: 'contains', value: 'inspection', weight: 0.8 },
-        { field: 'domain', operator: 'contains', value: 'compliance', weight: 0.7 },
-      ],
-      confidenceFactors: [],
-      metadata: {
-        version: '1.0.0',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        usageCount: 0,
-        successRate: 0,
-      },
-    };
-  }
-
-  /**
-   * Create Corrective Action pattern
-   */
-  private createActionPattern(): Pattern {
-    return {
-      id: 'action-default',
-      name: 'Corrective Action',
-      category: PatternCategory.ACTION,
-      description: 'Standard corrective action form',
-      structure: {
-        sections: [
-          {
-            name: 'Action Details',
-            fieldTypes: ['text', 'select'],
-            required: true,
-          },
-          {
-            name: 'Assignee',
-            fieldTypes: ['select', 'text'],
-            required: true,
-          },
-          {
-            name: 'Due Date',
-            fieldTypes: ['date'],
-            required: true,
-          },
-          {
-            name: 'Verification',
-            fieldTypes: ['text', 'checklist', 'signature'],
-            required: true,
-          },
-        ],
-        workflows: ['assign', 'implement', 'verify', 'close'],
-        defaultFields: ['actionId', 'assignee', 'dueDate', 'priority', 'status'],
-      },
-      applicabilityRules: [
-        {
-          field: 'intent',
-          operator: 'equals',
-          value: IntentType.CREATE,
-          weight: 0.5,
-        },
-        { field: 'domain', operator: 'contains', value: 'action', weight: 1.0 },
-        { field: 'domain', operator: 'contains', value: 'corrective', weight: 0.9 },
-        { field: 'domain', operator: 'contains', value: 'remediation', weight: 0.7 },
-      ],
-      confidenceFactors: [],
-      metadata: {
-        version: '1.0.0',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        usageCount: 0,
-        successRate: 0,
-      },
-    };
+  getPatternCount(): number {
+    return this.patterns.size;
   }
 }

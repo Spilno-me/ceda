@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PatternLibraryService } from './pattern-library.service';
 import { PatternCategory, IntentType } from '../interfaces';
+import { HSE_PATTERNS } from '../seed';
 
 describe('PatternLibraryService', () => {
   let service: PatternLibraryService;
@@ -11,6 +12,8 @@ describe('PatternLibraryService', () => {
     }).compile();
 
     service = module.get<PatternLibraryService>(PatternLibraryService);
+    // CEDA is domain-agnostic - load HSE patterns for these tests
+    service.loadPatterns(HSE_PATTERNS);
   });
 
   it('should be defined', () => {
@@ -18,12 +21,19 @@ describe('PatternLibraryService', () => {
   });
 
   describe('initialization', () => {
-    it('should initialize with 5 default patterns', () => {
-      const allPatterns = service.getAllPatterns();
-      expect(allPatterns.length).toBe(5);
+    it('should start empty (domain-agnostic)', () => {
+      const emptyService = new PatternLibraryService();
+      expect(emptyService.getAllPatterns().length).toBe(0);
+      expect(emptyService.hasPatterns()).toBe(false);
     });
 
-    it('should have one pattern per category', () => {
+    it('should have 5 patterns after loading HSE patterns', () => {
+      const allPatterns = service.getAllPatterns();
+      expect(allPatterns.length).toBe(5);
+      expect(service.hasPatterns()).toBe(true);
+    });
+
+    it('should have one pattern per category after loading HSE', () => {
       const categories = Object.values(PatternCategory);
       for (const category of categories) {
         const patterns = service.getPatternsByCategory(category);
@@ -34,9 +44,9 @@ describe('PatternLibraryService', () => {
 
   describe('getPattern', () => {
     it('should return pattern by ID', () => {
-      const pattern = service.getPattern('assessment-default');
+      const pattern = service.getPattern('hse-assessment-default');
       expect(pattern).toBeDefined();
-      expect(pattern?.id).toBe('assessment-default');
+      expect(pattern?.id).toBe('hse-assessment-default');
       expect(pattern?.name).toBe('Safety Assessment');
     });
 
@@ -167,7 +177,7 @@ describe('PatternLibraryService', () => {
 
   describe('getPatternStructure', () => {
     it('should return structure for valid pattern', () => {
-      const structure = service.getPatternStructure('assessment-default');
+      const structure = service.getPatternStructure('hse-assessment-default');
       expect(structure).toBeDefined();
       expect(structure?.sections.length).toBeGreaterThan(0);
     });
@@ -178,7 +188,7 @@ describe('PatternLibraryService', () => {
     });
 
     it('should have required sections in assessment structure', () => {
-      const structure = service.getPatternStructure('assessment-default');
+      const structure = service.getPatternStructure('hse-assessment-default');
       expect(structure).toBeDefined();
       expect(structure?.sections).toContainEqual(
         expect.objectContaining({ name: 'General Information' }),
@@ -195,13 +205,13 @@ describe('PatternLibraryService', () => {
     });
 
     it('should have workflows defined in structure', () => {
-      const structure = service.getPatternStructure('assessment-default');
+      const structure = service.getPatternStructure('hse-assessment-default');
       expect(structure?.workflows).toBeDefined();
       expect(structure?.workflows.length).toBeGreaterThan(0);
     });
 
     it('should have default fields defined in structure', () => {
-      const structure = service.getPatternStructure('assessment-default');
+      const structure = service.getPatternStructure('hse-assessment-default');
       expect(structure?.defaultFields).toBeDefined();
       expect(structure?.defaultFields.length).toBeGreaterThan(0);
     });
@@ -240,7 +250,7 @@ describe('PatternLibraryService', () => {
 
     it('should overwrite existing pattern with same ID', () => {
       const updatedPattern = {
-        id: 'assessment-default',
+        id: 'hse-assessment-default',
         name: 'Updated Assessment',
         category: PatternCategory.ASSESSMENT,
         description: 'Updated description',
@@ -261,7 +271,7 @@ describe('PatternLibraryService', () => {
       };
 
       service.registerPattern(updatedPattern);
-      const retrieved = service.getPattern('assessment-default');
+      const retrieved = service.getPattern('hse-assessment-default');
       expect(retrieved?.name).toBe('Updated Assessment');
       expect(retrieved?.metadata.version).toBe('2.0.0');
     });

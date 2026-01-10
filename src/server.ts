@@ -14,9 +14,16 @@ import { PatternLibraryService } from './services/pattern-library.service';
 import { PredictionEngineService } from './services/prediction-engine.service';
 import { CognitiveValidationService } from './services/validation.service';
 import { CognitiveOrchestratorService } from './services/orchestrator.service';
+import { HSE_PATTERNS } from './seed';
+
 // Manual DI - wire up services
 const signalProcessor = new SignalProcessorService();
 const patternLibrary = new PatternLibraryService();
+
+// Load domain-specific patterns (HSE for this demo)
+// In production, patterns would come from database or external config
+patternLibrary.loadPatterns(HSE_PATTERNS);
+
 const predictionEngine = new PredictionEngineService(patternLibrary);
 const validationService = new CognitiveValidationService();
 const orchestrator = new CognitiveOrchestratorService(
