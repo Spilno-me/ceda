@@ -16,7 +16,9 @@ import { CognitiveValidationService } from './services/validation.service';
 import { CognitiveOrchestratorService } from './services/orchestrator.service';
 import { EmbeddingService } from './services/embedding.service';
 import { VectorStoreService } from './services/vector-store.service';
+import { SessionService } from './services/session.service';
 import { HSE_PATTERNS } from './seed';
+import { randomUUID } from 'crypto';
 
 // Manual DI - wire up services
 const signalProcessor = new SignalProcessorService();
@@ -34,6 +36,7 @@ const predictionEngine = new PredictionEngineService(patternLibrary);
 predictionEngine.setVectorStore(vectorStoreService);
 
 const validationService = new CognitiveValidationService();
+const sessionService = new SessionService();
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
   patternLibrary,
@@ -72,6 +75,21 @@ interface PredictRequest {
     enableAutoFix?: boolean;
     maxAutoFixAttempts?: number;
   };
+  /** Session ID for multi-turn conversations */
+  sessionId?: string;
+  /** Participant identifier (for 5 hats model) */
+  participant?: string;
+}
+
+interface RefineRequest {
+  /** Session ID to refine */
+  sessionId: string;
+  /** Refinement instruction (e.g., "make it OSHA compliant") */
+  refinement: string;
+  /** Additional context for refinement */
+  context?: Array<{ type: string; value: unknown; source: string }>;
+  /** Participant identifier */
+  participant?: string;
 }
 
 /**
@@ -142,26 +160,56 @@ async function handleRequest(
         return;
       }
 
-      const context = (body.context || []).map((c) => ({
+      // Generate or use provided session ID
+      const sessionId = body.sessionId || randomUUID();
+      const session = sessionService.getOrCreate(sessionId, body.input);
+
+      // Accumulate context from request + session
+      const requestContext = (body.context || []).map((c) => ({
         ...c,
         timestamp: new Date(),
       }));
+      const accumulatedContext = [...sessionService.getAccumulatedContext(sessionId), ...requestContext];
 
-      console.log(`\n[CEDA] Processing: "${body.input}"`);
+      // Add new context to session
+      for (const ctx of requestContext) {
+        sessionService.addContext(sessionId, ctx);
+      }
+
+      // For multi-turn, combine original signal with any refinements
+      const effectiveSignal = session.history.length > 0
+        ? sessionService.getCombinedSignal(sessionId) + '. ' + body.input
+        : body.input;
+
+      console.log(`\n[CEDA] Processing: "${body.input}" (session: ${sessionId}, turn: ${session.history.length + 1})`);
       const startTime = Date.now();
 
-      const result = await orchestrator.execute(body.input, context, body.config);
+      const result = await orchestrator.execute(effectiveSignal, accumulatedContext, body.config);
+
+      // Record in session history
+      const confidence = result.prediction?.confidence || 0;
+      sessionService.recordPrediction(
+        sessionId,
+        body.input,
+        session.history.length === 0 ? 'signal' : 'refinement',
+        result.prediction,
+        confidence,
+        body.participant,
+      );
 
       console.log(`[CEDA] Complete in ${Date.now() - startTime}ms - Success: ${result.success}`);
 
       sendJson(res, 200, {
         success: result.success,
+        sessionId,
+        turn: session.history.length,
         prediction: result.prediction,
         validation: result.validation,
         autoFixed: result.autoFixed,
         appliedFixes: result.appliedFixes,
         processingTime: result.processingTime,
         stages: result.stages,
+        session: sessionService.getSummary(sessionId),
       });
       return;
     }
@@ -199,7 +247,102 @@ async function handleRequest(
         service: 'ceda-demo',
         patternsLoaded: health.patternsLoaded,
         servicesReady: health.servicesReady,
+        activeSessions: sessionService.getActiveSessionCount(),
         note: 'Demo mode - feedback stats not persisted',
+      });
+      return;
+    }
+
+    // Refine endpoint - add refinement to existing session
+    if (url === '/api/refine' && method === 'POST') {
+      const body = await parseBody<RefineRequest>(req);
+
+      if (!body.sessionId) {
+        sendJson(res, 400, { error: 'Missing required field: sessionId' });
+        return;
+      }
+
+      if (!body.refinement) {
+        sendJson(res, 400, { error: 'Missing required field: refinement' });
+        return;
+      }
+
+      const session = sessionService.get(body.sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: 'Session not found', sessionId: body.sessionId });
+        return;
+      }
+
+      // Add refinement context
+      const requestContext = (body.context || []).map((c) => ({
+        ...c,
+        timestamp: new Date(),
+      }));
+      for (const ctx of requestContext) {
+        sessionService.addContext(body.sessionId, ctx);
+      }
+
+      // Combine original signal + all refinements
+      const combinedSignal = sessionService.getCombinedSignal(body.sessionId) + '. ' + body.refinement;
+      const accumulatedContext = sessionService.getAccumulatedContext(body.sessionId);
+
+      console.log(`\n[CEDA] Refining: "${body.refinement}" (session: ${body.sessionId}, turn: ${session.history.length + 1})`);
+      const startTime = Date.now();
+
+      const result = await orchestrator.execute(combinedSignal, accumulatedContext);
+
+      // Record refinement
+      const confidence = result.prediction?.confidence || 0;
+      sessionService.recordPrediction(
+        body.sessionId,
+        body.refinement,
+        'refinement',
+        result.prediction,
+        confidence,
+        body.participant,
+      );
+
+      console.log(`[CEDA] Refinement complete in ${Date.now() - startTime}ms - Success: ${result.success}`);
+
+      sendJson(res, 200, {
+        success: result.success,
+        sessionId: body.sessionId,
+        turn: session.history.length,
+        refinement: body.refinement,
+        prediction: result.prediction,
+        validation: result.validation,
+        processingTime: result.processingTime,
+        session: sessionService.getSummary(body.sessionId),
+      });
+      return;
+    }
+
+    // Session info endpoint
+    if (url?.startsWith('/api/session/') && method === 'GET') {
+      const sessionId = url.replace('/api/session/', '');
+      const session = sessionService.get(sessionId);
+
+      if (!session) {
+        sendJson(res, 404, { error: 'Session not found', sessionId });
+        return;
+      }
+
+      sendJson(res, 200, {
+        sessionId: session.id,
+        originalSignal: session.originalSignal,
+        turns: session.history.length,
+        participants: session.participants,
+        currentPrediction: session.currentPrediction,
+        history: session.history.map(h => ({
+          turn: h.turn,
+          input: h.input,
+          inputType: h.inputType,
+          participant: h.participant,
+          confidence: h.confidence,
+          timestamp: h.timestamp,
+        })),
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
       });
       return;
     }
@@ -208,6 +351,8 @@ async function handleRequest(
     sendJson(res, 404, { error: 'Not found', availableEndpoints: [
       'GET  /health',
       'POST /api/predict',
+      'POST /api/refine',
+      'GET  /api/session/:id',
       'POST /api/feedback',
       'GET  /api/stats',
     ]});
