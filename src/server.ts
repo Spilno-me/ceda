@@ -223,6 +223,16 @@ async function handleRequest(
 // Create and start server
 const server = http.createServer(handleRequest);
 
+// Debug: Log all env vars at startup to diagnose Railway injection
+console.log('\n[CEDA] === Environment Variables Debug ===');
+console.log('[CEDA] NODE_ENV:', process.env.NODE_ENV || 'NOT SET');
+console.log('[CEDA] PORT:', process.env.PORT || 'NOT SET');
+console.log('[CEDA] OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? `${process.env.OPENAI_API_KEY.slice(0, 10)}...` : 'NOT SET');
+console.log('[CEDA] QDRANT_URL:', process.env.QDRANT_URL || 'NOT SET');
+console.log('[CEDA] QDRANT_API_KEY:', process.env.QDRANT_API_KEY ? `${process.env.QDRANT_API_KEY.slice(0, 10)}...` : 'NOT SET');
+console.log('[CEDA] All env var keys:', Object.keys(process.env).filter(k => !k.startsWith('npm_')).join(', '));
+console.log('[CEDA] ================================\n');
+
 server.listen(PORT, async () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
