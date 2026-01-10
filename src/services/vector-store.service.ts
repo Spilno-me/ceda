@@ -87,8 +87,9 @@ export class VectorStoreService {
   }
 
   private initializeClient(): void {
-    const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
-    const qdrantApiKey = process.env.QDRANT_API_KEY;
+    // TEMPORARY: Hardcoded for Railway env var debugging
+    const qdrantUrl = process.env.QDRANT_URL || 'https://c7fd4efe-e171-4e30-be59-d1213ec17ea1.us-east4-0.gcp.cloud.qdrant.io';
+    const qdrantApiKey = process.env.QDRANT_API_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.ekapouomX6kDxK1PP24IXesjN9H_maWXYkf_cga8uO4';
 
     console.log(`[VectorStoreService] Connecting to: ${qdrantUrl}`);
     console.log(`[VectorStoreService] API key present: ${!!qdrantApiKey} (${qdrantApiKey?.slice(0, 20)}...)`);
