@@ -1,6 +1,6 @@
 [build]
-builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+# Use Nixpacks (Railway default) - better env var handling
+builder = "NIXPACKS"
 
 [deploy]
 numReplicas = 1
