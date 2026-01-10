@@ -32,8 +32,13 @@ export class VectorStoreService {
 
   private initializeClient(): void {
     const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
+    const qdrantApiKey = process.env.QDRANT_API_KEY;
     try {
-      this.client = new QdrantClient({ url: qdrantUrl });
+      this.client = new QdrantClient({
+        url: qdrantUrl,
+        apiKey: qdrantApiKey,
+        checkCompatibility: false,
+      });
     } catch (error) {
       console.warn('[VectorStoreService] Failed to initialize Qdrant client:', error instanceof Error ? error.message : error);
     }
