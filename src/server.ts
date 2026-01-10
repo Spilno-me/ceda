@@ -229,7 +229,9 @@ console.log('[CEDA] NODE_ENV:', process.env.NODE_ENV || 'NOT SET');
 console.log('[CEDA] PORT:', process.env.PORT || 'NOT SET');
 console.log('[CEDA] OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? `${process.env.OPENAI_API_KEY.slice(0, 10)}...` : 'NOT SET');
 console.log('[CEDA] QDRANT_URL:', process.env.QDRANT_URL || 'NOT SET');
-console.log('[CEDA] QDRANT_API_KEY:', process.env.QDRANT_API_KEY ? `${process.env.QDRANT_API_KEY.slice(0, 10)}...` : 'NOT SET');
+console.log('[CEDA] VECTOR_URL:', process.env.VECTOR_URL || 'NOT SET');
+console.log('[CEDA] QDRANT_API_KEY:', process.env.QDRANT_API_KEY ? 'SET' : 'NOT SET');
+console.log('[CEDA] VECTOR_KEY:', process.env.VECTOR_KEY ? 'SET' : 'NOT SET');
 console.log('[CEDA] All env var keys:', Object.keys(process.env).filter(k => !k.startsWith('npm_')).join(', '));
 console.log('[CEDA] ================================\n');
 

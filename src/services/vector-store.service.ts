@@ -97,8 +97,9 @@ export class VectorStoreService {
       return this.client;
     }
 
-    const qdrantUrl = process.env.QDRANT_URL;
-    const qdrantApiKey = process.env.QDRANT_API_KEY;
+    // Try both naming conventions (QDRANT_ may be filtered by Railway)
+    const qdrantUrl = process.env.QDRANT_URL || process.env.VECTOR_URL;
+    const qdrantApiKey = process.env.QDRANT_API_KEY || process.env.VECTOR_KEY;
 
     console.log(`[VectorStoreService] Lazy init - QDRANT_URL: ${qdrantUrl || 'NOT SET'}`);
     console.log(`[VectorStoreService] Lazy init - API key present: ${!!qdrantApiKey}`);
