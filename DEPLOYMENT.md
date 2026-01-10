@@ -38,6 +38,71 @@ Expected health response:
 {"status":"ok","service":"ceda-demo","patternsLoaded":5,"servicesReady":true}
 ```
 
+## Railway Deployment
+
+### One-Click Deploy
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/new?template=https://github.com/Spilno-me/ceda)
+
+### Manual Deployment
+
+1. **Install Railway CLI** (optional):
+   ```bash
+   npm install -g @railway/cli
+   railway login
+   ```
+
+2. **Create a new project**:
+   ```bash
+   railway init
+   ```
+
+3. **Link to existing project** (if already created via dashboard):
+   ```bash
+   railway link
+   ```
+
+4. **Set environment variables**:
+   ```bash
+   railway variables set NODE_ENV=production
+   railway variables set PORT=3030
+   railway variables set OPENAI_API_KEY=your_key_here
+   railway variables set QDRANT_URL=your_qdrant_url_here
+   ```
+
+   Or set them via the Railway dashboard under your project's Variables tab.
+
+5. **Deploy**:
+   ```bash
+   railway up
+   ```
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PORT` | Yes | Server port (default: 3030) |
+| `NODE_ENV` | Yes | Environment (production recommended) |
+| `OPENAI_API_KEY` | Yes | OpenAI API key for AI features |
+| `QDRANT_URL` | No | Qdrant vector DB URL for semantic matching |
+
+### Railway Configuration Files
+
+The repository includes two Railway configuration files:
+- `railway.json` - JSON format configuration
+- `railway.toml` - TOML format configuration (alternative)
+
+Both configure the deployment to use the existing Dockerfile with health checks at `/health`.
+
+### Verify Deployment
+
+After deployment, Railway will provide a public URL. Verify with:
+```bash
+curl https://your-app.railway.app/health
+```
+
+---
+
 ## Docker Deployment
 
 ```bash
