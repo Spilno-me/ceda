@@ -11,3 +11,5 @@ export { PredictionEngineService } from './services/prediction-engine.service';
 export { CognitiveValidationService } from './services/validation.service';
 export { CognitiveOrchestratorService, PipelineResult, PipelineStage, PipelineConfig } from './services/orchestrator.service';
 export { FeedbackService, UserFeedback, LearningSignal, FeedbackStats } from './services/feedback.service';
+export { EmbeddingService } from './services/embedding.service';
+export { VectorStoreService } from './services/vector-store.service';

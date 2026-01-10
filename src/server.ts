@@ -14,6 +14,8 @@ import { PatternLibraryService } from './services/pattern-library.service';
 import { PredictionEngineService } from './services/prediction-engine.service';
 import { CognitiveValidationService } from './services/validation.service';
 import { CognitiveOrchestratorService } from './services/orchestrator.service';
+import { EmbeddingService } from './services/embedding.service';
+import { VectorStoreService } from './services/vector-store.service';
 import { HSE_PATTERNS } from './seed';
 
 // Manual DI - wire up services
@@ -24,7 +26,13 @@ const patternLibrary = new PatternLibraryService();
 // In production, patterns would come from database or external config
 patternLibrary.loadPatterns(HSE_PATTERNS);
 
+// Initialize embedding and vector store services
+const embeddingService = new EmbeddingService();
+const vectorStoreService = new VectorStoreService(embeddingService);
+
 const predictionEngine = new PredictionEngineService(patternLibrary);
+predictionEngine.setVectorStore(vectorStoreService);
+
 const validationService = new CognitiveValidationService();
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
@@ -32,6 +40,28 @@ const orchestrator = new CognitiveOrchestratorService(
   predictionEngine,
   validationService,
 );
+
+async function initializeVectorStore(): Promise<void> {
+  if (!embeddingService.isAvailable()) {
+    console.log('[CEDA] Vector search disabled - OPENAI_API_KEY not set');
+    return;
+  }
+
+  console.log('[CEDA] Initializing vector store...');
+  const initialized = await vectorStoreService.initialize();
+  
+  if (initialized) {
+    console.log('[CEDA] Seeding patterns to Qdrant...');
+    const seeded = await vectorStoreService.seedPatterns(HSE_PATTERNS);
+    if (seeded) {
+      console.log(`[CEDA] Vector store ready with ${vectorStoreService.getPatternCount()} patterns`);
+    } else {
+      console.warn('[CEDA] Failed to seed patterns - vector search may not work');
+    }
+  } else {
+    console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');
+  }
+}
 
 const PORT = process.env.PORT || 3030;
 
@@ -193,7 +223,7 @@ async function handleRequest(
 // Create and start server
 const server = http.createServer(handleRequest);
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
@@ -221,6 +251,11 @@ Try: curl -X POST http://localhost:${PORT}/api/predict \\
      -H "Content-Type: application/json" \\
      -d '{"input": "create assessment module"}'
 `);
+
+  // Initialize vector store in background (non-blocking)
+  initializeVectorStore().catch(err => {
+    console.error('[CEDA] Vector store initialization error:', err);
+  });
 });
 
 // Graceful shutdown

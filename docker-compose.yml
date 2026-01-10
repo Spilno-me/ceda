@@ -8,18 +8,22 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3030
+      - QDRANT_URL=http://qdrant:6333
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - qdrant
     command: yarn serve:prod
 
   # Herald MCP runs via: yarn herald (stdio transport)
   # For Claude Desktop, configure MCP to run: docker exec -it ceda yarn herald
 
-  # Future: Vector DB for non-deterministic inference
-  # qdrant:
-  #   image: qdrant/qdrant:latest
-  #   ports:
-  #     - "6333:6333"
-  #   volumes:
-  #     - qdrant_data:/qdrant/storage
+  # Vector DB for semantic pattern matching
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
 
-# volumes:
-#   qdrant_data:
+volumes:
+  qdrant_data:

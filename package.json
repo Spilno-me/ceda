@@ -28,6 +28,8 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
+    "@qdrant/js-client-rest": "^1.16.2",
+    "openai": "^6.16.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.0"
   },

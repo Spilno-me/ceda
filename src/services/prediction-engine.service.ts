@@ -8,8 +8,10 @@ import {
   WorkflowStep,
   Pattern,
   PatternSection,
+  PatternMatch,
 } from '../interfaces';
 import { PatternLibraryService } from './pattern-library.service';
+import { VectorStoreService } from './vector-store.service';
 
 /**
  * Modification target types for applying user changes
@@ -31,39 +33,47 @@ interface ModificationIntent {
 
 @Injectable()
 export class PredictionEngineService {
+  private vectorStore: VectorStoreService | null = null;
+
   constructor(private readonly patternLibrary: PatternLibraryService) {}
+
+  setVectorStore(vectorStore: VectorStoreService): void {
+    this.vectorStore = vectorStore;
+  }
 
   /**
    * Generate structure prediction from processed signal
+   * Uses vector similarity search if available, falls back to rule-based matching
    */
   async predict(signal: ProcessedSignal): Promise<StructurePrediction> {
-    // Match pattern from library based on intent classification
-    const patternMatch = this.patternLibrary.matchPattern(
-      signal.intentClassification,
-    );
+    // Try vector similarity search first if available
+    let patternMatch: PatternMatch | null = null;
+    let usedVectorSearch = false;
+
+    if (this.vectorStore && this.vectorStore.isAvailable() && this.vectorStore.isInitialized()) {
+      const queryText = this.buildQueryText(signal);
+      patternMatch = await this.vectorStore.findBestMatch(queryText, 0.3);
+      if (patternMatch) {
+        usedVectorSearch = true;
+        console.log(`[PredictionEngine] Vector search matched: ${patternMatch.pattern.name} (score: ${patternMatch.score.toFixed(3)})`);
+      }
+    }
+
+    // Fall back to rule-based matching if vector search didn't find a match
+    if (!patternMatch) {
+      patternMatch = this.patternLibrary.matchPattern(signal.intentClassification);
+    }
 
     if (!patternMatch) {
-      // Return minimal default prediction when no pattern matches
       return this.createDefaultPrediction(signal);
     }
 
     const { pattern, score } = patternMatch;
 
-    // Generate sections from pattern structure
     const sections = this.generateSections(pattern);
-
-    // Generate workflow prediction
     const workflow = this.generateWorkflow(pattern);
-
-    // Build rationale explanation
-    const rationale = this.buildRationale(pattern, signal, score);
-
-    // Get alternative predictions
-    const alternatives = await this.getAlternatives(
-      signal,
-      pattern.id,
-      2,
-    );
+    const rationale = this.buildRationale(pattern, signal, score, usedVectorSearch);
+    const alternatives = await this.getAlternatives(signal, pattern.id, 2);
 
     return {
       moduleType: pattern.category,
@@ -72,6 +82,25 @@ export class PredictionEngineService {
       rationale,
       alternatives,
     };
+  }
+
+  /**
+   * Build query text from processed signal for vector search
+   */
+  private buildQueryText(signal: ProcessedSignal): string {
+    const parts: string[] = [];
+    
+    if (signal.intentClassification.domain) {
+      parts.push(signal.intentClassification.domain);
+    }
+    
+    if (signal.intentClassification.entities.length > 0) {
+      parts.push(...signal.intentClassification.entities);
+    }
+    
+    parts.push(signal.intentClassification.intent);
+    
+    return parts.join(' ');
   }
 
   /**
@@ -203,11 +232,13 @@ export class PredictionEngineService {
     pattern: Pattern,
     signal: ProcessedSignal,
     score: number,
+    usedVectorSearch: boolean = false,
   ): string {
     const domain = signal.intentClassification.domain || 'unknown';
     const confidence = Math.round(score * 100);
+    const matchMethod = usedVectorSearch ? 'vector similarity search' : 'rule-based matching';
 
-    return `Matched "${pattern.name}" pattern (${confidence}% confidence) based on domain "${domain}". ` +
+    return `Matched "${pattern.name}" pattern (${confidence}% confidence) using ${matchMethod} based on domain "${domain}". ` +
       `Pattern includes ${pattern.structure.sections.length} sections and ${pattern.structure.workflows.length} workflow stages.`;
   }
 
