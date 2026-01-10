@@ -33,6 +33,10 @@ export class VectorStoreService {
   private initializeClient(): void {
     const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
     const qdrantApiKey = process.env.QDRANT_API_KEY;
+
+    console.log(`[VectorStoreService] Connecting to: ${qdrantUrl}`);
+    console.log(`[VectorStoreService] API key present: ${!!qdrantApiKey} (${qdrantApiKey?.slice(0, 20)}...)`);
+
     try {
       this.client = new QdrantClient({
         url: qdrantUrl,
