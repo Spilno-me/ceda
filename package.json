@@ -8,6 +8,8 @@
     "build": "tsc",
     "serve": "ts-node src/server.ts",
     "serve:prod": "node dist/server.js",
+    "herald": "ts-node src/mcp/herald.ts",
+    "herald:prod": "node dist/mcp/herald.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -23,6 +25,7 @@
   "author": "Spilno",
   "license": "MIT",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "reflect-metadata": "^0.2.0",

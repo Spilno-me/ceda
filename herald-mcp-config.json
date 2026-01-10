@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "herald": {
+      "command": "yarn",
+      "args": ["herald"],
+      "cwd": "/Users/oleksiiorlov/Documents/ceda-standalone"
+    }
+  }
+}

@@ -9,6 +9,6 @@ COPY . .
 
 RUN yarn build
 
-EXPOSE 3001
+EXPOSE 3030
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/server.js"]
