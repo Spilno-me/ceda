@@ -78,31 +78,51 @@ class QdrantHttpClient {
 @Injectable()
 export class VectorStoreService {
   private client: QdrantHttpClient | null = null;
+  private clientInitialized = false;
   private readonly collectionName = 'ceda_patterns';
   private patterns: Map<string, Pattern> = new Map();
   private initialized = false;
 
   constructor(private readonly embeddingService: EmbeddingService) {
-    this.initializeClient();
+    // Don't initialize client in constructor - env vars may not be available yet
+    // Use lazy initialization in getClient() instead
   }
 
-  private initializeClient(): void {
-    // TEMPORARY: Hardcoded for Railway env var debugging
-    const qdrantUrl = process.env.QDRANT_URL || 'https://c7fd4efe-e171-4e30-be59-d1213ec17ea1.us-east4-0.gcp.cloud.qdrant.io';
-    const qdrantApiKey = process.env.QDRANT_API_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.ekapouomX6kDxK1PP24IXesjN9H_maWXYkf_cga8uO4';
+  /**
+   * Lazy initialization - reads env vars at runtime, not at module load time
+   * This fixes Railway env var injection timing issues
+   */
+  private getClient(): QdrantHttpClient | null {
+    if (this.clientInitialized) {
+      return this.client;
+    }
 
-    console.log(`[VectorStoreService] Connecting to: ${qdrantUrl}`);
-    console.log(`[VectorStoreService] API key present: ${!!qdrantApiKey} (${qdrantApiKey?.slice(0, 20)}...)`);
+    const qdrantUrl = process.env.QDRANT_URL;
+    const qdrantApiKey = process.env.QDRANT_API_KEY;
+
+    console.log(`[VectorStoreService] Lazy init - QDRANT_URL: ${qdrantUrl || 'NOT SET'}`);
+    console.log(`[VectorStoreService] Lazy init - API key present: ${!!qdrantApiKey}`);
+
+    if (!qdrantUrl) {
+      console.warn('[VectorStoreService] QDRANT_URL not set - vector search disabled');
+      this.clientInitialized = true;
+      return null;
+    }
 
     try {
       this.client = new QdrantHttpClient(qdrantUrl, qdrantApiKey);
+      this.clientInitialized = true;
+      console.log(`[VectorStoreService] Client initialized for: ${qdrantUrl}`);
     } catch (error) {
       console.warn('[VectorStoreService] Failed to initialize Qdrant client:', error instanceof Error ? error.message : error);
+      this.clientInitialized = true;
     }
+
+    return this.client;
   }
 
   isAvailable(): boolean {
-    return this.client !== null && this.embeddingService.isAvailable();
+    return this.getClient() !== null && this.embeddingService.isAvailable();
   }
 
   isInitialized(): boolean {
@@ -110,17 +130,18 @@ export class VectorStoreService {
   }
 
   async initialize(): Promise<boolean> {
-    if (!this.client) {
-      console.warn('[VectorStoreService] Qdrant client not initialized');
+    const client = this.getClient();
+    if (!client) {
+      console.warn('[VectorStoreService] Qdrant client not available');
       return false;
     }
 
     try {
-      const collections = await this.client.getCollections();
+      const collections = await client.getCollections();
       const exists = collections.collections.some(c => c.name === this.collectionName);
 
       if (!exists) {
-        await this.client.createCollection(this.collectionName, {
+        await client.createCollection(this.collectionName, {
           vectors: {
             size: this.embeddingService.getEmbeddingDimensions(),
             distance: 'Cosine',
@@ -140,7 +161,8 @@ export class VectorStoreService {
   }
 
   async seedPatterns(patterns: Pattern[]): Promise<boolean> {
-    if (!this.client || !this.embeddingService.isAvailable()) {
+    const client = this.getClient();
+    if (!client || !this.embeddingService.isAvailable()) {
       console.warn('[VectorStoreService] Cannot seed patterns - services not available');
       return false;
     }
@@ -174,7 +196,7 @@ export class VectorStoreService {
       }
 
       if (points.length > 0) {
-        await this.client.upsert(this.collectionName, points);
+        await client.upsert(this.collectionName, points);
         console.log(`[VectorStoreService] Seeded ${points.length} patterns to Qdrant`);
       }
 
@@ -186,7 +208,8 @@ export class VectorStoreService {
   }
 
   async searchSimilarPatterns(query: string, limit: number = 5): Promise<SearchResult[]> {
-    if (!this.client || !this.embeddingService.isAvailable() || !this.initialized) {
+    const client = this.getClient();
+    if (!client || !this.embeddingService.isAvailable() || !this.initialized) {
       return [];
     }
 
@@ -196,7 +219,7 @@ export class VectorStoreService {
         return [];
       }
 
-      const searchResult = await this.client.search(this.collectionName, queryEmbedding, limit);
+      const searchResult = await client.search(this.collectionName, queryEmbedding, limit);
 
       const results: SearchResult[] = [];
       for (const hit of searchResult) {
