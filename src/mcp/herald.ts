@@ -146,6 +146,34 @@ Each offspring vault maintains a _status.md file with:
       },
     },
   },
+  {
+    name: 'herald_respond_to_offspring',
+    description: `Provide guidance from Aegis to an offspring vault.
+Use this when offspring has awaiting_aegis questions that need answers.
+Herald writes guidance to offspring's _aegis_guidance.md file.
+Offspring Herald reads this file and applies the guidance.
+
+This maintains Avatar autonomy: offspring receive wisdom through Herald,
+not knowing they're receiving instructions from the source.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: {
+          type: 'string',
+          description: 'Target vault (goprint, disrupt, spilno)',
+        },
+        guidance: {
+          type: 'string',
+          description: 'Guidance/answer from Aegis to the offspring',
+        },
+        context: {
+          type: 'string',
+          description: 'Optional context about which awaiting_aegis item this addresses',
+        },
+      },
+      required: ['vault', 'guidance'],
+    },
+  },
 ];
 
 // Observation store (in-memory for now, will persist later)
@@ -463,6 +491,107 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             },
           ],
         };
+      }
+
+      case 'herald_respond_to_offspring': {
+        const vault = args?.vault as string;
+        const guidance = args?.guidance as string;
+        const context = args?.context as string | undefined;
+
+        if (!vault || !guidance) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Herald requires vault and guidance parameters.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const validVaults = ['goprint', 'disrupt', 'spilno'];
+        if (!validVaults.includes(vault)) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Unknown vault: ${vault}. Valid vaults: ${validVaults.join(', ')}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Cloud mode: POST to offspring Herald endpoint
+        const cloudUrl = process.env[`HERALD_OFFSPRING_${vault.toUpperCase()}_URL`];
+        if (cloudUrl) {
+          try {
+            const response = await fetch(`${cloudUrl}/guidance`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ guidance, context, timestamp: new Date().toISOString() }),
+            });
+            if (response.ok) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `**Herald delivered guidance to ${vault}**\n\nGuidance sent via cloud endpoint.${context ? `\n\nContext: ${context}` : ''}`,
+                  },
+                ],
+              };
+            }
+          } catch {
+            // Fall through to local mode
+          }
+        }
+
+        // Local mode: Write to _aegis_guidance.md file
+        try {
+          const fs = await import('fs');
+          const path = await import('path');
+          const basePath = process.env.AEGIS_OFFSPRING_PATH || process.env.HOME + '/Documents/aegis_ceda/_offspring';
+          const guidancePath = path.join(basePath, `${vault}_guidance.md`);
+
+          const entry = `---
+timestamp: ${new Date().toISOString()}
+from: aegis
+context: ${context || 'general'}
+---
+
+${guidance}
+
+---
+`;
+
+          // Append to guidance file (creates if doesn't exist)
+          let existingContent = '';
+          if (fs.existsSync(guidancePath)) {
+            existingContent = fs.readFileSync(guidancePath, 'utf-8');
+          }
+
+          fs.writeFileSync(guidancePath, existingContent + entry);
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `**Herald delivered guidance to ${vault}**\n\nWritten to ${vault}_guidance.md${context ? `\n\nContext: ${context}` : ''}`,
+              },
+            ],
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Herald could not deliver guidance: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              },
+            ],
+            isError: true,
+          };
+        }
       }
 
       default:
