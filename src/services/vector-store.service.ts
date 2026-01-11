@@ -10,8 +10,10 @@ interface PatternVector {
     name: string;
     category: string;
     description: string;
-    /** Company identifier for multi-tenant filtering. Null/undefined = global pattern */
+    /** @deprecated Use domainAffinity for AI-native multi-tenancy */
     company: string | null;
+    /** AI-native: Domain affinity vector for soft ranking */
+    domainAffinity: number[] | null;
   };
 }
 
@@ -216,6 +218,7 @@ export class VectorStoreService {
               category: pattern.category,
               description: pattern.description,
               company: pattern.company ?? null,
+              domainAffinity: pattern.domainAffinity ?? null,
             },
           });
         }
@@ -317,21 +320,16 @@ export class VectorStoreService {
   }
 
   /**
+   * @deprecated CEDA-20: SQL filtering replaced by AI-native embedding-based ranking
    * Build Qdrant filter for tenant-based pattern filtering
-   * - If tenantContext.company is provided: match patterns where company equals the tenant's company OR company is null (global patterns)
-   * - If no company provided: no filter (return all patterns)
+   *
+   * AI-NATIVE APPROACH: Use searchByVector with fused embeddings instead
+   * This method is kept for backwards compatibility but returns undefined (no filter)
    */
-  private buildTenantFilter(tenantContext?: TenantContext): QdrantFilter | undefined {
-    if (!tenantContext?.company) {
-      return undefined;
-    }
-
-    return {
-      should: [
-        { key: 'company', match: { value: tenantContext.company } },
-        { key: 'company', match: { value: null } },
-      ],
-    };
+  private buildTenantFilter(_tenantContext?: TenantContext): QdrantFilter | undefined {
+    // CEDA-20: AI-native multi-tenancy uses soft ranking via embedding similarity
+    // No hard SQL-style filtering - patterns are ranked by affinity, not filtered
+    return undefined;
   }
 
   /**
@@ -408,6 +406,126 @@ export class VectorStoreService {
       return true;
     } catch (error) {
       console.error('[VectorStoreService] Failed to ensure tenants collection:', error instanceof Error ? error.message : error);
+      return false;
+    }
+  }
+
+  /**
+   * CEDA-17: Migrate patterns from company field to domainAffinity
+   * Uses tenant embeddings as base affinity for patterns with company field
+   * @param tenantEmbeddings - Map of tenantId to embedding vector
+   */
+  async migrateCompanyToAffinity(tenantEmbeddings: Map<string, number[]>): Promise<number> {
+    let migrated = 0;
+    const client = this.getClient();
+    if (!client) {
+      console.warn('[VectorStoreService] Cannot migrate - client not available');
+      return 0;
+    }
+
+    for (const [patternId, pattern] of this.patterns.entries()) {
+      // Skip if already has domainAffinity or no company
+      if (pattern.domainAffinity || !pattern.company) {
+        continue;
+      }
+
+      const tenantEmbedding = tenantEmbeddings.get(pattern.company);
+      if (tenantEmbedding) {
+        // Set domainAffinity to tenant's embedding
+        pattern.domainAffinity = tenantEmbedding;
+        this.patterns.set(patternId, pattern);
+
+        // Update in Qdrant
+        try {
+          await client.upsert(this.collectionName, [{
+            id: this.hashPatternId(patternId),
+            vector: await this.embeddingService.generateEmbedding(this.createPatternText(pattern)) || [],
+            payload: {
+              patternId: pattern.id,
+              name: pattern.name,
+              category: pattern.category,
+              description: pattern.description,
+              company: pattern.company ?? null,
+              domainAffinity: pattern.domainAffinity,
+            },
+          }]);
+          migrated++;
+          console.log(`[VectorStoreService] Migrated pattern ${patternId} to domainAffinity`);
+        } catch (error) {
+          console.error(`[VectorStoreService] Failed to migrate pattern ${patternId}:`, error);
+        }
+      }
+    }
+
+    console.log(`[VectorStoreService] Migration complete: ${migrated} patterns migrated`);
+    return migrated;
+  }
+
+  /**
+   * CEDA-21: Update pattern affinity based on outcome
+   * Strengthens or weakens affinity between pattern and tenant domain
+   * @param patternId - Pattern to update
+   * @param tenantEmbedding - Tenant's domain embedding
+   * @param delta - Change amount (+0.1 for success, -0.1 for failure)
+   */
+  async updatePatternAffinity(
+    patternId: string,
+    tenantEmbedding: number[],
+    delta: number,
+  ): Promise<boolean> {
+    const pattern = this.patterns.get(patternId);
+    if (!pattern) {
+      console.warn(`[VectorStoreService] Pattern not found: ${patternId}`);
+      return false;
+    }
+
+    const client = this.getClient();
+    if (!client) {
+      console.warn('[VectorStoreService] Cannot update affinity - client not available');
+      return false;
+    }
+
+    // Initialize domainAffinity if not present
+    if (!pattern.domainAffinity) {
+      // Start with neutral affinity (zeros) or tenant's embedding as base
+      pattern.domainAffinity = tenantEmbedding.map(() => 0);
+    }
+
+    // Apply delta: move affinity vector toward (positive) or away from (negative) tenant
+    // This is a simplified learning rule: affinity += delta * tenant_embedding
+    pattern.domainAffinity = pattern.domainAffinity.map(
+      (a, i) => a + delta * tenantEmbedding[i],
+    );
+
+    // Normalize to prevent unbounded growth
+    const norm = Math.sqrt(pattern.domainAffinity.reduce((sum, v) => sum + v * v, 0));
+    if (norm > 0) {
+      pattern.domainAffinity = pattern.domainAffinity.map(v => v / norm);
+    }
+
+    this.patterns.set(patternId, pattern);
+
+    try {
+      // Update in Qdrant
+      const embedding = await this.embeddingService.generateEmbedding(this.createPatternText(pattern));
+      if (embedding) {
+        await client.upsert(this.collectionName, [{
+          id: this.hashPatternId(patternId),
+          vector: embedding,
+          payload: {
+            patternId: pattern.id,
+            name: pattern.name,
+            category: pattern.category,
+            description: pattern.description,
+            company: pattern.company ?? null,
+            domainAffinity: pattern.domainAffinity,
+          },
+        }]);
+      }
+      console.log(`[VectorStoreService] Updated affinity for pattern ${patternId} (delta: ${delta})`);
+      return true;
+    } catch (error) {
+      console.error(`[VectorStoreService] Failed to update pattern affinity:`, error);
       return false;
     }
   }

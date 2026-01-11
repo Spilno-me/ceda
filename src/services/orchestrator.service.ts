@@ -4,6 +4,7 @@ import { PatternLibraryService } from './pattern-library.service';
 import { PredictionEngineService } from './prediction-engine.service';
 import { CognitiveValidationService } from './validation.service';
 import { TenantEmbeddingService, TenantEmbeddingContext } from './tenant-embedding.service';
+import { VectorStoreService } from './vector-store.service';
 import {
   ContextSignal,
   ProcessedSignal,
@@ -11,6 +12,11 @@ import {
   ValidationResult,
   TenantContext,
 } from '../interfaces';
+
+/**
+ * CEDA-21: Outcome types for learning
+ */
+export type OutcomeType = 'success' | 'failure';
 
 /**
  * Pipeline execution result
@@ -74,6 +80,7 @@ const DEFAULT_CONFIG: PipelineConfig = {
 export class CognitiveOrchestratorService {
   private readonly logger = new Logger(CognitiveOrchestratorService.name);
   private tenantEmbeddingService: TenantEmbeddingService | null = null;
+  private vectorStoreService: VectorStoreService | null = null;
 
   constructor(
     private readonly signalProcessor: SignalProcessorService,
@@ -89,6 +96,55 @@ export class CognitiveOrchestratorService {
   setTenantEmbeddingService(service: TenantEmbeddingService): void {
     this.tenantEmbeddingService = service;
     this.logger.log('TenantEmbeddingService configured for AI-native multi-tenancy');
+  }
+
+  /**
+   * Set the vector store service for outcome learning
+   * Required for CEDA-21: Pattern affinity updates
+   */
+  setVectorStoreService(service: VectorStoreService): void {
+    this.vectorStoreService = service;
+    this.logger.log('VectorStoreService configured for outcome learning');
+  }
+
+  /**
+   * CEDA-21: Record outcome to update pattern affinity
+   * Call this after user accepts/rejects a prediction to improve future rankings
+   *
+   * @param patternId - The pattern that was used in the prediction
+   * @param tenantId - The tenant who received the prediction
+   * @param outcome - 'success' (accepted) or 'failure' (rejected)
+   */
+  async recordOutcome(
+    patternId: string,
+    tenantId: string,
+    outcome: OutcomeType,
+  ): Promise<boolean> {
+    if (!this.tenantEmbeddingService || !this.vectorStoreService) {
+      this.logger.warn('Cannot record outcome - services not configured');
+      return false;
+    }
+
+    const tenantContext = await this.tenantEmbeddingService.getContext(tenantId);
+    if (!tenantContext) {
+      this.logger.warn(`Cannot record outcome - tenant not found: ${tenantId}`);
+      return false;
+    }
+
+    // Apply learning delta: +0.1 for success, -0.1 for failure
+    const delta = outcome === 'success' ? 0.1 : -0.1;
+
+    const success = await this.vectorStoreService.updatePatternAffinity(
+      patternId,
+      tenantContext.embedding,
+      delta,
+    );
+
+    if (success) {
+      this.logger.log(`Recorded ${outcome} outcome for pattern ${patternId}, tenant ${tenantId}`);
+    }
+
+    return success;
   }
 
   /**

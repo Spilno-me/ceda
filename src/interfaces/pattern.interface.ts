@@ -9,10 +9,16 @@ export interface Pattern {
   applicabilityRules: ApplicabilityRule[];
   confidenceFactors: ConfidenceFactor[];
   metadata: PatternMetadata;
-  /** Company identifier for multi-tenant pattern isolation */
+  /** @deprecated Use domainAffinity for AI-native multi-tenancy */
   company?: string;
   /** Domain identifier for pattern categorization */
   domain?: string;
+  /**
+   * AI-native multi-tenancy: Learned affinity vector for tenant domains
+   * Patterns rank higher for tenants with similar domain embeddings
+   * Updated via outcome learning (recordOutcome)
+   */
+  domainAffinity?: number[];
 }
 
 export enum PatternCategory {

@@ -69,21 +69,22 @@ export class PatternLibraryService {
   /**
    * Find best matching pattern for a given intent classification
    * @param classification - The intent classification to match against
-   * @param tenantContext - Optional tenant context for multi-tenant filtering
+   * @param _tenantContext - @deprecated Use getPatternsWithContext for AI-native multi-tenancy
+   *
+   * CEDA-20: SQL-style company filtering removed.
+   * For AI-native multi-tenancy, use getPatternsWithContext() which ranks
+   * patterns by embedding similarity (soft ranking) instead of hard filtering.
    */
   matchPattern(
     classification: IntentClassification,
-    tenantContext?: TenantContext,
+    _tenantContext?: TenantContext,
   ): PatternMatch | null {
     let bestMatch: PatternMatch | null = null;
     let highestScore = 0;
 
     for (const pattern of this.patterns.values()) {
-      // Multi-tenant filtering: skip patterns that don't match the company context
-      // Patterns without a company field are considered global and match all tenants
-      if (tenantContext?.company && pattern.company && pattern.company !== tenantContext.company) {
-        continue;
-      }
+      // CEDA-20: No company filtering - AI-native uses soft ranking via embeddings
+      // All patterns are evaluated; ranking is handled by embedding similarity
 
       const { score, matchedRules } = this.evaluatePattern(
         pattern,
