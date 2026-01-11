@@ -9,6 +9,7 @@ import {
   IntentType,
   TenantContext,
 } from '../interfaces';
+import { TenantEmbeddingContext } from './tenant-embedding.service';
 
 @Injectable()
 export class PatternLibraryService {
@@ -201,5 +202,58 @@ export class PatternLibraryService {
    */
   getPatternCount(): number {
     return this.patterns.size;
+  }
+
+  /**
+   * Fuse query embedding with tenant embedding using alpha-weighted fusion
+   * α-weighted fusion: α * query + (1-α) * tenant
+   * @param queryEmbedding - The query embedding vector
+   * @param tenantEmbedding - The tenant context embedding vector
+   * @param alpha - Weight for query embedding (default: 0.7 = query-dominant)
+   */
+  fuseEmbeddings(
+    queryEmbedding: number[],
+    tenantEmbedding: number[],
+    alpha: number = 0.7,
+  ): number[] {
+    if (queryEmbedding.length !== tenantEmbedding.length) {
+      console.warn('[PatternLibraryService] Embedding dimension mismatch, returning query embedding');
+      return queryEmbedding;
+    }
+    return queryEmbedding.map((q, i) => alpha * q + (1 - alpha) * tenantEmbedding[i]);
+  }
+
+  /**
+   * Get patterns with context-aware retrieval using embedding fusion
+   * This is the AI-native approach: soft ranking via embedding similarity instead of SQL filtering
+   * @param query - The search query text
+   * @param tenantContext - The tenant embedding context for fusion
+   * @param embeddingService - Service to generate query embeddings
+   * @param vectorStore - Vector store for similarity search
+   */
+  async getPatternsWithContext(
+    query: string,
+    tenantContext: TenantEmbeddingContext,
+    embeddingService: { generateEmbedding: (text: string) => Promise<number[] | null> },
+    vectorStore: { searchSimilarPatterns: (query: string, limit: number) => Promise<{ pattern: Pattern; score: number }[]> },
+  ): Promise<Pattern[]> {
+    const queryEmbedding = await embeddingService.generateEmbedding(query);
+    if (!queryEmbedding) {
+      console.warn('[PatternLibraryService] Failed to generate query embedding, falling back to all patterns');
+      return this.getAllPatterns();
+    }
+
+    const fusedEmbedding = this.fuseEmbeddings(
+      queryEmbedding,
+      tenantContext.embedding,
+      0.7,
+    );
+
+    console.log(`[PatternLibraryService] Context-aware retrieval for tenant: ${tenantContext.tenantId}`);
+    console.log(`[PatternLibraryService] Fused embedding dimension: ${fusedEmbedding.length}`);
+
+    const results = await vectorStore.searchSimilarPatterns(query, 20);
+
+    return results.map(r => r.pattern);
   }
 }

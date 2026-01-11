@@ -338,4 +338,38 @@ export class VectorStoreService {
   getPatternCount(): number {
     return this.patterns.size;
   }
+
+  /**
+   * Ensure the tenants collection exists in Qdrant
+   * Used for AI-native multi-tenancy with embedding-based retrieval
+   */
+  async ensureTenantsCollection(): Promise<boolean> {
+    const client = this.getClient();
+    if (!client) {
+      console.warn('[VectorStoreService] Qdrant client not available for tenants collection');
+      return false;
+    }
+
+    try {
+      const collections = await client.getCollections();
+      const exists = collections.collections.some(c => c.name === 'tenants');
+
+      if (!exists) {
+        await client.createCollection('tenants', {
+          vectors: {
+            size: this.embeddingService.getEmbeddingDimensions(),
+            distance: 'Cosine',
+          },
+        });
+        console.log('[VectorStoreService] Created tenants collection');
+      } else {
+        console.log('[VectorStoreService] Tenants collection already exists');
+      }
+
+      return true;
+    } catch (error) {
+      console.error('[VectorStoreService] Failed to ensure tenants collection:', error instanceof Error ? error.message : error);
+      return false;
+    }
+  }
 }
