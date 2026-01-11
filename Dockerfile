@@ -1,9 +1,16 @@
 FROM node:22-alpine
 
+# Enable Corepack for Yarn 4
+RUN corepack enable
+
 WORKDIR /app
 
-COPY package.json yarn.lock ./
-RUN yarn install --frozen-lockfile
+# Copy Yarn config files first
+COPY package.json yarn.lock .yarnrc.yml ./
+COPY .yarn ./.yarn
+
+# Install dependencies
+RUN yarn install --immutable
 
 COPY . .
 
