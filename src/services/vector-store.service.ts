@@ -278,6 +278,45 @@ export class VectorStoreService {
   }
 
   /**
+   * Search patterns using a pre-computed embedding vector
+   * Used by AI-native multi-tenancy for context-aware retrieval with fused embeddings
+   * @param vector - Pre-computed embedding vector (e.g., fused query + tenant)
+   * @param limit - Maximum number of results to return
+   */
+  async searchByVector(
+    vector: number[],
+    limit: number = 5,
+  ): Promise<SearchResult[]> {
+    const client = this.getClient();
+    if (!client || !this.initialized) {
+      return [];
+    }
+
+    try {
+      // NO filter - AI-native uses soft ranking via embedding similarity
+      const searchResult = await client.search(this.collectionName, vector, limit);
+
+      const results: SearchResult[] = [];
+      for (const hit of searchResult) {
+        const payload = hit.payload as PatternVector['payload'];
+        const pattern = this.patterns.get(payload.patternId);
+        if (pattern) {
+          results.push({
+            pattern,
+            score: hit.score,
+          });
+        }
+      }
+
+      console.log(`[VectorStoreService] searchByVector returned ${results.length} results`);
+      return results;
+    } catch (error) {
+      console.error('[VectorStoreService] searchByVector failed:', error instanceof Error ? error.message : error);
+      return [];
+    }
+  }
+
+  /**
    * Build Qdrant filter for tenant-based pattern filtering
    * - If tenantContext.company is provided: match patterns where company equals the tenant's company OR company is null (global patterns)
    * - If no company provided: no filter (return all patterns)
