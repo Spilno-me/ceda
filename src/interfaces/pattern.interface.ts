@@ -9,6 +9,10 @@ export interface Pattern {
   applicabilityRules: ApplicabilityRule[];
   confidenceFactors: ConfidenceFactor[];
   metadata: PatternMetadata;
+  /** Company identifier for multi-tenant pattern isolation */
+  company?: string;
+  /** Domain identifier for pattern categorization */
+  domain?: string;
 }
 
 export enum PatternCategory {

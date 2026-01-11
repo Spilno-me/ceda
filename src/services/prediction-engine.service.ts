@@ -9,6 +9,7 @@ import {
   Pattern,
   PatternSection,
   PatternMatch,
+  TenantContext,
 } from '../interfaces';
 import { PatternLibraryService } from './pattern-library.service';
 import { VectorStoreService } from './vector-store.service';
@@ -44,15 +45,20 @@ export class PredictionEngineService {
   /**
    * Generate structure prediction from processed signal
    * Uses vector similarity search if available, falls back to rule-based matching
+   * @param signal - The processed signal containing intent classification
+   * @param tenantContext - Optional tenant context for multi-tenant filtering
    */
-  async predict(signal: ProcessedSignal): Promise<StructurePrediction> {
+  async predict(
+    signal: ProcessedSignal,
+    tenantContext?: TenantContext,
+  ): Promise<StructurePrediction> {
     // Try vector similarity search first if available
     let patternMatch: PatternMatch | null = null;
     let usedVectorSearch = false;
 
     if (this.vectorStore && this.vectorStore.isAvailable() && this.vectorStore.isInitialized()) {
       const queryText = this.buildQueryText(signal);
-      patternMatch = await this.vectorStore.findBestMatch(queryText, 0.3);
+      patternMatch = await this.vectorStore.findBestMatch(queryText, 0.3, tenantContext);
       if (patternMatch) {
         usedVectorSearch = true;
         console.log(`[PredictionEngine] Vector search matched: ${patternMatch.pattern.name} (score: ${patternMatch.score.toFixed(3)})`);
@@ -61,7 +67,7 @@ export class PredictionEngineService {
 
     // Fall back to rule-based matching if vector search didn't find a match
     if (!patternMatch) {
-      patternMatch = this.patternLibrary.matchPattern(signal.intentClassification);
+      patternMatch = this.patternLibrary.matchPattern(signal.intentClassification, tenantContext);
     }
 
     if (!patternMatch) {
@@ -73,7 +79,7 @@ export class PredictionEngineService {
     const sections = this.generateSections(pattern);
     const workflow = this.generateWorkflow(pattern);
     const rationale = this.buildRationale(pattern, signal, score, usedVectorSearch);
-    const alternatives = await this.getAlternatives(signal, pattern.id, 2);
+    const alternatives = await this.getAlternatives(signal, pattern.id, 2, tenantContext);
 
     return {
       moduleType: pattern.category,
@@ -249,6 +255,7 @@ export class PredictionEngineService {
     signal: ProcessedSignal,
     excludePatternId: string,
     limit: number,
+    tenantContext?: TenantContext,
   ): Promise<StructurePrediction[]> {
     const allPatterns = this.patternLibrary.getAllPatterns();
     const alternatives: StructurePrediction[] = [];
@@ -257,7 +264,7 @@ export class PredictionEngineService {
       if (pattern.id === excludePatternId) continue;
       if (alternatives.length >= limit) break;
 
-      const match = this.patternLibrary.matchPattern(signal.intentClassification);
+      const match = this.patternLibrary.matchPattern(signal.intentClassification, tenantContext);
       if (match && match.pattern.id === pattern.id && match.score > 0.2) {
         alternatives.push({
           moduleType: pattern.category,

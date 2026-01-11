@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Pattern, PatternMatch } from '../interfaces';
+import { Pattern, PatternMatch, TenantContext } from '../interfaces';
 import { EmbeddingService } from './embedding.service';
 
 interface PatternVector {
@@ -10,6 +10,8 @@ interface PatternVector {
     name: string;
     category: string;
     description: string;
+    /** Company identifier for multi-tenant filtering. Null/undefined = global pattern */
+    company: string | null;
   };
 }
 
@@ -66,13 +68,35 @@ class QdrantHttpClient {
     await this.request('PUT', `/collections/${collection}/points`, { points });
   }
 
-  async search(collection: string, vector: number[], limit: number): Promise<{ id: number; score: number; payload: unknown }[]> {
-    return this.request('POST', `/collections/${collection}/points/search`, {
+  async search(
+    collection: string,
+    vector: number[],
+    limit: number,
+    filter?: QdrantFilter,
+  ): Promise<{ id: number; score: number; payload: unknown }[]> {
+    const body: Record<string, unknown> = {
       vector,
       limit,
       with_payload: true,
-    });
+    };
+    if (filter) {
+      body.filter = filter;
+    }
+    return this.request('POST', `/collections/${collection}/points/search`, body);
   }
+}
+
+/** Qdrant filter structure for tenant filtering */
+interface QdrantFilter {
+  should?: QdrantCondition[];
+  must?: QdrantCondition[];
+  must_not?: QdrantCondition[];
+}
+
+interface QdrantCondition {
+  key: string;
+  match?: { value: string | null };
+  is_null?: { key: string };
 }
 
 @Injectable()
@@ -191,6 +215,7 @@ export class VectorStoreService {
               name: pattern.name,
               category: pattern.category,
               description: pattern.description,
+              company: pattern.company ?? null,
             },
           });
         }
@@ -208,7 +233,17 @@ export class VectorStoreService {
     }
   }
 
-  async searchSimilarPatterns(query: string, limit: number = 5): Promise<SearchResult[]> {
+  /**
+   * Search for similar patterns using vector similarity
+   * @param query - The search query text
+   * @param limit - Maximum number of results to return
+   * @param tenantContext - Optional tenant context for multi-tenant filtering
+   */
+  async searchSimilarPatterns(
+    query: string,
+    limit: number = 5,
+    tenantContext?: TenantContext,
+  ): Promise<SearchResult[]> {
     const client = this.getClient();
     if (!client || !this.embeddingService.isAvailable() || !this.initialized) {
       return [];
@@ -220,7 +255,8 @@ export class VectorStoreService {
         return [];
       }
 
-      const searchResult = await client.search(this.collectionName, queryEmbedding, limit);
+      const filter = this.buildTenantFilter(tenantContext);
+      const searchResult = await client.search(this.collectionName, queryEmbedding, limit, filter);
 
       const results: SearchResult[] = [];
       for (const hit of searchResult) {
@@ -241,8 +277,36 @@ export class VectorStoreService {
     }
   }
 
-  async findBestMatch(query: string, minScore: number = 0.3): Promise<PatternMatch | null> {
-    const results = await this.searchSimilarPatterns(query, 1);
+  /**
+   * Build Qdrant filter for tenant-based pattern filtering
+   * - If tenantContext.company is provided: match patterns where company equals the tenant's company OR company is null (global patterns)
+   * - If no company provided: no filter (return all patterns)
+   */
+  private buildTenantFilter(tenantContext?: TenantContext): QdrantFilter | undefined {
+    if (!tenantContext?.company) {
+      return undefined;
+    }
+
+    return {
+      should: [
+        { key: 'company', match: { value: tenantContext.company } },
+        { key: 'company', match: { value: null } },
+      ],
+    };
+  }
+
+  /**
+   * Find the best matching pattern for a query using vector similarity
+   * @param query - The search query text
+   * @param minScore - Minimum similarity score threshold (default: 0.3)
+   * @param tenantContext - Optional tenant context for multi-tenant filtering
+   */
+  async findBestMatch(
+    query: string,
+    minScore: number = 0.3,
+    tenantContext?: TenantContext,
+  ): Promise<PatternMatch | null> {
+    const results = await this.searchSimilarPatterns(query, 1, tenantContext);
     if (results.length === 0 || results[0].score < minScore) {
       return null;
     }

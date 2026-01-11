@@ -7,6 +7,7 @@ import {
   ApplicabilityRule,
   IntentClassification,
   IntentType,
+  TenantContext,
 } from '../interfaces';
 
 @Injectable()
@@ -66,12 +67,23 @@ export class PatternLibraryService {
 
   /**
    * Find best matching pattern for a given intent classification
+   * @param classification - The intent classification to match against
+   * @param tenantContext - Optional tenant context for multi-tenant filtering
    */
-  matchPattern(classification: IntentClassification): PatternMatch | null {
+  matchPattern(
+    classification: IntentClassification,
+    tenantContext?: TenantContext,
+  ): PatternMatch | null {
     let bestMatch: PatternMatch | null = null;
     let highestScore = 0;
 
     for (const pattern of this.patterns.values()) {
+      // Multi-tenant filtering: skip patterns that don't match the company context
+      // Patterns without a company field are considered global and match all tenants
+      if (tenantContext?.company && pattern.company && pattern.company !== tenantContext.company) {
+        continue;
+      }
+
       const { score, matchedRules } = this.evaluatePattern(
         pattern,
         classification,

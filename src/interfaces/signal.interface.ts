@@ -38,3 +38,13 @@ export interface HandlerRoute {
   priority: number;
   metadata?: Record<string, unknown>;
 }
+
+/** Tenant context for multi-tenant pattern isolation */
+export interface TenantContext {
+  /** Company identifier */
+  company?: string;
+  /** Project identifier */
+  project?: string;
+  /** User identifier */
+  user?: string;
+}
