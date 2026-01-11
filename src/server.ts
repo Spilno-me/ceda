@@ -17,6 +17,8 @@ import { CognitiveOrchestratorService } from './services/orchestrator.service';
 import { EmbeddingService } from './services/embedding.service';
 import { VectorStoreService } from './services/vector-store.service';
 import { SessionService } from './services/session.service';
+import { TenantEmbeddingService } from './services/tenant-embedding.service';
+import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS } from './seed';
 import { randomUUID } from 'crypto';
 
@@ -37,12 +39,19 @@ predictionEngine.setVectorStore(vectorStoreService);
 
 const validationService = new CognitiveValidationService();
 const sessionService = new SessionService();
+
+// Initialize tenant embedding service for AI-native multi-tenancy
+const tenantEmbeddingService = new TenantEmbeddingService(embeddingService, vectorStoreService);
+
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
   patternLibrary,
   predictionEngine,
   validationService,
 );
+
+// Configure orchestrator with tenant embedding service for AI-native multi-tenancy
+orchestrator.setTenantEmbeddingService(tenantEmbeddingService);
 
 async function initializeVectorStore(): Promise<void> {
   if (!embeddingService.isAvailable()) {
@@ -60,6 +69,20 @@ async function initializeVectorStore(): Promise<void> {
       console.log(`[CEDA] Vector store ready with ${vectorStoreService.getPatternCount()} patterns`);
     } else {
       console.warn('[CEDA] Failed to seed patterns - vector search may not work');
+    }
+
+    // Initialize tenants collection for AI-native multi-tenancy
+    console.log('[CEDA] Initializing tenants collection...');
+    const tenantsInitialized = await vectorStoreService.ensureTenantsCollection();
+    if (tenantsInitialized) {
+      console.log('[CEDA] Tenants collection ready');
+      
+      // Bootstrap initial tenants (goprint, disrupt, spilno)
+      console.log('[CEDA] Bootstrapping initial tenants...');
+      await bootstrapTenants(tenantEmbeddingService);
+      console.log('[CEDA] AI-native multi-tenancy initialized');
+    } else {
+      console.warn('[CEDA] Failed to initialize tenants collection');
     }
   } else {
     console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');

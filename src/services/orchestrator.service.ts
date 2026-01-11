@@ -3,6 +3,7 @@ import { SignalProcessorService } from './signal-processor.service';
 import { PatternLibraryService } from './pattern-library.service';
 import { PredictionEngineService } from './prediction-engine.service';
 import { CognitiveValidationService } from './validation.service';
+import { TenantEmbeddingService, TenantEmbeddingContext } from './tenant-embedding.service';
 import {
   ContextSignal,
   ProcessedSignal,
@@ -72,6 +73,7 @@ const DEFAULT_CONFIG: PipelineConfig = {
 @Injectable()
 export class CognitiveOrchestratorService {
   private readonly logger = new Logger(CognitiveOrchestratorService.name);
+  private tenantEmbeddingService: TenantEmbeddingService | null = null;
 
   constructor(
     private readonly signalProcessor: SignalProcessorService,
@@ -79,6 +81,36 @@ export class CognitiveOrchestratorService {
     private readonly predictionEngine: PredictionEngineService,
     private readonly validationService: CognitiveValidationService,
   ) {}
+
+  /**
+   * Set the tenant embedding service for AI-native multi-tenancy
+   * This enables context-aware pattern retrieval using embedding fusion
+   */
+  setTenantEmbeddingService(service: TenantEmbeddingService): void {
+    this.tenantEmbeddingService = service;
+    this.logger.log('TenantEmbeddingService configured for AI-native multi-tenancy');
+  }
+
+  /**
+   * Get tenant embedding context, initializing on-the-fly if needed
+   */
+  private async getTenantEmbeddingContext(tenantContext?: TenantContext): Promise<TenantEmbeddingContext | null> {
+    if (!this.tenantEmbeddingService || !tenantContext?.company) {
+      return null;
+    }
+
+    let embeddingContext = await this.tenantEmbeddingService.getContext(tenantContext.company);
+
+    if (!embeddingContext) {
+      this.logger.log(`Initializing tenant embedding on-the-fly: ${tenantContext.company}`);
+      embeddingContext = await this.tenantEmbeddingService.initialize(
+        tenantContext.company,
+        `Domain for ${tenantContext.company}`,
+      );
+    }
+
+    return embeddingContext;
+  }
 
   /**
    * Execute full cognitive pipeline
@@ -104,6 +136,12 @@ export class CognitiveOrchestratorService {
     let appliedFixes: string[] = [];
 
     try {
+      // Get tenant embedding context for AI-native multi-tenancy
+      const tenantEmbeddingContext = await this.getTenantEmbeddingContext(tenantContext);
+      if (tenantEmbeddingContext) {
+        this.logger.log(`Using AI-native multi-tenancy for tenant: ${tenantEmbeddingContext.tenantId}`);
+      }
+
       // Stage 1: Signal Processing
       const signalResult = await this.executeStage(
         PipelineStage.SIGNAL_PROCESSING,
@@ -117,7 +155,7 @@ export class CognitiveOrchestratorService {
         return this.buildResult(false, null, null, false, [], startTime, stages);
       }
 
-      // Stage 2: Prediction
+      // Stage 2: Prediction (with tenant embedding context for AI-native retrieval)
       const predictionResult = await this.executeStage(
         PipelineStage.PREDICTION,
         async () => {
