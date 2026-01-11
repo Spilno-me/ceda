@@ -21,6 +21,65 @@ import { TenantEmbeddingService } from './services/tenant-embedding.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS } from './seed';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// Herald context sync - file-based storage for local mode
+const HERALD_DATA_PATH = process.env.HERALD_DATA_PATH || path.join(process.cwd(), '.herald');
+
+// Ensure Herald data directory exists
+if (!fs.existsSync(HERALD_DATA_PATH)) {
+  fs.mkdirSync(HERALD_DATA_PATH, { recursive: true });
+}
+
+interface HeraldContext {
+  context: string;
+  status: string;
+  lastHeartbeat: string;
+  sessions?: number;
+  activeThreads?: string[];
+  blockers?: string[];
+  pending?: string[];
+}
+
+interface HeraldInsight {
+  id: string;
+  fromContext: string;
+  toContext: string;
+  topic?: string;
+  insight: string;
+  timestamp: string;
+}
+
+// Simple file-based Herald storage
+const heraldStorage = {
+  getContextsFile: () => path.join(HERALD_DATA_PATH, 'contexts.json'),
+  getInsightsFile: () => path.join(HERALD_DATA_PATH, 'insights.json'),
+
+  loadContexts: (): HeraldContext[] => {
+    const file = heraldStorage.getContextsFile();
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf-8'));
+    }
+    return [];
+  },
+
+  saveContexts: (contexts: HeraldContext[]) => {
+    fs.writeFileSync(heraldStorage.getContextsFile(), JSON.stringify(contexts, null, 2));
+  },
+
+  loadInsights: (): HeraldInsight[] => {
+    const file = heraldStorage.getInsightsFile();
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf-8'));
+    }
+    return [];
+  },
+
+  saveInsights: (insights: HeraldInsight[]) => {
+    fs.writeFileSync(heraldStorage.getInsightsFile(), JSON.stringify(insights, null, 2));
+  },
+};
 
 // Manual DI - wire up services
 const signalProcessor = new SignalProcessorService();
@@ -392,6 +451,147 @@ async function handleRequest(
       return;
     }
 
+    // === HERALD CONTEXT SYNC ENDPOINTS ===
+
+    // Herald heartbeat - context reports its status
+    if (url === '/api/herald/heartbeat' && method === 'POST') {
+      const body = await parseBody<{
+        context: string;
+        status?: string;
+        sessions?: number;
+        activeThreads?: string[];
+        blockers?: string[];
+        pending?: string[];
+      }>(req);
+
+      if (!body.context) {
+        sendJson(res, 400, { error: 'Missing required field: context' });
+        return;
+      }
+
+      const contexts = heraldStorage.loadContexts();
+      const existingIndex = contexts.findIndex(c => c.context === body.context);
+
+      const contextData: HeraldContext = {
+        context: body.context,
+        status: body.status || 'active',
+        lastHeartbeat: new Date().toISOString(),
+        sessions: body.sessions,
+        activeThreads: body.activeThreads,
+        blockers: body.blockers,
+        pending: body.pending,
+      };
+
+      if (existingIndex >= 0) {
+        contexts[existingIndex] = contextData;
+      } else {
+        contexts.push(contextData);
+      }
+
+      heraldStorage.saveContexts(contexts);
+      console.log(`[Herald] Heartbeat from context: ${body.context}`);
+
+      sendJson(res, 200, {
+        acknowledged: true,
+        context: body.context,
+        timestamp: contextData.lastHeartbeat,
+      });
+      return;
+    }
+
+    // Get Herald contexts - discover sibling contexts
+    if (url?.startsWith('/api/herald/contexts') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const contextFilter = urlObj.searchParams.get('context');
+
+      let contexts = heraldStorage.loadContexts();
+
+      if (contextFilter) {
+        contexts = contexts.filter(c => c.context === contextFilter);
+      }
+
+      sendJson(res, 200, {
+        contexts,
+        count: contexts.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Share insight with a context
+    if (url === '/api/herald/insight' && method === 'POST') {
+      const body = await parseBody<{
+        fromContext?: string;
+        toContext: string;
+        topic?: string;
+        insight: string;
+      }>(req);
+
+      if (!body.toContext || !body.insight) {
+        sendJson(res, 400, { error: 'Missing required fields: toContext, insight' });
+        return;
+      }
+
+      const insights = heraldStorage.loadInsights();
+      const newInsight: HeraldInsight = {
+        id: randomUUID(),
+        fromContext: body.fromContext || 'herald',
+        toContext: body.toContext,
+        topic: body.topic,
+        insight: body.insight,
+        timestamp: new Date().toISOString(),
+      };
+
+      insights.push(newInsight);
+      heraldStorage.saveInsights(insights);
+
+      console.log(`[Herald] Insight shared: ${body.fromContext || 'herald'} → ${body.toContext} (${body.topic || 'general'})`);
+
+      sendJson(res, 200, {
+        shared: true,
+        insightId: newInsight.id,
+        timestamp: newInsight.timestamp,
+      });
+      return;
+    }
+
+    // Query insights - get accumulated insights
+    if (url?.startsWith('/api/herald/insights') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const topic = urlObj.searchParams.get('topic');
+      const context = urlObj.searchParams.get('context');
+      const limit = parseInt(urlObj.searchParams.get('limit') || '50', 10);
+
+      let insights = heraldStorage.loadInsights();
+
+      // Filter by topic if provided
+      if (topic) {
+        insights = insights.filter(i =>
+          i.topic?.toLowerCase().includes(topic.toLowerCase()) ||
+          i.insight.toLowerCase().includes(topic.toLowerCase())
+        );
+      }
+
+      // Filter by context (insights TO this context)
+      if (context) {
+        insights = insights.filter(i =>
+          i.toContext === context || i.toContext === 'all'
+        );
+      }
+
+      // Sort by timestamp descending, limit results
+      insights = insights
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, limit);
+
+      sendJson(res, 200, {
+        insights,
+        count: insights.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     // 404
     sendJson(res, 404, { error: 'Not found', availableEndpoints: [
       'GET  /health',
@@ -400,6 +600,10 @@ async function handleRequest(
       'GET  /api/session/:id',
       'POST /api/feedback',
       'GET  /api/stats',
+      'POST /api/herald/heartbeat',
+      'GET  /api/herald/contexts',
+      'POST /api/herald/insight',
+      'GET  /api/herald/insights',
     ]});
   } catch (error) {
     console.error('[CEDA] Error:', error);
@@ -445,7 +649,13 @@ server.listen(PORT, async () => {
 ║   - GET  /health        Health check                      ║
 ║   - POST /api/predict   Run cognitive pipeline            ║
 ║   - POST /api/feedback  Record user feedback              ║
-║   - GET  /api/stats     Get feedback statistics           ║
+║   - GET  /api/stats     Get statistics                    ║
+║                                                           ║
+║   Herald Context Sync:                                    ║
+║   - POST /api/herald/heartbeat   Context status           ║
+║   - GET  /api/herald/contexts    Discover contexts        ║
+║   - POST /api/herald/insight     Share insight            ║
+║   - GET  /api/herald/insights    Query insights           ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 
