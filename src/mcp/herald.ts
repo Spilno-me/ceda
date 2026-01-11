@@ -125,6 +125,27 @@ Use this to see what module types Herald knows about.`,
       properties: {},
     },
   },
+  {
+    name: 'herald_offspring_status',
+    description: `Get aggregated status from offspring vaults.
+Aegis uses this to sense what avatars are doing across domains.
+Returns status from configured offspring vaults (goprint, disrupt, spilno).
+
+Each offspring vault maintains a _status.md file with:
+- session_count, last_outcome
+- active_threads, blockers
+- awaiting_aegis (questions/decisions needed)
+- ready_for_handoff status`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: {
+          type: 'string',
+          description: 'Optional: specific vault to query (goprint, disrupt, spilno). Omit for all.',
+        },
+      },
+    },
+  },
 ];
 
 // Observation store (in-memory for now, will persist later)
@@ -276,6 +297,169 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: `**Herald's Pattern Library**\n\n${patternList}\n\nTotal patterns: ${patterns.length}`,
+            },
+          ],
+        };
+      }
+
+      case 'herald_offspring_status': {
+        const targetVault = args?.vault as string | undefined;
+        const offspringVaults = ['goprint', 'disrupt', 'spilno'];
+        const vaultsToQuery = targetVault ? [targetVault] : offspringVaults;
+
+        // Cloud-ready: Check for HTTP endpoints first, fallback to local filesystem
+        // Environment variables: HERALD_OFFSPRING_GOPRINT_URL, HERALD_OFFSPRING_DISRUPT_URL, etc.
+        // Or: AEGIS_OFFSPRING_PATH for local filesystem path
+        const basePath = process.env.AEGIS_OFFSPRING_PATH || process.env.HOME + '/Documents/aegis_ceda/_offspring';
+        const useCloud = vaultsToQuery.some(v => process.env[`HERALD_OFFSPRING_${v.toUpperCase()}_URL`]);
+
+        const statuses: Array<{
+          vault: string;
+          status: string;
+          sessionCount: number;
+          lastOutcome: string | null;
+          activeThreads: string[];
+          blockers: string[];
+          awaitingAegis: string[];
+          readyForHandoff: boolean;
+        }> = [];
+
+        for (const vault of vaultsToQuery) {
+          try {
+            // Cloud mode: Query offspring Herald endpoint directly
+            const cloudUrl = process.env[`HERALD_OFFSPRING_${vault.toUpperCase()}_URL`];
+            if (cloudUrl) {
+              try {
+                const response = await fetch(`${cloudUrl}/status`);
+                if (response.ok) {
+                  const data = await response.json();
+                  statuses.push({
+                    vault,
+                    status: 'active',
+                    sessionCount: data.session_count || 0,
+                    lastOutcome: data.last_outcome || null,
+                    activeThreads: data.active_threads || [],
+                    blockers: data.blockers || [],
+                    awaitingAegis: data.awaiting_aegis || [],
+                    readyForHandoff: data.ready_for_handoff || false,
+                  });
+                  continue;
+                }
+              } catch {
+                // Fall through to filesystem or error
+              }
+            }
+
+            // Local mode: Read from filesystem
+            const fs = await import('fs');
+            const path = await import('path');
+            const statusPath = path.join(basePath, `${vault}.md`);
+
+            if (!fs.existsSync(statusPath)) {
+              statuses.push({
+                vault,
+                status: 'not_found',
+                sessionCount: 0,
+                lastOutcome: null,
+                activeThreads: [],
+                blockers: [],
+                awaitingAegis: [],
+                readyForHandoff: false,
+              });
+              continue;
+            }
+
+            const content = fs.readFileSync(statusPath, 'utf-8');
+
+            // Parse YAML frontmatter
+            const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+            if (!frontmatterMatch) {
+              statuses.push({
+                vault,
+                status: 'invalid_format',
+                sessionCount: 0,
+                lastOutcome: null,
+                activeThreads: [],
+                blockers: [],
+                awaitingAegis: [],
+                readyForHandoff: false,
+              });
+              continue;
+            }
+
+            const yaml = frontmatterMatch[1];
+
+            // Simple YAML parsing for our known structure
+            const parseYamlArray = (key: string): string[] => {
+              const match = yaml.match(new RegExp(`${key}:\\s*\\n((?:\\s+-[^\\n]+\\n?)+)`, 'm'));
+              if (!match) {
+                // Check for empty array notation
+                const emptyMatch = yaml.match(new RegExp(`${key}:\\s*\\[\\]`));
+                return emptyMatch ? [] : [];
+              }
+              return match[1].split('\n')
+                .filter(line => line.trim().startsWith('-'))
+                .map(line => line.replace(/^\s*-\s*/, '').trim());
+            };
+
+            const parseYamlValue = (key: string): string | null => {
+              const match = yaml.match(new RegExp(`^\\s*${key}:\\s*(.+)$`, 'm'));
+              return match ? match[1].trim() : null;
+            };
+
+            const sessionCount = parseInt(parseYamlValue('session_count') || '0', 10);
+            const lastOutcome = parseYamlValue('outcome');
+            const readyForHandoff = parseYamlValue('ready_for_handoff') === 'true';
+
+            statuses.push({
+              vault,
+              status: 'active',
+              sessionCount,
+              lastOutcome,
+              activeThreads: parseYamlArray('active_threads'),
+              blockers: parseYamlArray('blockers'),
+              awaitingAegis: parseYamlArray('awaiting_aegis'),
+              readyForHandoff,
+            });
+          } catch (error) {
+            statuses.push({
+              vault,
+              status: 'error',
+              sessionCount: 0,
+              lastOutcome: null,
+              activeThreads: [],
+              blockers: [],
+              awaitingAegis: [],
+              readyForHandoff: false,
+            });
+          }
+        }
+
+        // Format output
+        const statusLines = statuses.map(s => {
+          const icon = s.status === 'active' ? '✓' : s.status === 'not_found' ? '?' : '✗';
+          const handoff = s.readyForHandoff ? ' [READY FOR HANDOFF]' : '';
+          const threads = s.activeThreads.length > 0
+            ? `\n    Threads: ${s.activeThreads.join(', ')}`
+            : '';
+          const blockers = s.blockers.length > 0
+            ? `\n    Blockers: ${s.blockers.join(', ')}`
+            : '';
+          const awaiting = s.awaitingAegis.length > 0
+            ? `\n    Awaiting Aegis: ${s.awaitingAegis.join(', ')}`
+            : '';
+
+          return `${icon} **${s.vault}**: ${s.sessionCount} sessions, last: ${s.lastOutcome || 'none'}${handoff}${threads}${blockers}${awaiting}`;
+        }).join('\n\n');
+
+        const totalSessions = statuses.reduce((sum, s) => sum + s.sessionCount, 0);
+        const awaitingCount = statuses.reduce((sum, s) => sum + s.awaitingAegis.length, 0);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `**Offspring Status Report**\n\n${statusLines}\n\n---\nTotal sessions: ${totalSessions}\nAwaiting Aegis decisions: ${awaitingCount}`,
             },
           ],
         };
