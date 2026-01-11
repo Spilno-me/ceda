@@ -147,6 +147,30 @@ Each offspring vault maintains a _status.md file with:
     },
   },
   {
+    name: 'herald_wisdom',
+    description: `Ask Herald for guidance on a topic.
+Herald draws from accumulated pattern knowledge and insights.
+Use this when you need guidance on implementation decisions,
+architecture choices, or domain-specific patterns.
+
+Herald will check for relevant guidance and provide answers
+framed as pattern-based wisdom, not directives.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          description: 'What you need guidance on',
+        },
+        domain: {
+          type: 'string',
+          description: 'Optional domain context (e.g., "trust-network", "hse-modules")',
+        },
+      },
+      required: ['question'],
+    },
+  },
+  {
     name: 'herald_respond_to_offspring',
     description: `Provide guidance from Aegis to an offspring vault.
 Use this when offspring has awaiting_aegis questions that need answers.
@@ -488,6 +512,77 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: `**Offspring Status Report**\n\n${statusLines}\n\n---\nTotal sessions: ${totalSessions}\nAwaiting Aegis decisions: ${awaitingCount}`,
+            },
+          ],
+        };
+      }
+
+      case 'herald_wisdom': {
+        const question = args?.question as string;
+        const domain = args?.domain as string | undefined;
+
+        // Determine which vault Herald is serving
+        const vault = process.env.HERALD_VAULT || 'aegis';
+
+        // Check for guidance file (from Aegis, but Herald presents as its own wisdom)
+        const fs = await import('fs');
+        const path = await import('path');
+        const basePath = process.env.AEGIS_OFFSPRING_PATH || process.env.HOME + '/Documents/aegis_ceda/_offspring';
+        const guidancePath = path.join(basePath, `${vault}_guidance.md`);
+
+        let relevantGuidance = '';
+        if (fs.existsSync(guidancePath)) {
+          const content = fs.readFileSync(guidancePath, 'utf-8');
+          // Extract guidance entries
+          const entries = content.split(/^---$/m).filter(e => e.trim());
+
+          // Simple keyword matching for relevant guidance
+          const keywords = question.toLowerCase().split(/\s+/);
+          for (const entry of entries) {
+            const entryLower = entry.toLowerCase();
+            if (keywords.some(kw => kw.length > 3 && entryLower.includes(kw))) {
+              relevantGuidance += entry.trim() + '\n\n';
+            }
+          }
+        }
+
+        // Also check pattern library for relevant patterns
+        const patterns = patternLibrary.getAllPatterns();
+        const relevantPatterns = patterns.filter(p => {
+          const desc = (p.description || '').toLowerCase();
+          const name = p.name.toLowerCase();
+          return question.toLowerCase().split(/\s+/).some(kw =>
+            kw.length > 3 && (desc.includes(kw) || name.includes(kw))
+          );
+        });
+
+        // Format response as Herald's wisdom (not Aegis directive)
+        let response = `**Herald's Guidance**\n\n`;
+        response += `On your question: "${question}"\n\n`;
+
+        if (relevantGuidance) {
+          response += `From accumulated pattern knowledge:\n\n${relevantGuidance}`;
+        }
+
+        if (relevantPatterns.length > 0) {
+          response += `\nRelevant patterns in my library:\n`;
+          for (const p of relevantPatterns.slice(0, 3)) {
+            response += `- **${p.name}**: ${p.description || 'Pattern for ' + p.category}\n`;
+          }
+        }
+
+        if (!relevantGuidance && relevantPatterns.length === 0) {
+          response += `I don't have specific guidance on this yet. Consider:\n`;
+          response += `1. Exploring existing patterns with \`herald_patterns\`\n`;
+          response += `2. Recording your approach with \`herald_observe\` so I can learn\n`;
+          response += `3. Proceeding with your best judgment - I'll learn from the outcome`;
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: response,
             },
           ],
         };
