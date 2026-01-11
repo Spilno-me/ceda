@@ -58,7 +58,7 @@ export class PredictionEngineService {
 
     if (this.vectorStore && this.vectorStore.isAvailable() && this.vectorStore.isInitialized()) {
       const queryText = this.buildQueryText(signal);
-      patternMatch = await this.vectorStore.findBestMatch(queryText, 0.3);
+      patternMatch = await this.vectorStore.findBestMatch(queryText, 0.3, tenantContext);
       if (patternMatch) {
         usedVectorSearch = true;
         console.log(`[PredictionEngine] Vector search matched: ${patternMatch.pattern.name} (score: ${patternMatch.score.toFixed(3)})`);
