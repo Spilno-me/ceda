@@ -4,6 +4,11 @@
  * These patterns are specific to Health, Safety, and Environment domain.
  * CEDA is domain-agnostic - this file demonstrates how to inject domain patterns.
  *
+ * Multi-tenant Pattern Isolation:
+ * - Patterns can have an optional `company` field for tenant-specific filtering
+ * - Patterns without a `company` field are considered global and match all tenants
+ * - These HSE patterns are global (no company field) and available to all tenants
+ *
  * For other domains, create similar files:
  * - hr-patterns.ts (HR domain)
  * - finance-patterns.ts (Finance domain)

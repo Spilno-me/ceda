@@ -8,6 +8,7 @@ import {
   ProcessedSignal,
   StructurePrediction,
   ValidationResult,
+  TenantContext,
 } from '../interfaces';
 
 /**
@@ -81,11 +82,16 @@ export class CognitiveOrchestratorService {
 
   /**
    * Execute full cognitive pipeline
+   * @param userInput - The user's natural language input
+   * @param context - Optional context signals
+   * @param config - Optional pipeline configuration
+   * @param tenantContext - Optional tenant context for multi-tenant filtering
    */
   async execute(
     userInput: string,
     context: ContextSignal[] = [],
     config: Partial<PipelineConfig> = {},
+    tenantContext?: TenantContext,
   ): Promise<PipelineResult> {
     const startTime = Date.now();
     const stages: StageResult[] = [];
@@ -115,7 +121,7 @@ export class CognitiveOrchestratorService {
       const predictionResult = await this.executeStage(
         PipelineStage.PREDICTION,
         async () => {
-          prediction = await this.predictionEngine.predict(processedSignal!);
+          prediction = await this.predictionEngine.predict(processedSignal!, tenantContext);
           return prediction;
         },
       );

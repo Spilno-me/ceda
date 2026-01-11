@@ -79,6 +79,12 @@ interface PredictRequest {
   sessionId?: string;
   /** Participant identifier (for 5 hats model) */
   participant?: string;
+  /** Company identifier for multi-tenant pattern isolation */
+  company?: string;
+  /** Project identifier for multi-tenant pattern isolation */
+  project?: string;
+  /** User identifier for multi-tenant pattern isolation */
+  user?: string;
 }
 
 interface RefineRequest {
@@ -90,6 +96,12 @@ interface RefineRequest {
   context?: Array<{ type: string; value: unknown; source: string }>;
   /** Participant identifier */
   participant?: string;
+  /** Company identifier for multi-tenant pattern isolation */
+  company?: string;
+  /** Project identifier for multi-tenant pattern isolation */
+  project?: string;
+  /** User identifier for multi-tenant pattern isolation */
+  user?: string;
 }
 
 /**
@@ -184,7 +196,12 @@ async function handleRequest(
       console.log(`\n[CEDA] Processing: "${body.input}" (session: ${sessionId}, turn: ${session.history.length + 1})`);
       const startTime = Date.now();
 
-      const result = await orchestrator.execute(effectiveSignal, accumulatedContext, body.config);
+      // Build tenant context from request body for multi-tenant pattern isolation
+      const tenantContext = (body.company || body.project || body.user)
+        ? { company: body.company, project: body.project, user: body.user }
+        : undefined;
+
+      const result = await orchestrator.execute(effectiveSignal, accumulatedContext, body.config, tenantContext);
 
       // Record in session history
       const confidence = result.prediction?.confidence || 0;
@@ -289,7 +306,12 @@ async function handleRequest(
       console.log(`\n[CEDA] Refining: "${body.refinement}" (session: ${body.sessionId}, turn: ${session.history.length + 1})`);
       const startTime = Date.now();
 
-      const result = await orchestrator.execute(combinedSignal, accumulatedContext);
+      // Build tenant context from request body for multi-tenant pattern isolation
+      const tenantContext = (body.company || body.project || body.user)
+        ? { company: body.company, project: body.project, user: body.user }
+        : undefined;
+
+      const result = await orchestrator.execute(combinedSignal, accumulatedContext, {}, tenantContext);
 
       // Record refinement
       const confidence = result.prediction?.confidence || 0;
