@@ -229,13 +229,13 @@ export class PatternLibraryService {
    * @param query - The search query text
    * @param tenantContext - The tenant embedding context for fusion
    * @param embeddingService - Service to generate query embeddings
-   * @param vectorStore - Vector store for similarity search
+   * @param vectorStore - Vector store for similarity search (must have searchByVector method)
    */
   async getPatternsWithContext(
     query: string,
     tenantContext: TenantEmbeddingContext,
     embeddingService: { generateEmbedding: (text: string) => Promise<number[] | null> },
-    vectorStore: { searchSimilarPatterns: (query: string, limit: number) => Promise<{ pattern: Pattern; score: number }[]> },
+    vectorStore: { searchByVector: (vector: number[], limit: number) => Promise<{ pattern: Pattern; score: number }[]> },
   ): Promise<Pattern[]> {
     const queryEmbedding = await embeddingService.generateEmbedding(query);
     if (!queryEmbedding) {
@@ -243,6 +243,8 @@ export class PatternLibraryService {
       return this.getAllPatterns();
     }
 
+    // α-weighted fusion: α * query + (1-α) * tenant
+    // α = 0.7 → query-dominant (what they asked)
     const fusedEmbedding = this.fuseEmbeddings(
       queryEmbedding,
       tenantContext.embedding,
@@ -252,7 +254,8 @@ export class PatternLibraryService {
     console.log(`[PatternLibraryService] Context-aware retrieval for tenant: ${tenantContext.tenantId}`);
     console.log(`[PatternLibraryService] Fused embedding dimension: ${fusedEmbedding.length}`);
 
-    const results = await vectorStore.searchSimilarPatterns(query, 20);
+    // Use the fused embedding for vector search - NO SQL filter, soft ranking only
+    const results = await vectorStore.searchByVector(fusedEmbedding, 20);
 
     return results.map(r => r.pattern);
   }
