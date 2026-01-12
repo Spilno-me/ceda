@@ -9,6 +9,7 @@ import {
   IntentType,
   TenantContext,
   PatternScope,
+  PatternConfidence,
 } from '../interfaces';
 import { TenantEmbeddingContext } from './tenant-embedding.service';
 
@@ -115,6 +116,7 @@ export class PatternLibraryService {
 
   /**
    * Evaluate how well a pattern matches the classification
+   * CEDA-32: Applies confidence decay to the final score
    */
   private evaluatePattern(
     pattern: Pattern,
@@ -133,7 +135,11 @@ export class PatternLibraryService {
       totalWeight += rule.weight;
     }
 
-    const score = totalWeight > 0 ? totalScore / totalWeight : 0;
+    const baseScore = totalWeight > 0 ? totalScore / totalWeight : 0;
+    
+    const confidenceMultiplier = this.currentConfidence(pattern);
+    const score = baseScore * confidenceMultiplier;
+    
     return { score, matchedRules };
   }
 
@@ -357,5 +363,124 @@ export class PatternLibraryService {
       return undefined;
     }
     return this.getPattern(patternId);
+  }
+
+  /**
+   * CEDA-32: Calculate current confidence for a pattern with decay applied
+   * Patterns decay without grounding, boost with successful executions
+   * 
+   * Formula: max(0.1, base - decay + grounded)
+   * - decay = daysSinceGrounding * decayRate
+   * - grounded = min(groundingCount * 0.05, 0.3) (max 30% boost)
+   * 
+   * @param pattern - The pattern to calculate confidence for
+   * @returns Current confidence score (0.1 - 1.0)
+   */
+  currentConfidence(pattern: Pattern): number {
+    const confidence = pattern.confidence;
+    
+    if (!confidence) {
+      return 1.0;
+    }
+
+    const { base, lastGrounded, groundingCount, decayRate } = confidence;
+    
+    let daysSinceGrounding = 0;
+    if (lastGrounded) {
+      const now = new Date();
+      const lastGroundedDate = new Date(lastGrounded);
+      const diffMs = now.getTime() - lastGroundedDate.getTime();
+      daysSinceGrounding = diffMs / (1000 * 60 * 60 * 24);
+    }
+
+    const decay = daysSinceGrounding * decayRate;
+    const groundedBoost = Math.min(groundingCount * 0.05, 0.3);
+    
+    return Math.max(0.1, base - decay + groundedBoost);
+  }
+
+  /**
+   * CEDA-32: Get pattern confidence with decay applied
+   * @param patternId - The pattern ID to get confidence for
+   * @returns Current confidence score or null if pattern not found
+   */
+  getPatternConfidence(patternId: string): number | null {
+    const pattern = this.getPattern(patternId);
+    if (!pattern) {
+      return null;
+    }
+    return this.currentConfidence(pattern);
+  }
+
+  /**
+   * CEDA-32: Update pattern grounding data after successful execution
+   * @param patternId - The pattern ID to update
+   * @param success - Whether the execution was successful
+   * @returns Updated pattern or null if not found
+   */
+  groundPattern(patternId: string, success: boolean): Pattern | null {
+    const pattern = this.getPattern(patternId);
+    if (!pattern) {
+      return null;
+    }
+
+    const now = new Date();
+    const currentConfidence = pattern.confidence || this.createDefaultConfidence();
+
+    if (success) {
+      const updatedPattern: Pattern = {
+        ...pattern,
+        confidence: {
+          ...currentConfidence,
+          lastGrounded: now,
+          groundingCount: currentConfidence.groundingCount + 1,
+        },
+      };
+      this.registerPattern(updatedPattern);
+      return updatedPattern;
+    }
+
+    return pattern;
+  }
+
+  /**
+   * CEDA-32: Create default confidence for patterns without grounding data
+   */
+  private createDefaultConfidence(): PatternConfidence {
+    return {
+      base: 1.0,
+      lastGrounded: null,
+      groundingCount: 0,
+      decayRate: 0.01,
+    };
+  }
+
+  /**
+   * CEDA-32: Initialize confidence for a pattern if not already set
+   * @param patternId - The pattern ID to initialize
+   * @param baseConfidence - Initial base confidence (default: 1.0)
+   * @returns Updated pattern or null if not found
+   */
+  initializePatternConfidence(patternId: string, baseConfidence: number = 1.0): Pattern | null {
+    const pattern = this.getPattern(patternId);
+    if (!pattern) {
+      return null;
+    }
+
+    if (pattern.confidence) {
+      return pattern;
+    }
+
+    const updatedPattern: Pattern = {
+      ...pattern,
+      confidence: {
+        base: baseConfidence,
+        lastGrounded: null,
+        groundingCount: 0,
+        decayRate: 0.01,
+      },
+    };
+    this.registerPattern(updatedPattern);
+    return updatedPattern;
   }
 }
