@@ -5,3 +5,4 @@ export * from './validation.interface';
 export * from './antipattern.interface';
 export * from './observation.interface';
 export * from './graduation.interface';
+export * from './abstraction.interface';

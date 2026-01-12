@@ -23,6 +23,7 @@ import { AntipatternService } from './services/antipattern.service';
 import { LegionService, GroundingFeedback, ExecutionResult } from './services/legion.service';
 import { ObservationService } from './services/observation.service';
 import { GraduationService } from './services/graduation.service';
+import { AbstractionService } from './services/abstraction.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, SEED_ANTIPATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
@@ -123,6 +124,9 @@ const observationService = new ObservationService(embeddingService);
 
 // CEDA-36: Initialize graduation service for pattern evolution
 const graduationService = new GraduationService(patternLibrary, observationService);
+
+// CEDA-37: Initialize abstraction service for cross-domain learning
+const abstractionService = new AbstractionService(patternLibrary, observationService);
 
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
@@ -1587,6 +1591,350 @@ async function handleRequest(
       return;
     }
 
+    // === CEDA-37: Cross-Domain Learning Endpoints ===
+
+    // GET /api/abstractions/suggest - Find abstractions for a pattern
+    if (url?.startsWith('/api/abstractions/suggest') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const patternId = urlObj.searchParams.get('patternId');
+
+      if (!patternId) {
+        sendJson(res, 400, { error: 'Missing required query parameter: patternId' });
+        return;
+      }
+
+      const pattern = patternLibrary.getPattern(patternId);
+      if (!pattern) {
+        sendJson(res, 404, { error: 'Pattern not found', patternId });
+        return;
+      }
+
+      try {
+        const suggestions = await abstractionService.suggestAbstraction(pattern);
+
+        sendJson(res, 200, {
+          patternId,
+          suggestions: suggestions.map(s => ({
+            abstractionId: s.abstraction.id,
+            abstractionName: s.abstraction.name,
+            score: s.score,
+            matchedStructure: s.matchedStructure,
+            suggestedMapping: s.suggestedMapping,
+            domains: s.abstraction.domains,
+          })),
+          count: suggestions.length,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to suggest abstractions:', error);
+        sendJson(res, 500, {
+          error: 'Failed to suggest abstractions',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/insights/cross-domain - Get all cross-domain insights
+    if (url === '/api/insights/cross-domain' && method === 'GET') {
+      const insights = abstractionService.getAllInsights();
+
+      sendJson(res, 200, {
+        insights: insights.map(i => ({
+          id: i.id,
+          abstractionId: i.abstraction.id,
+          abstractionName: i.abstraction.name,
+          insight: i.insight,
+          applicableDomains: i.applicableDomains,
+          evidence: i.evidence,
+          requiresApproval: i.requiresApproval,
+          approved: i.approved,
+          approvedBy: i.approvedBy,
+          approvedAt: i.approvedAt,
+          createdAt: i.createdAt,
+        })),
+        count: insights.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/abstractions/:id/apply - Apply abstraction to new domain
+    if (url?.match(/^\/api\/abstractions\/[^/]+\/apply$/) && method === 'POST') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const abstractionId = pathParts[2];
+
+      const body = await parseBody<{
+        domain: string;
+        mapping: Record<string, string>;
+        adminUserId?: string;
+      }>(req);
+
+      if (!body.domain) {
+        sendJson(res, 400, { error: 'Missing required field: domain' });
+        return;
+      }
+
+      if (!body.mapping || Object.keys(body.mapping).length === 0) {
+        sendJson(res, 400, { error: 'Missing required field: mapping' });
+        return;
+      }
+
+      try {
+        const result = await abstractionService.applyAbstraction({
+          abstractionId,
+          domain: body.domain,
+          mapping: body.mapping,
+          adminUserId: body.adminUserId,
+        });
+
+        if (!result.success) {
+          sendJson(res, 400, {
+            error: 'Failed to apply abstraction',
+            message: result.message,
+            abstractionId,
+            domain: body.domain,
+          });
+          return;
+        }
+
+        console.log(`[CEDA] Applied abstraction ${abstractionId} to domain ${body.domain}`);
+
+        sendJson(res, 200, {
+          ...result,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to apply abstraction:', error);
+        sendJson(res, 500, {
+          error: 'Failed to apply abstraction',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/abstractions/:id/instances - View abstraction instances
+    if (url?.match(/^\/api\/abstractions\/[^/]+\/instances$/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const abstractionId = pathParts[2];
+
+      const abstraction = abstractionService.getAbstraction(abstractionId);
+      if (!abstraction) {
+        sendJson(res, 404, { error: 'Abstraction not found', abstractionId });
+        return;
+      }
+
+      sendJson(res, 200, {
+        abstractionId,
+        abstractionName: abstraction.name,
+        instances: abstraction.instances,
+        count: abstraction.instances.length,
+        domains: abstraction.domains,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/abstractions/:id - Get abstraction by ID
+    if (url?.match(/^\/api\/abstractions\/[^/]+$/) && !url.includes('/suggest') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const abstractionId = pathParts[2];
+
+      const abstraction = abstractionService.getAbstraction(abstractionId);
+      if (!abstraction) {
+        sendJson(res, 404, { error: 'Abstraction not found', abstractionId });
+        return;
+      }
+
+      sendJson(res, 200, {
+        abstraction,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/abstractions - Get all abstractions
+    if (url === '/api/abstractions' && method === 'GET') {
+      const abstractions = abstractionService.getAllAbstractions();
+
+      sendJson(res, 200, {
+        abstractions: abstractions.map(a => ({
+          id: a.id,
+          name: a.name,
+          domains: a.domains,
+          instanceCount: a.instances.length,
+          observationCount: a.observationCount,
+          confidence: a.confidence,
+          createdAt: a.createdAt,
+          updatedAt: a.updatedAt,
+        })),
+        count: abstractions.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/abstractions/extract - Extract abstraction from patterns
+    if (url === '/api/abstractions/extract' && method === 'POST') {
+      const body = await parseBody<{
+        patternIds: string[];
+      }>(req);
+
+      if (!body.patternIds || body.patternIds.length < 2) {
+        sendJson(res, 400, { 
+          error: 'Missing or insufficient patternIds',
+          message: 'At least 2 pattern IDs are required to extract an abstraction',
+        });
+        return;
+      }
+
+      const patterns = body.patternIds
+        .map(id => patternLibrary.getPattern(id))
+        .filter((p): p is NonNullable<typeof p> => p !== null);
+
+      if (patterns.length < 2) {
+        sendJson(res, 400, {
+          error: 'Insufficient valid patterns',
+          message: 'At least 2 valid patterns are required',
+          foundPatterns: patterns.length,
+          requestedPatterns: body.patternIds.length,
+        });
+        return;
+      }
+
+      try {
+        const abstraction = await abstractionService.extractAbstraction(patterns);
+
+        console.log(`[CEDA] Extracted abstraction ${abstraction.id}: "${abstraction.name}" from ${patterns.length} patterns`);
+
+        sendJson(res, 200, {
+          abstraction,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to extract abstraction:', error);
+        sendJson(res, 500, {
+          error: 'Failed to extract abstraction',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // POST /api/insights/generate - Generate cross-domain insights
+    if (url === '/api/insights/generate' && method === 'POST') {
+      try {
+        const insights = await abstractionService.generateInsights();
+
+        console.log(`[CEDA] Generated ${insights.length} cross-domain insights`);
+
+        sendJson(res, 200, {
+          insights: insights.map(i => ({
+            id: i.id,
+            abstractionId: i.abstraction.id,
+            insight: i.insight,
+            applicableDomains: i.applicableDomains,
+            evidence: i.evidence,
+            requiresApproval: i.requiresApproval,
+          })),
+          count: insights.length,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to generate insights:', error);
+        sendJson(res, 500, {
+          error: 'Failed to generate insights',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // POST /api/insights/:id/approve - Approve a cross-domain insight (admin action)
+    if (url?.match(/^\/api\/insights\/[^/]+\/approve$/) && method === 'POST') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const insightId = pathParts[2];
+
+      const body = await parseBody<{
+        adminUserId: string;
+      }>(req);
+
+      if (!body.adminUserId) {
+        sendJson(res, 400, { error: 'Missing required field: adminUserId' });
+        return;
+      }
+
+      const approved = abstractionService.approveInsight(insightId, body.adminUserId);
+
+      if (!approved) {
+        sendJson(res, 404, { error: 'Insight not found', insightId });
+        return;
+      }
+
+      console.log(`[CEDA] Insight ${insightId} approved by ${body.adminUserId}`);
+
+      sendJson(res, 200, {
+        approved: true,
+        insightId,
+        approvedBy: body.adminUserId,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/abstractions/audit - Get audit log for cross-domain learning
+    if (url?.startsWith('/api/abstractions/audit') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const limitParam = urlObj.searchParams.get('limit');
+      const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+
+      const auditLog = abstractionService.getAuditLog(limit);
+
+      sendJson(res, 200, {
+        auditLog,
+        count: auditLog.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/abstractions/safety - Get safety settings
+    if (url === '/api/abstractions/safety' && method === 'GET') {
+      const settings = abstractionService.getSafetySettings();
+
+      sendJson(res, 200, {
+        settings,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // PUT /api/abstractions/safety - Update safety settings (admin action)
+    if (url === '/api/abstractions/safety' && method === 'PUT') {
+      const body = await parseBody<{
+        requireAdminApproval?: boolean;
+        allowedDomains?: string[];
+        disabledDomains?: string[];
+        auditEnabled?: boolean;
+      }>(req);
+
+      abstractionService.updateSafetySettings(body);
+
+      console.log('[CEDA] Cross-domain learning safety settings updated');
+
+      sendJson(res, 200, {
+        updated: true,
+        settings: abstractionService.getSafetySettings(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     // 404
     sendJson(res, 404, { error: 'Not found', availableEndpoints: [
       'GET  /health',
@@ -1615,6 +1963,18 @@ async function handleRequest(
       'GET  /api/observations/similar?input=X&company=Y (CEDA-35: find similar observations)',
       'GET  /api/observations/pattern/:id/stats (CEDA-35: pattern observation statistics)',
       'GET  /api/observations/:id (CEDA-35: get observation by ID)',
+      'GET  /api/abstractions/suggest?patternId=X (CEDA-37: suggest abstractions for pattern)',
+      'GET  /api/insights/cross-domain (CEDA-37: get cross-domain insights)',
+      'POST /api/abstractions/:id/apply (CEDA-37: apply abstraction to domain)',
+      'GET  /api/abstractions/:id/instances (CEDA-37: get abstraction instances)',
+      'GET  /api/abstractions/:id (CEDA-37: get abstraction by ID)',
+      'GET  /api/abstractions (CEDA-37: list all abstractions)',
+      'POST /api/abstractions/extract (CEDA-37: extract abstraction from patterns)',
+      'POST /api/insights/generate (CEDA-37: generate cross-domain insights)',
+      'POST /api/insights/:id/approve (CEDA-37: approve insight)',
+      'GET  /api/abstractions/audit (CEDA-37: get audit log)',
+      'GET  /api/abstractions/safety (CEDA-37: get safety settings)',
+      'PUT  /api/abstractions/safety (CEDA-37: update safety settings)',
       'POST /api/herald/heartbeat',
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
