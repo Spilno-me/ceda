@@ -51,6 +51,33 @@ export interface Pattern {
    * Patterns decay without grounding, boost with successful executions
    */
   confidence?: PatternConfidence;
+  /**
+   * CEDA-36: Pattern graduation level
+   * 0 = Observation (initial)
+   * 1 = Local Pattern (user-specific)
+   * 2 = Company Pattern (company-wide)
+   * 3 = Shared Pattern (cross-domain)
+   * @default 0
+   */
+  level?: PatternLevel;
+  /**
+   * CEDA-36: Timestamp when pattern was last graduated
+   */
+  graduatedAt?: Date;
+}
+
+/**
+ * CEDA-36: Pattern graduation levels
+ */
+export enum PatternLevel {
+  /** Initial observation - not yet validated */
+  OBSERVATION = 0,
+  /** Local pattern - validated for a single user */
+  LOCAL = 1,
+  /** Company pattern - validated across multiple users in a company */
+  COMPANY = 2,
+  /** Shared pattern - validated across multiple companies, anonymized */
+  SHARED = 3,
 }
 
 export enum PatternCategory {
