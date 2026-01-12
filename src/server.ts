@@ -14,6 +14,7 @@ import { PatternLibraryService, UserPatternQuery } from './services/pattern-libr
 import { PredictionEngineService } from './services/prediction-engine.service';
 import { CognitiveValidationService } from './services/validation.service';
 import { CognitiveOrchestratorService } from './services/orchestrator.service';
+import { AutoFixService } from './services/auto-fix.service';
 import { EmbeddingService } from './services/embedding.service';
 import { VectorStoreService } from './services/vector-store.service';
 import { SessionService } from './services/session.service';
@@ -101,6 +102,9 @@ predictionEngine.setVectorStore(vectorStoreService);
 
 const validationService = new CognitiveValidationService();
 const sessionService = new SessionService();
+
+// CEDA-33: Initialize auto-fix service for validation auto-fix pipeline
+const autoFixService = new AutoFixService();
 
 // Initialize antipattern service for observation and learning
 const antipatternService = new AntipatternService();
@@ -304,13 +308,28 @@ async function handleRequest(
 
       const result = await orchestrator.execute(effectiveSignal, accumulatedContext, body.config, tenantContext);
 
+      // CEDA-33: Apply auto-fix pipeline with safe/unsafe categorization
+      let finalPrediction = result.prediction;
+      let autoFixResult = { applied: [], suggested: [], remaining: [] } as {
+        applied: { id?: string; type: string; target: string; value: unknown; safe?: boolean; description?: string; errorCode?: string }[];
+        suggested: { id?: string; type: string; target: string; value: unknown; safe?: boolean; description?: string; errorCode?: string }[];
+        remaining: { code: string; field?: string; message: string; severity: 'error' }[];
+      };
+
+      if (result.validation && !result.validation.valid && result.prediction) {
+        const fixResult = await autoFixService.fix(result.prediction, result.validation.errors);
+        finalPrediction = fixResult.prediction;
+        autoFixResult = fixResult.result;
+        console.log(`[CEDA] Auto-fix applied: ${autoFixResult.applied.length} safe fixes, ${autoFixResult.suggested.length} suggestions, ${autoFixResult.remaining.length} remaining`);
+      }
+
       // Record in session history
-      const confidence = result.prediction?.confidence || 0;
+      const confidence = finalPrediction?.confidence || 0;
       sessionService.recordPrediction(
         sessionId,
         body.input,
         session.history.length === 0 ? 'signal' : 'refinement',
-        result.prediction,
+        finalPrediction,
         confidence,
         body.participant,
       );
@@ -321,10 +340,15 @@ async function handleRequest(
         success: result.success,
         sessionId,
         turn: session.history.length,
-        prediction: result.prediction,
+        prediction: finalPrediction,
         validation: result.validation,
-        autoFixed: result.autoFixed,
+        autoFixed: result.autoFixed || autoFixResult.applied.length > 0,
         appliedFixes: result.appliedFixes,
+        autoFix: {
+          applied: autoFixResult.applied,
+          suggested: autoFixResult.suggested,
+          remaining: autoFixResult.remaining,
+        },
         processingTime: result.processingTime,
         stages: result.stages,
         session: sessionService.getSummary(sessionId),
@@ -354,6 +378,72 @@ async function handleRequest(
         sessionId: body.sessionId,
         feedback: body.accepted ? 'positive' : 'negative',
         note: 'Demo mode - feedback acknowledged but not persisted',
+      });
+      return;
+    }
+
+    // CEDA-33: Apply suggested fix endpoint
+    if (url === '/api/fix' && method === 'POST') {
+      const body = await parseBody<{
+        sessionId: string;
+        fixId: string;
+      }>(req);
+
+      if (!body.sessionId) {
+        sendJson(res, 400, { error: 'Missing required field: sessionId' });
+        return;
+      }
+
+      if (!body.fixId) {
+        sendJson(res, 400, { error: 'Missing required field: fixId' });
+        return;
+      }
+
+      const session = sessionService.get(body.sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: 'Session not found', sessionId: body.sessionId });
+        return;
+      }
+
+      if (!session.currentPrediction) {
+        sendJson(res, 400, { error: 'No prediction in session to fix', sessionId: body.sessionId });
+        return;
+      }
+
+      console.log(`[CEDA] Applying fix ${body.fixId} to session ${body.sessionId}`);
+
+      const fixResult = autoFixService.applySuggestedFix(body.fixId, session.currentPrediction);
+
+      if (!fixResult.applied) {
+        sendJson(res, 404, { 
+          error: 'Fix not found or could not be applied', 
+          fixId: body.fixId,
+          sessionId: body.sessionId,
+        });
+        return;
+      }
+
+      // Update session with fixed prediction
+      sessionService.recordPrediction(
+        body.sessionId,
+        `Applied fix: ${fixResult.fix?.description || body.fixId}`,
+        'refinement',
+        fixResult.prediction,
+        fixResult.prediction.confidence,
+      );
+
+      // Re-validate the fixed prediction
+      const validation = validationService.validatePrediction(fixResult.prediction);
+
+      sendJson(res, 200, {
+        success: true,
+        sessionId: body.sessionId,
+        fixId: body.fixId,
+        applied: true,
+        fix: fixResult.fix,
+        prediction: fixResult.prediction,
+        validation,
+        session: sessionService.getSummary(body.sessionId),
       });
       return;
     }

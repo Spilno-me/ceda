@@ -27,9 +27,19 @@ export interface ValidationSuggestion {
 }
 
 export interface AutoFix {
+  id?: string;
   type: 'replace' | 'add' | 'remove';
   target: string;
   value: unknown;
+  safe?: boolean;
+  description?: string;
+  errorCode?: string;
+}
+
+export interface AutoFixResult {
+  applied: AutoFix[];
+  suggested: AutoFix[];
+  remaining: ValidationError[];
 }
 
 export interface CompletenessReport {
