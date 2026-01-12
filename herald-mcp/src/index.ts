@@ -38,7 +38,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.4.0";
+const VERSION = "1.5.0";
 
 // Claude for Herald's voice - bundled key with limits, users can override
 const HERALD_VOICE_KEY = "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";
