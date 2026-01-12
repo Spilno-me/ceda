@@ -46,6 +46,11 @@ export interface Pattern {
    * Updated via outcome learning (recordOutcome)
    */
   domainAffinity?: number[];
+  /**
+   * CEDA-32: Grounding loop confidence tracking
+   * Patterns decay without grounding, boost with successful executions
+   */
+  confidence?: PatternConfidence;
 }
 
 export enum PatternCategory {
@@ -92,6 +97,21 @@ export interface PatternMetadata {
   updatedAt: Date;
   usageCount: number;
   successRate: number;
+}
+
+/**
+ * CEDA-32: Pattern confidence for grounding loop
+ * Tracks execution feedback to adjust pattern confidence over time
+ */
+export interface PatternConfidence {
+  /** Base confidence score (0.0 - 1.0) */
+  base: number;
+  /** Last successful execution timestamp (null if never grounded) */
+  lastGrounded: Date | null;
+  /** Number of times successfully executed */
+  groundingCount: number;
+  /** Per-day decay rate (default: 0.01) */
+  decayRate: number;
 }
 
 export interface PatternMatch {

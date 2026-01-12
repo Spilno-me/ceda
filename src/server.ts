@@ -19,6 +19,7 @@ import { VectorStoreService } from './services/vector-store.service';
 import { SessionService } from './services/session.service';
 import { TenantEmbeddingService } from './services/tenant-embedding.service';
 import { AntipatternService } from './services/antipattern.service';
+import { LegionService, GroundingFeedback, ExecutionResult } from './services/legion.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, SEED_ANTIPATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome } from './interfaces';
@@ -104,6 +105,9 @@ const sessionService = new SessionService();
 // Initialize antipattern service for observation and learning
 const antipatternService = new AntipatternService();
 antipatternService.loadAntipatterns(SEED_ANTIPATTERNS);
+
+// CEDA-32: Initialize LEGION service for grounding loop (graceful degradation if unavailable)
+const legionService = new LegionService();
 
 // Initialize tenant embedding service for AI-native multi-tenancy
 const tenantEmbeddingService = new TenantEmbeddingService(embeddingService, vectorStoreService);
@@ -996,6 +1000,109 @@ async function handleRequest(
       });
       return;
     }
+
+    // === CEDA-32: GROUNDING LOOP ENDPOINTS ===
+
+    // POST /api/ground - Receive execution feedback from LEGION
+    if (url === '/api/ground' && method === 'POST') {
+      const body = await parseBody<{
+        session_id: string;
+        pattern_id: string;
+        accepted: boolean;
+        modifications?: Record<string, unknown>[];
+        execution_result: ExecutionResult;
+      }>(req);
+
+      if (!body.session_id || !body.pattern_id || body.accepted === undefined || !body.execution_result) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['session_id', 'pattern_id', 'accepted', 'execution_result'],
+          validExecutionResults: ['success', 'partial', 'failed'],
+        });
+        return;
+      }
+
+      if (!['success', 'partial', 'failed'].includes(body.execution_result)) {
+        sendJson(res, 400, {
+          error: 'Invalid execution_result',
+          validValues: ['success', 'partial', 'failed'],
+        });
+        return;
+      }
+
+      console.log(`[CEDA] Grounding feedback received: session=${body.session_id}, pattern=${body.pattern_id}, accepted=${body.accepted}, result=${body.execution_result}`);
+
+      const success = body.accepted && body.execution_result === 'success';
+      const updatedPattern = patternLibrary.groundPattern(body.pattern_id, success);
+
+      if (!updatedPattern) {
+        sendJson(res, 404, {
+          error: 'Pattern not found',
+          patternId: body.pattern_id,
+        });
+        return;
+      }
+
+      const groundingFeedback: GroundingFeedback = {
+        sessionId: body.session_id,
+        patternId: body.pattern_id,
+        accepted: body.accepted,
+        modifications: body.modifications,
+        executionResult: body.execution_result,
+      };
+      await legionService.processGroundingFeedback(groundingFeedback);
+
+      const currentConfidence = patternLibrary.currentConfidence(updatedPattern);
+
+      sendJson(res, 200, {
+        grounded: true,
+        patternId: body.pattern_id,
+        sessionId: body.session_id,
+        accepted: body.accepted,
+        executionResult: body.execution_result,
+        patternConfidence: {
+          current: currentConfidence,
+          groundingCount: updatedPattern.confidence?.groundingCount || 0,
+          lastGrounded: updatedPattern.confidence?.lastGrounded || null,
+        },
+        legionAvailable: legionService.isAvailable(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/patterns/:id/confidence - Get pattern confidence with decay applied
+    if (url?.match(/^\/api\/patterns\/[^/]+\/confidence$/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const patternId = pathParts[2];
+
+      const confidence = patternLibrary.getPatternConfidence(patternId);
+
+      if (confidence === null) {
+        sendJson(res, 404, {
+          error: 'Pattern not found',
+          patternId,
+        });
+        return;
+      }
+
+      const pattern = patternLibrary.getPattern(patternId);
+
+      sendJson(res, 200, {
+        patternId,
+        confidence: {
+          current: confidence,
+          base: pattern?.confidence?.base || 1.0,
+          groundingCount: pattern?.confidence?.groundingCount || 0,
+          lastGrounded: pattern?.confidence?.lastGrounded || null,
+          decayRate: pattern?.confidence?.decayRate || 0.01,
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     // 404
     sendJson(res, 404, { error: 'Not found', availableEndpoints: [
       'GET  /health',
@@ -1007,9 +1114,11 @@ async function handleRequest(
       'GET  /api/patterns?user=X',
       'GET  /api/patterns?user=X&company=Y&project=Z',
       'GET  /api/patterns/:id?user=X',
+      'GET  /api/patterns/:id/confidence (CEDA-32: get pattern confidence with decay)',
       'POST /api/patterns (CEDA-30: create pattern with company scope)',
       'PUT  /api/patterns/:id (CEDA-30: update pattern with company scope)',
       'DELETE /api/patterns/:id?company=X&user=Y (CEDA-30: delete pattern)',
+      'POST /api/ground (CEDA-32: receive execution feedback for grounding loop)',
       'POST /api/herald/heartbeat',
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
