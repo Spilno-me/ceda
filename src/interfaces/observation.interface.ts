@@ -14,6 +14,11 @@ import { StructurePrediction } from './prediction.interface';
 export type ObservationOutcome = 'accepted' | 'modified' | 'rejected';
 
 /**
+ * Source of an observation - how it was created
+ */
+export type ObservationSource = 'live' | 'direct';
+
+/**
  * Type of modification made to a prediction
  */
 export type ModificationType = 'add' | 'remove' | 'change';
@@ -69,10 +74,12 @@ export interface Observation {
   processingTime: number;
   /** Timestamp of the observation */
   timestamp: Date;
+  /** Source of the observation - 'live' from Herald session or 'direct' from API */
+  source: ObservationSource;
 }
 
 /**
- * Request payload for capturing an observation
+ * Request payload for capturing an observation from an existing session
  */
 export interface CaptureObservationRequest {
   /** Session ID */
@@ -89,6 +96,37 @@ export interface CaptureObservationRequest {
   finalStructure?: StructurePrediction;
   /** Optional user feedback */
   feedback?: string;
+}
+
+/**
+ * CEDA-39: Request payload for creating a direct observation without a session
+ * Used for POST /api/observations endpoint
+ */
+export interface CreateObservationDto {
+  /** Original input that triggered the prediction (required) */
+  input: string;
+  /** Company identifier for multi-tenant filtering (required) */
+  company: string;
+  /** Project identifier */
+  project?: string;
+  /** User identifier */
+  user?: string;
+  /** Pattern ID that was matched */
+  patternId?: string;
+  /** Pattern name for display */
+  patternName?: string;
+  /** The prediction structure (required) */
+  prediction: StructurePrediction;
+  /** Outcome of the prediction (required) */
+  outcome: ObservationOutcome;
+  /** Final structure after modifications (for diff calculation) */
+  finalStructure?: StructurePrediction;
+  /** Optional user feedback */
+  feedback?: string;
+  /** Processing time in milliseconds */
+  processingTime?: number;
+  /** Confidence score of the prediction */
+  confidence?: number;
 }
 
 /**

@@ -72,6 +72,7 @@ describe('GraduationService', () => {
     confidence: 0.85,
     processingTime: 100,
     timestamp: new Date(),
+    source: 'live',
   });
 
   beforeEach(async () => {

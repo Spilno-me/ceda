@@ -26,7 +26,7 @@ import { GraduationService } from './services/graduation.service';
 import { AbstractionService } from './services/abstraction.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, SEED_ANTIPATTERNS } from './seed';
-import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
+import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1245,6 +1245,69 @@ async function handleRequest(
         console.error('[CEDA] Failed to capture observation:', error);
         sendJson(res, 500, {
           error: 'Failed to capture observation',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // === CEDA-39: DIRECT OBSERVATION CREATION ENDPOINT ===
+
+    // POST /api/observations - Create direct observation without requiring an existing session
+    if (url === '/api/observations' && method === 'POST') {
+      const body = await parseBody<CreateObservationDto>(req);
+
+      // Validate required fields
+      if (!body.input) {
+        sendJson(res, 400, { error: 'Missing required field: input' });
+        return;
+      }
+
+      if (!body.company) {
+        sendJson(res, 400, { error: 'Missing required field: company' });
+        return;
+      }
+
+      if (!body.prediction) {
+        sendJson(res, 400, { error: 'Missing required field: prediction' });
+        return;
+      }
+
+      if (!body.outcome || !['accepted', 'modified', 'rejected'].includes(body.outcome)) {
+        sendJson(res, 400, { 
+          error: 'Missing or invalid outcome',
+          validOutcomes: ['accepted', 'modified', 'rejected'],
+        });
+        return;
+      }
+
+      // Validate prediction structure
+      if (!body.prediction.moduleType || !body.prediction.sections) {
+        sendJson(res, 400, { 
+          error: 'Invalid prediction structure',
+          message: 'Prediction must include moduleType and sections',
+        });
+        return;
+      }
+
+      try {
+        const observation = await observationService.createDirect(body);
+
+        console.log(`[CEDA] Direct observation created: ${observation.id} (${body.outcome}, session: ${observation.sessionId})`);
+
+        sendJson(res, 201, {
+          recorded: true,
+          observationId: observation.id,
+          sessionId: observation.sessionId,
+          source: observation.source,
+          outcome: observation.outcome,
+          modificationsCount: observation.modifications.length,
+          timestamp: observation.timestamp,
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to create direct observation:', error);
+        sendJson(res, 500, {
+          error: 'Failed to create direct observation',
           message: error instanceof Error ? error.message : 'Unknown error',
         });
       }
