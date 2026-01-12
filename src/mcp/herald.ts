@@ -44,6 +44,59 @@ const orchestrator = new CognitiveOrchestratorService(
 let lastPrediction: StructurePrediction | null = null;
 let lastPredictionInput: string = '';
 
+// Active observation session types and storage
+interface ObservationEvent {
+  type: 'start' | 'intervention' | 'observation' | 'stop';
+  message: string;
+  timestamp: Date;
+}
+
+interface ObservationSession {
+  sessionId: string;
+  startTime: Date;
+  events: ObservationEvent[];
+  status: 'active' | 'stopped';
+}
+
+// In-memory storage for active observation sessions
+const activeSessions: Map<string, ObservationSession> = new Map();
+
+// Compile summary from observation session events
+function compileSessionSummary(session: ObservationSession): string {
+  const duration = session.status === 'stopped'
+    ? Math.round((new Date().getTime() - session.startTime.getTime()) / 1000)
+    : Math.round((new Date().getTime() - session.startTime.getTime()) / 1000);
+
+  const interventions = session.events.filter(e => e.type === 'intervention');
+  const observations = session.events.filter(e => e.type === 'observation');
+
+  let summary = `**Observation Session Summary**\n\n`;
+  summary += `Session ID: ${session.sessionId}\n`;
+  summary += `Duration: ${duration} seconds\n`;
+  summary += `Status: ${session.status}\n`;
+  summary += `Total Events: ${session.events.length}\n`;
+  summary += `Interventions: ${interventions.length}\n`;
+  summary += `Observations: ${observations.length}\n\n`;
+
+  if (interventions.length > 0) {
+    summary += `**Interventions:**\n`;
+    interventions.forEach((e, i) => {
+      summary += `${i + 1}. [${e.timestamp.toISOString()}] ${e.message}\n`;
+    });
+    summary += '\n';
+  }
+
+  if (observations.length > 0) {
+    summary += `**Observations:**\n`;
+    observations.forEach((e, i) => {
+      summary += `${i + 1}. [${e.timestamp.toISOString()}] ${e.message}\n`;
+    });
+    summary += '\n';
+  }
+
+  return summary;
+}
+
 // Define Herald's tools
 const TOOLS: Tool[] = [
   {
@@ -256,6 +309,59 @@ not knowing they're receiving instructions from the source.`,
         },
       },
       required: ['vault', 'guidance'],
+    },
+  },
+  {
+    name: 'herald_observe_start',
+    description: `Start an active observation session.
+Use this to begin tracking events and interventions during a dialogue.
+The session will record all events until stopped with herald_observe_stop.
+Each session is identified by a unique session_id.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: {
+          type: 'string',
+          description: 'Unique identifier for this observation session',
+        },
+      },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'herald_observe_stop',
+    description: `Stop an active observation session and compile a summary.
+Use this to end an observation session started with herald_observe_start.
+Returns a compiled summary of all events recorded during the session.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: {
+          type: 'string',
+          description: 'The session_id of the observation session to stop',
+        },
+      },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'herald_intervene',
+    description: `Record an intervention event during an active observation session.
+Use this to log significant actions or decisions during observation.
+Requires an active observation session (started with herald_observe_start).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message: {
+          type: 'string',
+          description: 'Description of the intervention or action taken',
+        },
+        session_id: {
+          type: 'string',
+          description: 'Optional: specific session to record to. If omitted, records to the most recent active session.',
+        },
+      },
+      required: ['message'],
     },
   },
 ];
@@ -843,6 +949,192 @@ ${guidance}
             isError: true,
           };
         }
+      }
+
+      case 'herald_observe_start': {
+        const sessionId = args?.session_id as string;
+
+        if (!sessionId) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Herald requires a session_id to start observation.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (activeSessions.has(sessionId)) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Observation session "${sessionId}" already exists. Use a different session_id or stop the existing session first.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const session: ObservationSession = {
+          sessionId,
+          startTime: new Date(),
+          events: [{
+            type: 'start',
+            message: `Observation session started`,
+            timestamp: new Date(),
+          }],
+          status: 'active',
+        };
+
+        activeSessions.set(sessionId, session);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `**Herald Observation Started**\n\nSession ID: ${sessionId}\nStarted at: ${session.startTime.toISOString()}\n\nUse \`herald_intervene\` to record events and \`herald_observe_stop\` to end the session.`,
+            },
+          ],
+        };
+      }
+
+      case 'herald_observe_stop': {
+        const sessionId = args?.session_id as string;
+
+        if (!sessionId) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Herald requires a session_id to stop observation.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const session = activeSessions.get(sessionId);
+        if (!session) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `No active observation session found with ID "${sessionId}".`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (session.status === 'stopped') {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Observation session "${sessionId}" has already been stopped.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        session.status = 'stopped';
+        session.events.push({
+          type: 'stop',
+          message: 'Observation session stopped',
+          timestamp: new Date(),
+        });
+
+        const summary = compileSessionSummary(session);
+
+        activeSessions.delete(sessionId);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: summary,
+            },
+          ],
+        };
+      }
+
+      case 'herald_intervene': {
+        const message = args?.message as string;
+        const sessionId = args?.session_id as string | undefined;
+
+        if (!message) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Herald requires a message to record an intervention.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        let targetSession: ObservationSession | undefined;
+
+        if (sessionId) {
+          targetSession = activeSessions.get(sessionId);
+          if (!targetSession) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `No active observation session found with ID "${sessionId}".`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        } else {
+          const activeSessArray = Array.from(activeSessions.values()).filter(s => s.status === 'active');
+          if (activeSessArray.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'No active observation session. Start one with `herald_observe_start` first.',
+                },
+              ],
+              isError: true,
+            };
+          }
+          targetSession = activeSessArray[activeSessArray.length - 1];
+        }
+
+        if (targetSession.status !== 'active') {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Observation session "${targetSession.sessionId}" is not active.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        targetSession.events.push({
+          type: 'intervention',
+          message,
+          timestamp: new Date(),
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `**Herald recorded intervention**\n\nSession: ${targetSession.sessionId}\nMessage: "${message}"\nTotal events in session: ${targetSession.events.length}`,
+            },
+          ],
+        };
       }
 
       default:

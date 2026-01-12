@@ -18,8 +18,10 @@ import { EmbeddingService } from './services/embedding.service';
 import { VectorStoreService } from './services/vector-store.service';
 import { SessionService } from './services/session.service';
 import { TenantEmbeddingService } from './services/tenant-embedding.service';
+import { AntipatternService } from './services/antipattern.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
-import { HSE_PATTERNS } from './seed';
+import { HSE_PATTERNS, SEED_ANTIPATTERNS } from './seed';
+import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -98,6 +100,10 @@ predictionEngine.setVectorStore(vectorStoreService);
 
 const validationService = new CognitiveValidationService();
 const sessionService = new SessionService();
+
+// Initialize antipattern service for observation and learning
+const antipatternService = new AntipatternService();
+antipatternService.loadAntipatterns(SEED_ANTIPATTERNS);
 
 // Initialize tenant embedding service for AI-native multi-tenancy
 const tenantEmbeddingService = new TenantEmbeddingService(embeddingService, vectorStoreService);
@@ -673,6 +679,108 @@ async function handleRequest(
       return;
     }
 
+    // === ANTIPATTERN OBSERVATION ENDPOINTS ===
+
+    // POST /observe - Receive session observations from Herald
+    if (url === '/observe' && method === 'POST') {
+      const body = await parseBody<{
+        sessionId: string;
+        behavior: string;
+        context?: string;
+        metadata?: Record<string, unknown>;
+      }>(req);
+
+      if (!body.sessionId || !body.behavior) {
+        sendJson(res, 400, { error: 'Missing required fields: sessionId, behavior' });
+        return;
+      }
+
+      const observation: SessionObservation = {
+        sessionId: body.sessionId,
+        timestamp: new Date(),
+        behavior: body.behavior,
+        context: body.context || '',
+        metadata: body.metadata,
+      };
+
+      const stored = antipatternService.observe(observation);
+      console.log(`[CEDA] Observation recorded: ${stored.id} for session ${body.sessionId}`);
+
+      sendJson(res, 200, {
+        recorded: true,
+        observationId: stored.id,
+        sessionId: body.sessionId,
+        timestamp: stored.timestamp,
+      });
+      return;
+    }
+
+    // POST /detect - Check behavior against antipatterns, return matches with confidence
+    if (url === '/detect' && method === 'POST') {
+      const body = await parseBody<DetectRequest>(req);
+
+      if (!body.behavior) {
+        sendJson(res, 400, { error: 'Missing required field: behavior' });
+        return;
+      }
+
+      const result = antipatternService.detect(body);
+      console.log(`[CEDA] Detection complete: ${result.matches.length} antipattern(s) found`);
+
+      sendJson(res, 200, {
+        matches: result.matches.map(m => ({
+          antipatternId: m.antipattern.id,
+          signal: m.antipattern.signal,
+          confidence: m.confidence,
+          matchedSignals: m.matchedSignals,
+          suggestedEscape: m.suggestedEscape,
+        })),
+        analyzed: result.analyzed,
+        timestamp: result.timestamp,
+      });
+      return;
+    }
+
+    // POST /learn - Mark outcome: antipattern_confirmed or paradigm_candidate
+    if (url === '/learn' && method === 'POST') {
+      const body = await parseBody<{
+        antipatternId: string;
+        sessionId: string;
+        outcome: string;
+        feedback?: string;
+      }>(req);
+
+      if (!body.antipatternId || !body.sessionId || !body.outcome) {
+        sendJson(res, 400, { error: 'Missing required fields: antipatternId, sessionId, outcome' });
+        return;
+      }
+
+      if (body.outcome !== 'antipattern_confirmed' && body.outcome !== 'paradigm_candidate') {
+        sendJson(res, 400, { 
+          error: 'Invalid outcome. Must be "antipattern_confirmed" or "paradigm_candidate"',
+          validOutcomes: ['antipattern_confirmed', 'paradigm_candidate'],
+        });
+        return;
+      }
+
+      const learnRequest: LearnRequest = {
+        antipatternId: body.antipatternId,
+        sessionId: body.sessionId,
+        outcome: body.outcome as LearningOutcome,
+        feedback: body.feedback,
+      };
+
+      const result = antipatternService.learn(learnRequest);
+      console.log(`[CEDA] Learning recorded: ${body.antipatternId} - ${body.outcome} (confidence: ${result.newConfidence.toFixed(2)})`);
+
+      sendJson(res, 200, {
+        updated: result.updated,
+        antipatternId: result.antipatternId,
+        newConfidence: result.newConfidence,
+        outcome: result.outcome,
+      });
+      return;
+    }
     // 404
     sendJson(res, 404, { error: 'Not found', availableEndpoints: [
       'GET  /health',
@@ -688,6 +796,9 @@ async function handleRequest(
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
       'GET  /api/herald/insights',
+      'POST /observe',
+      'POST /detect',
+      'POST /learn',
     ]});
   } catch (error) {
     console.error('[CEDA] Error:', error);
@@ -740,6 +851,11 @@ server.listen(PORT, async () => {
 ║   - GET  /api/herald/contexts    Discover contexts        ║
 ║   - POST /api/herald/insight     Share insight            ║
 ║   - GET  /api/herald/insights    Query insights           ║
+║                                                           ║
+║   Antipattern Observation:                                ║
+║   - POST /observe    Receive session observations         ║
+║   - POST /detect     Check behavior against antipatterns  ║
+║   - POST /learn      Mark outcome for learning            ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 
