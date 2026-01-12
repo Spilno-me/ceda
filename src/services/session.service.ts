@@ -209,4 +209,44 @@ export class SessionService {
   getActiveSessionCount(): number {
     return this.sessions.size;
   }
+
+  /**
+   * CEDA-34: Update session state
+   * Allows Herald to update session data stored in CEDA
+   */
+  update(sessionId: string, updates: Partial<Pick<SessionState, 'currentPrediction' | 'context' | 'participants'>>): SessionState | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    if (updates.currentPrediction !== undefined) {
+      session.currentPrediction = updates.currentPrediction;
+    }
+    if (updates.context !== undefined) {
+      session.context = updates.context;
+    }
+    if (updates.participants !== undefined) {
+      session.participants = updates.participants;
+    }
+
+    session.updatedAt = new Date();
+    return session;
+  }
+
+  /**
+   * CEDA-34: Delete session
+   * Allows Herald to clean up sessions
+   */
+  delete(sessionId: string): boolean {
+    return this.sessions.delete(sessionId);
+  }
+
+  /**
+   * CEDA-34: Get full session state for Herald
+   * Returns complete session data including prediction for stateless Herald
+   */
+  getFullState(sessionId: string): SessionState | null {
+    return this.sessions.get(sessionId) || null;
+  }
 }

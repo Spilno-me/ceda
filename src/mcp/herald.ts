@@ -21,30 +21,35 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import 'reflect-metadata';
 
-import { SignalProcessorService } from '../services/signal-processor.service';
 import { PatternLibraryService, UserPatternQuery } from '../services/pattern-library.service';
-import { PredictionEngineService } from '../services/prediction-engine.service';
-import { CognitiveValidationService } from '../services/validation.service';
-import { CognitiveOrchestratorService, PipelineResult } from '../services/orchestrator.service';
+import { PipelineResult } from '../services/orchestrator.service';
 import { StructurePrediction } from '../interfaces';
+import { getCedaClient, CedaClient } from './ceda-client';
 
-// Initialize services
-const signalProcessor = new SignalProcessorService();
+// CEDA-34: Herald is now stateless - all state lives in CEDA
+// Initialize pattern library for local pattern queries only
 const patternLibrary = new PatternLibraryService();
-const predictionEngine = new PredictionEngineService(patternLibrary);
-const validationService = new CognitiveValidationService();
-const orchestrator = new CognitiveOrchestratorService(
-  signalProcessor,
-  patternLibrary,
-  predictionEngine,
-  validationService,
-);
 
-// Store last prediction for modification flow
-let lastPrediction: StructurePrediction | null = null;
-let lastPredictionInput: string = '';
+// CEDA client for all state operations
+let cedaClient: CedaClient;
 
-// Active observation session types and storage
+// Initialize CEDA client
+function initCedaClient(): CedaClient {
+  if (!cedaClient) {
+    cedaClient = getCedaClient();
+    console.error(`[Herald] CEDA client initialized: ${cedaClient.getBaseUrl()}`);
+  }
+  return cedaClient;
+}
+
+// CEDA-34: Session ID management for stateless operation
+// Herald uses a default session ID per MCP connection, passed via environment or generated
+let currentSessionId: string = process.env.HERALD_SESSION_ID || `herald-${Date.now()}`;
+let currentCompany: string = process.env.HERALD_COMPANY || 'default';
+
+// Active observation session types
+// CEDA-34: Observation sessions are ephemeral per-Herald-instance state
+// They are short-lived within a single dialogue and don't need to persist across Herald restarts
 interface ObservationEvent {
   type: 'start' | 'intervention' | 'observation' | 'stop';
   message: string;
@@ -58,7 +63,8 @@ interface ObservationSession {
   status: 'active' | 'stopped';
 }
 
-// In-memory storage for active observation sessions
+// CEDA-34: Observation sessions are ephemeral - they don't persist across Herald restarts
+// This is acceptable for HA since observation sessions are short-lived within a single dialogue
 const activeSessions: Map<string, ObservationSession> = new Map();
 
 // Compile summary from observation session events
@@ -366,8 +372,8 @@ Requires an active observation session (started with herald_observe_start).`,
   },
 ];
 
-// Observation store (in-memory for now, will persist later)
-const observations: Array<{ observation: string; context?: string; timestamp: Date }> = [];
+// CEDA-34: Observations are now stored in CEDA via the observe endpoint
+// No local observation store needed
 
 // Format prediction for readable output
 function formatPrediction(result: PipelineResult): string {
@@ -423,62 +429,136 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'herald_predict': {
         const input = args?.input as string;
         const enableAutoFix = args?.enableAutoFix !== false;
+        const sessionId = (args?.sessionId as string) || currentSessionId;
+        const company = (args?.company as string) || currentCompany;
 
-        const result = await orchestrator.execute(input, [], { enableAutoFix });
+        // CEDA-34: Use CEDA for prediction - Herald is stateless
+        const client = initCedaClient();
+        
+        try {
+          const response = await client.predict({
+            input,
+            sessionId,
+            company,
+            config: { enableAutoFix },
+          });
 
-        // Store for modification flow
-        if (result.prediction) {
-          lastPrediction = result.prediction;
-          lastPredictionInput = input;
-        }
+          // Update current session ID for subsequent calls
+          currentSessionId = response.sessionId;
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: formatPrediction(result),
-            },
-          ],
-        };
-      }
+          // Format response similar to local pipeline
+          const result: PipelineResult = {
+            success: response.success,
+            prediction: response.prediction,
+            validation: response.validation,
+            autoFixed: response.autoFixed,
+            appliedFixes: response.appliedFixes,
+            stages: [],
+            processingTime: response.processingTime,
+          };
 
-      case 'herald_modify': {
-        const modification = args?.modification as string;
-
-        if (!lastPrediction) {
           return {
             content: [
               {
                 type: 'text',
-                text: 'No previous prediction to modify. Use herald_predict first.',
+                text: formatPrediction(result) + `\n\nSession: ${response.sessionId}`,
               },
             ],
           };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Herald could not reach CEDA: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              },
+            ],
+            isError: true,
+          };
         }
+      }
 
-        const result = await orchestrator.applyModification(lastPrediction, modification);
+      case 'herald_modify': {
+        const modification = args?.modification as string;
+        const sessionId = (args?.sessionId as string) || currentSessionId;
+        const company = (args?.company as string) || currentCompany;
 
-        if (result.prediction) {
-          lastPrediction = result.prediction;
+        // CEDA-34: Fetch session from CEDA to get last prediction
+        const client = initCedaClient();
+        
+        try {
+          const session = await client.getSession(sessionId);
+          
+          if (!session || !session.currentPrediction) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'No previous prediction to modify. Use herald_predict first.',
+                },
+              ],
+            };
+          }
+
+          // Use CEDA refine endpoint to apply modification
+          const response = await client.refine(sessionId, modification, company);
+
+          // Format response similar to local pipeline
+          const result: PipelineResult = {
+            success: response.success,
+            prediction: response.prediction,
+            validation: response.validation,
+            autoFixed: response.autoFixed,
+            appliedFixes: response.appliedFixes,
+            stages: [],
+            processingTime: response.processingTime,
+          };
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `**Herald's Modified Prediction**\n\nModification applied: "${modification}"\n\n${formatPrediction(result)}\n\nSession: ${sessionId}`,
+              },
+            ],
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Herald could not reach CEDA: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              },
+            ],
+            isError: true,
+          };
         }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `**Herald's Modified Prediction**\n\nModification applied: "${modification}"\n\n${formatPrediction(result)}`,
-            },
-          ],
-        };
       }
 
       case 'herald_health': {
-        const health = orchestrator.getHealthStatus();
+        // CEDA-34: Check CEDA connectivity for stateless Herald
+        const client = initCedaClient();
+        const cedaHealth = await client.isHealthy();
+        
+        let cedaStatus = '';
+        if (cedaHealth.healthy) {
+          try {
+            const health = await client.health();
+            cedaStatus = `CEDA Status: ✓ Connected\n  URL: ${client.getBaseUrl()}\n  Patterns: ${health.patternsLoaded}\n  Services: ${health.servicesReady ? 'ready' : 'not ready'}`;
+          } catch {
+            cedaStatus = `CEDA Status: ✓ Connected\n  URL: ${client.getBaseUrl()}`;
+          }
+        } else {
+          cedaStatus = `CEDA Status: ✗ Disconnected\n  URL: ${client.getBaseUrl()}\n  Error: ${cedaHealth.error}`;
+        }
+
+        const localPatterns = patternLibrary.getAllPatterns().length;
+
         return {
           content: [
             {
               type: 'text',
-              text: `**Herald Status**\n\nPatterns loaded: ${health.patternsLoaded}\nServices ready: ${health.servicesReady ? '✓' : '✗'}\nObservations recorded: ${observations.length}`,
+              text: `**Herald Status (Stateless Mode)**\n\n${cedaStatus}\n\nLocal Pattern Cache: ${localPatterns}\nCurrent Session: ${currentSessionId}\nCompany: ${currentCompany}`,
             },
           ],
         };
@@ -487,21 +567,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'herald_observe': {
         const observation = args?.observation as string;
         const context = args?.context as string | undefined;
+        const sessionId = (args?.sessionId as string) || currentSessionId;
 
-        observations.push({
-          observation,
-          context,
-          timestamp: new Date(),
-        });
+        // CEDA-34: Store observation in CEDA
+        const client = initCedaClient();
+        
+        try {
+          const result = await client.observe(sessionId, observation, context);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `**Herald observed**: "${observation}"\n\nThis will inform future predictions. Total observations: ${observations.length}`,
-            },
-          ],
-        };
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `**Herald observed**: "${observation}"\n\nThis will inform future predictions.\nObservation ID: ${result.observationId}\nSession: ${sessionId}`,
+              },
+            ],
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Herald could not record observation: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              },
+            ],
+            isError: true,
+          };
+        }
       }
 
       case 'herald_patterns': {

@@ -560,6 +560,65 @@ async function handleRequest(
       return;
     }
 
+    // CEDA-34: Update session endpoint (for stateless Herald)
+    if (url?.startsWith('/api/session/') && method === 'PUT') {
+      const sessionId = url.replace('/api/session/', '');
+      const body = await parseBody<{
+        currentPrediction?: import('./interfaces').StructurePrediction | null;
+        context?: import('./interfaces').ContextSignal[];
+        participants?: string[];
+      }>(req);
+
+      const session = sessionService.get(sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: 'Session not found', sessionId });
+        return;
+      }
+
+      const updatedSession = sessionService.update(sessionId, body);
+      if (!updatedSession) {
+        sendJson(res, 500, { error: 'Failed to update session', sessionId });
+        return;
+      }
+
+      console.log(`[CEDA] Session updated: ${sessionId}`);
+
+      sendJson(res, 200, {
+        updated: true,
+        sessionId: updatedSession.id,
+        currentPrediction: updatedSession.currentPrediction,
+        participants: updatedSession.participants,
+        updatedAt: updatedSession.updatedAt,
+      });
+      return;
+    }
+
+    // CEDA-34: Delete session endpoint (for stateless Herald cleanup)
+    if (url?.startsWith('/api/session/') && method === 'DELETE') {
+      const sessionId = url.replace('/api/session/', '');
+
+      const session = sessionService.get(sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: 'Session not found', sessionId });
+        return;
+      }
+
+      const deleted = sessionService.delete(sessionId);
+      if (!deleted) {
+        sendJson(res, 500, { error: 'Failed to delete session', sessionId });
+        return;
+      }
+
+      console.log(`[CEDA] Session deleted: ${sessionId}`);
+
+      sendJson(res, 200, {
+        deleted: true,
+        sessionId,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     // === HERALD CONTEXT SYNC ENDPOINTS ===
 
     // Herald heartbeat - context reports its status
@@ -1199,6 +1258,8 @@ async function handleRequest(
       'POST /api/predict (requires company)',
       'POST /api/refine',
       'GET  /api/session/:id',
+      'PUT  /api/session/:id (CEDA-34: update session for stateless Herald)',
+      'DELETE /api/session/:id (CEDA-34: delete session)',
       'POST /api/feedback',
       'GET  /api/stats',
       'GET  /api/patterns?user=X',
