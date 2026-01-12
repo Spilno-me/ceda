@@ -4,10 +4,10 @@
  * These patterns are specific to Health, Safety, and Environment domain.
  * CEDA is domain-agnostic - this file demonstrates how to inject domain patterns.
  *
- * Multi-tenant Pattern Isolation:
- * - Patterns can have an optional `company` field for tenant-specific filtering
- * - Patterns without a `company` field are considered global and match all tenants
- * - These HSE patterns are global (no company field) and available to all tenants
+ * Multi-tenant Pattern Isolation (CEDA-30):
+ * - Patterns have a `company` field for tenant-specific filtering
+ * - HSE patterns belong to company='disrupt' (HSE domain tenant)
+ * - Patterns with company=null are shared/global and available to all tenants
  *
  * For other domains, create similar files:
  * - hr-patterns.ts (HR domain)
@@ -31,6 +31,7 @@ export const HSE_PATTERNS: Pattern[] = [
     name: 'Safety Assessment',
     category: PatternCategory.ASSESSMENT,
     description: 'Standard safety assessment form for HSE domain',
+    company: 'disrupt', // CEDA-30: HSE domain tenant
     structure: {
       sections: [
         { name: 'General Information', fieldTypes: ['text', 'date', 'select'], required: true },
@@ -56,6 +57,7 @@ export const HSE_PATTERNS: Pattern[] = [
     name: 'Incident Report',
     category: PatternCategory.INCIDENT,
     description: 'Standard incident reporting form for HSE domain',
+    company: 'disrupt', // CEDA-30: HSE domain tenant
     structure: {
       sections: [
         { name: 'Incident Details', fieldTypes: ['text', 'date', 'time', 'select'], required: true },
@@ -82,6 +84,7 @@ export const HSE_PATTERNS: Pattern[] = [
     name: 'Work Permit',
     category: PatternCategory.PERMIT,
     description: 'Standard work permit form for HSE domain',
+    company: 'disrupt', // CEDA-30: HSE domain tenant
     structure: {
       sections: [
         { name: 'Permit Type', fieldTypes: ['select', 'text'], required: true },
@@ -108,6 +111,7 @@ export const HSE_PATTERNS: Pattern[] = [
     name: 'Safety Audit',
     category: PatternCategory.AUDIT,
     description: 'Standard safety audit form for HSE domain',
+    company: 'disrupt', // CEDA-30: HSE domain tenant
     structure: {
       sections: [
         { name: 'Audit Scope', fieldTypes: ['text', 'select', 'date'], required: true },
@@ -134,6 +138,7 @@ export const HSE_PATTERNS: Pattern[] = [
     name: 'Corrective Action',
     category: PatternCategory.ACTION,
     description: 'Standard corrective action form for HSE domain',
+    company: 'disrupt', // CEDA-30: HSE domain tenant
     structure: {
       sections: [
         { name: 'Action Details', fieldTypes: ['text', 'select'], required: true },
