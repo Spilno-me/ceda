@@ -230,7 +230,7 @@ async function handleRequest(
 
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (method === 'OPTIONS') {
@@ -257,6 +257,15 @@ async function handleRequest(
 
       if (!body.input) {
         sendJson(res, 400, { error: 'Missing required field: input' });
+        return;
+      }
+
+      // CEDA-30: Company is required for multi-tenant pattern isolation
+      if (!body.company) {
+        sendJson(res, 400, { 
+          error: 'Missing required field: company',
+          message: 'Multi-tenant pattern isolation requires company context',
+        });
         return;
       }
 
@@ -679,6 +688,212 @@ async function handleRequest(
       return;
     }
 
+    // === CEDA-30: Pattern CRUD Endpoints with Company Scope ===
+
+    // POST /api/patterns - Create a new pattern (requires company)
+    if (url === '/api/patterns' && method === 'POST') {
+      const body = await parseBody<{
+        id: string;
+        name: string;
+        category: string;
+        description: string;
+        company: string;
+        user: string;
+        structure: {
+          sections: Array<{ name: string; fieldTypes: string[]; required: boolean }>;
+          workflows: string[];
+          defaultFields: string[];
+        };
+        applicabilityRules?: Array<{ field: string; operator: 'equals' | 'contains' | 'matches'; value: string; weight: number }>;
+      }>(req);
+
+      // Validate required fields
+      if (!body.id || !body.name || !body.category || !body.description || !body.company || !body.user || !body.structure) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['id', 'name', 'category', 'description', 'company', 'user', 'structure'],
+        });
+        return;
+      }
+
+      // Check if pattern already exists
+      const existingPattern = patternLibrary.getPattern(body.id);
+      if (existingPattern) {
+        sendJson(res, 409, {
+          error: 'Pattern already exists',
+          patternId: body.id,
+        });
+        return;
+      }
+
+      // Create the pattern with company scope
+      const newPattern = {
+        id: body.id,
+        name: body.name,
+        category: body.category as import('./interfaces').PatternCategory,
+        description: body.description,
+        company: body.company,
+        user_id: body.user,
+        structure: body.structure,
+        applicabilityRules: body.applicabilityRules || [],
+        confidenceFactors: [],
+        metadata: {
+          version: '1.0.0',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          usageCount: 0,
+          successRate: 0,
+        },
+      };
+
+      patternLibrary.registerPattern(newPattern);
+      console.log(`[CEDA] Pattern created: ${body.id} for company ${body.company}`);
+
+      sendJson(res, 201, {
+        created: true,
+        pattern: newPattern,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // PUT /api/patterns/:id - Update a pattern (company-scoped)
+    if (url?.startsWith('/api/patterns/') && method === 'PUT') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      
+      if (pathParts.length !== 3 || pathParts[0] !== 'api' || pathParts[1] !== 'patterns') {
+        sendJson(res, 400, { error: 'Invalid URL format' });
+        return;
+      }
+
+      const patternId = pathParts[2];
+      const body = await parseBody<{
+        name?: string;
+        description?: string;
+        company: string;
+        user: string;
+        structure?: {
+          sections: Array<{ name: string; fieldTypes: string[]; required: boolean }>;
+          workflows: string[];
+          defaultFields: string[];
+        };
+        applicabilityRules?: Array<{ field: string; operator: 'equals' | 'contains' | 'matches'; value: string; weight: number }>;
+      }>(req);
+
+      // Company and user are required for authorization
+      if (!body.company || !body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required fields: company, user',
+          message: 'Company scope is required for pattern updates',
+        });
+        return;
+      }
+
+      // Get existing pattern
+      const existingPattern = patternLibrary.getPattern(patternId);
+      if (!existingPattern) {
+        sendJson(res, 404, {
+          error: 'Pattern not found',
+          patternId,
+        });
+        return;
+      }
+
+      // Check company scope - pattern must belong to the same company
+      if (existingPattern.company && existingPattern.company !== body.company) {
+        sendJson(res, 403, {
+          error: 'Access denied',
+          message: 'Pattern belongs to a different company',
+          patternId,
+        });
+        return;
+      }
+
+      // Update the pattern
+      const updatedPattern = {
+        ...existingPattern,
+        name: body.name || existingPattern.name,
+        description: body.description || existingPattern.description,
+        structure: body.structure || existingPattern.structure,
+        applicabilityRules: body.applicabilityRules || existingPattern.applicabilityRules,
+        metadata: {
+          ...existingPattern.metadata,
+          updatedAt: new Date(),
+        },
+      };
+
+      patternLibrary.registerPattern(updatedPattern);
+      console.log(`[CEDA] Pattern updated: ${patternId} by user ${body.user}`);
+
+      sendJson(res, 200, {
+        updated: true,
+        pattern: updatedPattern,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // DELETE /api/patterns/:id - Delete a pattern (company-scoped)
+    if (url?.startsWith('/api/patterns/') && method === 'DELETE') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      
+      if (pathParts.length !== 3 || pathParts[0] !== 'api' || pathParts[1] !== 'patterns') {
+        sendJson(res, 400, { error: 'Invalid URL format' });
+        return;
+      }
+
+      const patternId = pathParts[2];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      // Company and user are required for authorization
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters: company, user',
+          message: 'Company scope is required for pattern deletion',
+        });
+        return;
+      }
+
+      // Get existing pattern
+      const existingPattern = patternLibrary.getPattern(patternId);
+      if (!existingPattern) {
+        sendJson(res, 404, {
+          error: 'Pattern not found',
+          patternId,
+        });
+        return;
+      }
+
+      // Check company scope - pattern must belong to the same company
+      if (existingPattern.company && existingPattern.company !== company) {
+        sendJson(res, 403, {
+          error: 'Access denied',
+          message: 'Pattern belongs to a different company',
+          patternId,
+        });
+        return;
+      }
+
+      // Delete the pattern (remove from library)
+      // Note: PatternLibraryService uses a Map, so we need to add a delete method
+      // For now, we'll use the patterns Map directly through a workaround
+      const patterns = patternLibrary.getAllPatterns().filter(p => p.id !== patternId);
+      patternLibrary.clearPatterns();
+      patternLibrary.loadPatterns(patterns);
+      
+      console.log(`[CEDA] Pattern deleted: ${patternId} by user ${user}`);
+
+      sendJson(res, 200, {
+        deleted: true,
+        patternId,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     // === ANTIPATTERN OBSERVATION ENDPOINTS ===
 
     // POST /observe - Receive session observations from Herald
@@ -784,7 +999,7 @@ async function handleRequest(
     // 404
     sendJson(res, 404, { error: 'Not found', availableEndpoints: [
       'GET  /health',
-      'POST /api/predict',
+      'POST /api/predict (requires company)',
       'POST /api/refine',
       'GET  /api/session/:id',
       'POST /api/feedback',
@@ -792,6 +1007,9 @@ async function handleRequest(
       'GET  /api/patterns?user=X',
       'GET  /api/patterns?user=X&company=Y&project=Z',
       'GET  /api/patterns/:id?user=X',
+      'POST /api/patterns (CEDA-30: create pattern with company scope)',
+      'PUT  /api/patterns/:id (CEDA-30: update pattern with company scope)',
+      'DELETE /api/patterns/:id?company=X&user=Y (CEDA-30: delete pattern)',
       'POST /api/herald/heartbeat',
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',

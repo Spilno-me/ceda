@@ -320,16 +320,26 @@ export class VectorStoreService {
   }
 
   /**
-   * @deprecated CEDA-20: SQL filtering replaced by AI-native embedding-based ranking
-   * Build Qdrant filter for tenant-based pattern filtering
-   *
-   * AI-NATIVE APPROACH: Use searchByVector with fused embeddings instead
-   * This method is kept for backwards compatibility but returns undefined (no filter)
+   * CEDA-30: Build Qdrant filter for multi-tenant pattern filtering
+   * Returns patterns that match the company OR are shared (company is null)
+   * 
+   * Filter logic: company == tenantContext.company OR company IS NULL
+   * This enables tenant-specific patterns while maintaining access to shared patterns
    */
-  private buildTenantFilter(_tenantContext?: TenantContext): QdrantFilter | undefined {
-    // CEDA-20: AI-native multi-tenancy uses soft ranking via embedding similarity
-    // No hard SQL-style filtering - patterns are ranked by affinity, not filtered
-    return undefined;
+  private buildTenantFilter(tenantContext?: TenantContext): QdrantFilter | undefined {
+    if (!tenantContext?.company) {
+      // No company filter - return all patterns (shared behavior)
+      return undefined;
+    }
+
+    // CEDA-30: Filter by company OR shared patterns (company is null)
+    // Using Qdrant's "should" clause for OR logic
+    return {
+      should: [
+        { key: 'company', match: { value: tenantContext.company } },
+        { key: 'company', match: { value: null } },
+      ],
+    };
   }
 
   /**
