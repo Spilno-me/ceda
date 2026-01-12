@@ -40,6 +40,10 @@ interface ObservationVector {
     timestamp: string;
     modificationsCount: number;
     source: ObservationSource;
+    /** CEDA-40: Store full prediction for retrieval */
+    prediction: string;
+    /** CEDA-40: Store modifications for retrieval */
+    modifications: string;
   };
 }
 
@@ -353,6 +357,9 @@ export class ObservationService {
           timestamp: observation.timestamp.toISOString(),
           modificationsCount: observation.modifications.length,
           source: observation.source,
+          // CEDA-40: Store full prediction and modifications for retrieval
+          prediction: JSON.stringify(observation.prediction),
+          modifications: JSON.stringify(observation.modifications),
         },
       };
 
@@ -511,9 +518,75 @@ export class ObservationService {
 
   /**
    * Get observation by ID
+   * CEDA-40: First checks in-memory Map, then falls back to Qdrant retrieval
    */
-  getObservation(observationId: string): Observation | null {
-    return this.observations.get(observationId) || null;
+  async getObservation(observationId: string): Promise<Observation | null> {
+    // First check in-memory Map
+    const cached = this.observations.get(observationId);
+    if (cached) {
+      return cached;
+    }
+
+    // CEDA-40: Fall back to Qdrant retrieval if not in memory
+    const fromQdrant = await this.retrieveFromQdrant(observationId);
+    if (fromQdrant) {
+      // Cache in memory for future requests
+      this.observations.set(observationId, fromQdrant);
+      console.log(`[ObservationService] Retrieved observation ${observationId} from Qdrant and cached`);
+    }
+    return fromQdrant;
+  }
+
+  /**
+   * CEDA-40: Retrieve observation from Qdrant by observationId
+   * Reconstructs full Observation object from stored payload
+   */
+  private async retrieveFromQdrant(observationId: string): Promise<Observation | null> {
+    const client = this.getClient();
+    if (!client || !this.initialized) {
+      return null;
+    }
+
+    try {
+      const filter: QdrantFilter = {
+        must: [
+          { key: 'observationId', match: { value: observationId } },
+        ],
+      };
+
+      const result = await client.scroll(this.collectionName, filter, 1);
+
+      if (!result.points || result.points.length === 0) {
+        return null;
+      }
+
+      const payload = result.points[0].payload as ObservationVector['payload'];
+
+      // Reconstruct full Observation object from payload
+      const observation: Observation = {
+        id: payload.observationId,
+        sessionId: payload.sessionId,
+        company: payload.company,
+        project: payload.project,
+        user: payload.user,
+        patternId: payload.patternId,
+        patternName: payload.patternName,
+        prediction: JSON.parse(payload.prediction),
+        outcome: payload.outcome,
+        modifications: JSON.parse(payload.modifications),
+        feedback: payload.feedback || undefined,
+        input: payload.input,
+        confidence: payload.confidence,
+        processingTime: payload.processingTime,
+        timestamp: new Date(payload.timestamp),
+        source: payload.source,
+      };
+
+      return observation;
+    } catch (error) {
+      console.error('[ObservationService] Failed to retrieve from Qdrant:', error instanceof Error ? error.message : error);
+      return null;
+    }
   }
 
   /**
