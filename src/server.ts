@@ -22,9 +22,10 @@ import { TenantEmbeddingService } from './services/tenant-embedding.service';
 import { AntipatternService } from './services/antipattern.service';
 import { LegionService, GroundingFeedback, ExecutionResult } from './services/legion.service';
 import { ObservationService } from './services/observation.service';
+import { GraduationService } from './services/graduation.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, SEED_ANTIPATTERNS } from './seed';
-import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, ObservationOutcome, StructurePrediction } from './interfaces';
+import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -119,6 +120,9 @@ const tenantEmbeddingService = new TenantEmbeddingService(embeddingService, vect
 
 // CEDA-35: Initialize observation service for learning loop
 const observationService = new ObservationService(embeddingService);
+
+// CEDA-36: Initialize graduation service for pattern evolution
+const graduationService = new GraduationService(patternLibrary, observationService);
 
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
@@ -1446,6 +1450,143 @@ async function handleRequest(
       return;
     }
 
+    // === CEDA-36: Pattern Graduation Endpoints ===
+
+    // GET /api/patterns/:id/graduation - Get graduation status for a pattern
+    if (url?.match(/^\/api\/patterns\/[^/]+\/graduation$/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const patternId = pathParts[2];
+
+      const status = await graduationService.getGraduationStatus(patternId);
+
+      if (!status) {
+        sendJson(res, 404, {
+          error: 'Pattern not found',
+          patternId,
+        });
+        return;
+      }
+
+      sendJson(res, 200, {
+        ...status,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/patterns/:id/check-graduation - Manually trigger graduation check
+    if (url?.match(/^\/api\/patterns\/[^/]+\/check-graduation$/) && method === 'POST') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const patternId = pathParts[2];
+
+      const pattern = patternLibrary.getPattern(patternId);
+      if (!pattern) {
+        sendJson(res, 404, {
+          error: 'Pattern not found',
+          patternId,
+        });
+        return;
+      }
+
+      const result = await graduationService.checkGraduation(patternId);
+
+      console.log(`[CEDA] Graduation check for ${patternId}: canGraduate=${result.canGraduate}`);
+
+      sendJson(res, 200, {
+        patternId,
+        ...result,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/patterns/:id/approve-graduation - Admin approve graduation to shared level
+    if (url?.match(/^\/api\/patterns\/[^/]+\/approve-graduation$/) && method === 'POST') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const patternId = pathParts[2];
+
+      const body = await parseBody<{
+        adminUserId: string;
+        comment?: string;
+      }>(req);
+
+      if (!body.adminUserId) {
+        sendJson(res, 400, {
+          error: 'Missing required field: adminUserId',
+        });
+        return;
+      }
+
+      const result = await graduationService.approveGraduation(
+        patternId,
+        body.adminUserId,
+        body.comment,
+      );
+
+      if (!result.success) {
+        sendJson(res, 400, {
+          error: 'Graduation approval failed',
+          patternId,
+          reason: 'Pattern does not meet criteria or is not at Company level',
+        });
+        return;
+      }
+
+      console.log(`[CEDA] Graduation approved for ${patternId} by ${body.adminUserId}`);
+
+      sendJson(res, 200, {
+        ...result,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/patterns/graduation-candidates - Get patterns eligible for graduation
+    if (url?.startsWith('/api/patterns/graduation-candidates') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const levelParam = urlObj.searchParams.get('level');
+      const targetLevel = levelParam ? parseInt(levelParam, 10) as PatternLevel : undefined;
+
+      const candidates = await graduationService.getGraduationCandidates(targetLevel);
+
+      sendJson(res, 200, {
+        candidates,
+        count: candidates.length,
+        filter: targetLevel !== undefined ? { targetLevel } : null,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/graduation/check-all - Run daily graduation check (admin endpoint)
+    if (url === '/api/graduation/check-all' && method === 'POST') {
+      const result = await graduationService.checkAllGraduations();
+
+      console.log(`[CEDA] Daily graduation check: ${result.graduated.length} graduated, ${result.pendingApproval.length} pending`);
+
+      sendJson(res, 200, {
+        ...result,
+        pendingApprovals: graduationService.getPendingApprovals(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/graduation/pending - Get patterns pending admin approval
+    if (url === '/api/graduation/pending' && method === 'GET') {
+      const pending = graduationService.getPendingApprovals();
+
+      sendJson(res, 200, {
+        pending,
+        count: pending.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     // 404
     sendJson(res, 404, { error: 'Not found', availableEndpoints: [
       'GET  /health',
@@ -1460,6 +1601,12 @@ async function handleRequest(
       'GET  /api/patterns?user=X&company=Y&project=Z',
       'GET  /api/patterns/:id?user=X',
       'GET  /api/patterns/:id/confidence (CEDA-32: get pattern confidence with decay)',
+      'GET  /api/patterns/:id/graduation (CEDA-36: get graduation status)',
+      'POST /api/patterns/:id/check-graduation (CEDA-36: trigger graduation check)',
+      'POST /api/patterns/:id/approve-graduation (CEDA-36: admin approve graduation)',
+      'GET  /api/patterns/graduation-candidates (CEDA-36: list graduation candidates)',
+      'POST /api/graduation/check-all (CEDA-36: run daily graduation check)',
+      'GET  /api/graduation/pending (CEDA-36: get pending approvals)',
       'POST /api/patterns (CEDA-30: create pattern with company scope)',
       'PUT  /api/patterns/:id (CEDA-30: update pattern with company scope)',
       'DELETE /api/patterns/:id?company=X&user=Y (CEDA-30: delete pattern)',
