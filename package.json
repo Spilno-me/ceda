@@ -4,18 +4,19 @@
   "description": "Cognitive Event-Driven Architecture - AI-native copilot layer",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "scripts": {
-    "build": "tsc",
-    "serve": "ts-node src/server.ts",
-    "serve:prod": "node dist/server.js",
-    "herald": "ts-node src/mcp/herald.ts",
-    "herald:prod": "node dist/mcp/herald.js",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
-    "lint": "eslint src/**/*.ts",
-    "typecheck": "tsc --noEmit"
-  },
+    "scripts": {
+      "build": "tsc",
+      "serve": "ts-node src/server.ts",
+      "serve:prod": "node dist/server.js",
+      "herald": "ts-node src/mcp/herald.ts",
+      "herald:prod": "node dist/mcp/herald.js",
+      "seed": "ts-node src/scripts/seed-patterns.ts",
+      "test": "jest",
+      "test:watch": "jest --watch",
+      "test:cov": "jest --coverage",
+      "lint": "eslint src/**/*.ts",
+      "typecheck": "tsc --noEmit"
+    },
   "keywords": [
     "cognitive",
     "ai",

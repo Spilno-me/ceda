@@ -49,11 +49,22 @@ export interface Pattern {
 }
 
 export enum PatternCategory {
+  // HSE domain categories (disrupt)
   ASSESSMENT = 'assessment',
   INCIDENT = 'incident',
   PERMIT = 'permit',
   AUDIT = 'audit',
   ACTION = 'action',
+  // GoPrint domain categories (goprint)
+  SESSION = 'session',
+  JOB = 'job',
+  MAINTENANCE = 'maintenance',
+  INVENTORY = 'inventory',
+  // Spilno domain categories (spilno)
+  INITIATIVE = 'initiative',
+  GOVERNANCE = 'governance',
+  SHARING = 'sharing',
+  TRUST = 'trust',
 }
 
 export interface PatternStructure {
