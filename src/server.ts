@@ -1403,7 +1403,8 @@ async function handleRequest(
         return;
       }
 
-      const observation = observationService.getObservation(observationId);
+      // CEDA-40: getObservation is now async to support Qdrant fallback retrieval
+      const observation = await observationService.getObservation(observationId);
       if (!observation) {
         sendJson(res, 404, { error: 'Observation not found', observationId });
         return;
