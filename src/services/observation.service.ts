@@ -11,10 +11,12 @@ import {
   Modification,
   ModificationType,
   ObservationOutcome,
+  ObservationSource,
   PatternObservationStats,
   StructurePrediction,
   SectionPrediction,
   FieldPrediction,
+  CreateObservationDto,
 } from '../interfaces';
 import { EmbeddingService } from './embedding.service';
 import { SessionState } from './session.service';
@@ -37,6 +39,7 @@ interface ObservationVector {
     processingTime: number;
     timestamp: string;
     modificationsCount: number;
+    source: ObservationSource;
   };
 }
 
@@ -248,6 +251,7 @@ export class ObservationService {
       confidence: prediction.confidence,
       processingTime: processingTime || 0,
       timestamp: new Date(),
+      source: 'live',
     };
 
     this.observations.set(observationId, observation);
@@ -257,6 +261,53 @@ export class ObservationService {
     console.log(`[ObservationService] Captured observation: ${observationId} (${outcome}, ${modifications.length} modifications)`);
 
     return observation;
+  }
+
+  /**
+   * CEDA-39: Create a direct observation without requiring an existing session
+   * Generates a synthetic sessionId and marks source as 'direct'
+   */
+  async createDirect(dto: CreateObservationDto): Promise<Observation> {
+    const observationId = this.generateId();
+    const syntheticSessionId = this.generateSyntheticSessionId();
+
+    const modifications = dto.finalStructure
+      ? this.diffPredictions(dto.prediction, dto.finalStructure)
+      : [];
+
+    const observation: Observation = {
+      id: observationId,
+      sessionId: syntheticSessionId,
+      company: dto.company,
+      project: dto.project || 'unknown',
+      user: dto.user || 'unknown',
+      patternId: dto.patternId || dto.prediction.moduleType || 'unknown',
+      patternName: dto.patternName || dto.prediction.moduleType || 'Unknown Pattern',
+      prediction: dto.prediction,
+      outcome: dto.outcome,
+      modifications,
+      feedback: dto.feedback,
+      input: dto.input,
+      confidence: dto.confidence ?? dto.prediction.confidence,
+      processingTime: dto.processingTime || 0,
+      timestamp: new Date(),
+      source: 'direct',
+    };
+
+    this.observations.set(observationId, observation);
+
+    await this.storeInQdrant(observation);
+
+    console.log(`[ObservationService] Created direct observation: ${observationId} (${dto.outcome}, ${modifications.length} modifications, session: ${syntheticSessionId})`);
+
+    return observation;
+  }
+
+  /**
+   * Generate a synthetic session ID for direct observations
+   */
+  private generateSyntheticSessionId(): string {
+    return `direct_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
   /**
@@ -301,6 +352,7 @@ export class ObservationService {
           processingTime: observation.processingTime,
           timestamp: observation.timestamp.toISOString(),
           modificationsCount: observation.modifications.length,
+          source: observation.source,
         },
       };
 
