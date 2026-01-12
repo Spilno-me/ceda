@@ -22,7 +22,7 @@ import {
 import 'reflect-metadata';
 
 import { SignalProcessorService } from '../services/signal-processor.service';
-import { PatternLibraryService } from '../services/pattern-library.service';
+import { PatternLibraryService, UserPatternQuery } from '../services/pattern-library.service';
 import { PredictionEngineService } from '../services/prediction-engine.service';
 import { CognitiveValidationService } from '../services/validation.service';
 import { CognitiveOrchestratorService, PipelineResult } from '../services/orchestrator.service';
@@ -176,6 +176,66 @@ Use this to see what module types Herald knows about.`,
     inputSchema: {
       type: 'object',
       properties: {},
+    },
+  },
+  {
+    name: 'herald_patterns_for_user',
+    description: `CEDA-25: User-first pattern isolation.
+Get patterns accessible to a specific user with optional company/project filters.
+
+USER is the doorway - all pattern access flows through user context.
+HERALD_USER is required. HERALD_COMPANY and HERALD_PROJECT are optional filters.
+
+Returns patterns based on scope hierarchy:
+1. User-scoped patterns (user_id matches)
+2. Project-scoped patterns (if project filter provided)
+3. Company-scoped patterns (if company filter provided)
+4. Global patterns (always included)`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        HERALD_USER: {
+          type: 'string',
+          description: 'Required: User ID - the primary doorway for pattern access',
+        },
+        HERALD_COMPANY: {
+          type: 'string',
+          description: 'Optional: Company filter for narrowing results',
+        },
+        HERALD_PROJECT: {
+          type: 'string',
+          description: 'Optional: Project filter for narrowing results',
+        },
+      },
+      required: ['HERALD_USER'],
+    },
+  },
+  {
+    name: 'herald_pattern_by_id',
+    description: `CEDA-25: Get a single pattern by ID with user access check.
+USER is the doorway - pattern access requires user context.
+HERALD_USER is required. Returns the pattern if accessible to the user.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        patternId: {
+          type: 'string',
+          description: 'The pattern ID to retrieve',
+        },
+        HERALD_USER: {
+          type: 'string',
+          description: 'Required: User ID - the primary doorway for pattern access',
+        },
+        HERALD_COMPANY: {
+          type: 'string',
+          description: 'Optional: Company filter',
+        },
+        HERALD_PROJECT: {
+          type: 'string',
+          description: 'Optional: Project filter',
+        },
+      },
+      required: ['patternId', 'HERALD_USER'],
     },
   },
   {
@@ -455,6 +515,102 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: `**Herald's Pattern Library**\n\n${patternList}\n\nTotal patterns: ${patterns.length}`,
+            },
+          ],
+        };
+      }
+
+      case 'herald_patterns_for_user': {
+        const heraldUser = args?.HERALD_USER as string;
+        const heraldCompany = args?.HERALD_COMPANY as string | undefined;
+        const heraldProject = args?.HERALD_PROJECT as string | undefined;
+
+        if (!heraldUser) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Herald requires HERALD_USER - USER is the doorway for pattern access.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const query: UserPatternQuery = {
+          user: heraldUser,
+          company: heraldCompany,
+          project: heraldProject,
+        };
+
+        const patterns = patternLibrary.getPatternsForUser(query);
+        const patternList = patterns.map(p =>
+          `- **${p.name}** (${p.category}, scope: ${p.scope || 'global'}): ${p.description || 'No description'}`
+        ).join('\n');
+
+        const filterInfo = [
+          `User: ${heraldUser}`,
+          heraldCompany ? `Company: ${heraldCompany}` : null,
+          heraldProject ? `Project: ${heraldProject}` : null,
+        ].filter(Boolean).join(', ');
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `**Herald's Patterns for User**\n\nFilters: ${filterInfo}\n\n${patternList || 'No patterns found'}\n\nTotal patterns: ${patterns.length}`,
+            },
+          ],
+        };
+      }
+
+      case 'herald_pattern_by_id': {
+        const patternId = args?.patternId as string;
+        const heraldUser = args?.HERALD_USER as string;
+        const heraldCompany = args?.HERALD_COMPANY as string | undefined;
+        const heraldProject = args?.HERALD_PROJECT as string | undefined;
+
+        if (!patternId || !heraldUser) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Herald requires patternId and HERALD_USER - USER is the doorway for pattern access.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const query: UserPatternQuery = {
+          user: heraldUser,
+          company: heraldCompany,
+          project: heraldProject,
+        };
+
+        const pattern = patternLibrary.getPatternForUser(patternId, query);
+
+        if (!pattern) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Pattern not found or not accessible: ${patternId}\n\nUser: ${heraldUser}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const sections = pattern.structure.sections.map(s =>
+          `  - ${s.name} (${s.fieldTypes.join(', ')}${s.required ? ', required' : ''})`
+        ).join('\n');
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `**Herald's Pattern: ${pattern.name}**\n\nID: ${pattern.id}\nCategory: ${pattern.category}\nScope: ${pattern.scope || 'global'}\nDescription: ${pattern.description}\n\nSections:\n${sections}\n\nWorkflows: ${pattern.structure.workflows.join(', ')}\nDefault Fields: ${pattern.structure.defaultFields.join(', ')}`,
             },
           ],
         };

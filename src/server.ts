@@ -10,7 +10,7 @@ import * as http from 'http';
 import 'reflect-metadata';
 
 import { SignalProcessorService } from './services/signal-processor.service';
-import { PatternLibraryService } from './services/pattern-library.service';
+import { PatternLibraryService, UserPatternQuery } from './services/pattern-library.service';
 import { PredictionEngineService } from './services/prediction-engine.service';
 import { CognitiveValidationService } from './services/validation.service';
 import { CognitiveOrchestratorService } from './services/orchestrator.service';
@@ -598,6 +598,87 @@ async function handleRequest(
       return;
     }
 
+    // === CEDA-25: User-first Pattern Isolation Endpoints ===
+
+    // GET /api/patterns - Get patterns for a user (user-first isolation)
+    // Primary endpoint: GET /api/patterns?user=X
+    // Filtered endpoint: GET /api/patterns?user=X&company=Y&project=Z
+    if (url?.startsWith('/api/patterns') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+
+      // Check if this is GET /api/patterns/:id
+      if (pathParts.length === 3 && pathParts[0] === 'api' && pathParts[1] === 'patterns') {
+        const patternId = pathParts[2];
+        const user = urlObj.searchParams.get('user');
+
+        // User is required for pattern access (user-first isolation)
+        if (!user) {
+          sendJson(res, 400, {
+            error: 'Missing required query parameter: user',
+            message: 'USER is the doorway - all pattern access requires user context',
+          });
+          return;
+        }
+
+        const query: UserPatternQuery = {
+          user,
+          company: urlObj.searchParams.get('company') || undefined,
+          project: urlObj.searchParams.get('project') || undefined,
+        };
+
+        const pattern = patternLibrary.getPatternForUser(patternId, query);
+
+        if (!pattern) {
+          sendJson(res, 404, {
+            error: 'Pattern not found or not accessible',
+            patternId,
+            user,
+          });
+          return;
+        }
+
+        sendJson(res, 200, {
+          pattern,
+          accessedBy: user,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // GET /api/patterns - List patterns for user
+      const user = urlObj.searchParams.get('user');
+
+      // User is required for pattern access (user-first isolation)
+      if (!user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameter: user',
+          message: 'USER is the doorway - all pattern access requires user context',
+        });
+        return;
+      }
+
+      const query: UserPatternQuery = {
+        user,
+        company: urlObj.searchParams.get('company') || undefined,
+        project: urlObj.searchParams.get('project') || undefined,
+      };
+
+      const patterns = patternLibrary.getPatternsForUser(query);
+
+      sendJson(res, 200, {
+        patterns,
+        count: patterns.length,
+        query: {
+          user: query.user,
+          company: query.company || null,
+          project: query.project || null,
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     // === ANTIPATTERN OBSERVATION ENDPOINTS ===
 
     // POST /observe - Receive session observations from Herald
@@ -700,7 +781,6 @@ async function handleRequest(
       });
       return;
     }
-
     // 404
     sendJson(res, 404, { error: 'Not found', availableEndpoints: [
       'GET  /health',
@@ -709,6 +789,9 @@ async function handleRequest(
       'GET  /api/session/:id',
       'POST /api/feedback',
       'GET  /api/stats',
+      'GET  /api/patterns?user=X',
+      'GET  /api/patterns?user=X&company=Y&project=Z',
+      'GET  /api/patterns/:id?user=X',
       'POST /api/herald/heartbeat',
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
