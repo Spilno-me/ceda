@@ -3,13 +3,14 @@
  * Herald MCP Init CLI
  * 
  * Creates .claude/settings.json with Herald MCP configuration
- * in the current directory.
+ * and updates CLAUDE.md with Herald integration instructions.
  * 
- * Usage: npx @spilno/herald-mcp init
+ * Usage: npx @spilno/herald-mcp init [options]
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, basename } from "path";
+import { updateClaudeMdContent, type HeraldContext } from "./templates/claude-md.js";
 
 const HERALD_MCP_CONFIG = {
   mcpServers: {
@@ -31,38 +32,54 @@ Usage:
   npx @spilno/herald-mcp init [options]
 
 Options:
-  --help, -h     Show this help message
-  --force, -f    Overwrite existing settings.json
+  --help, -h          Show this help message
+  --force, -f         Overwrite existing settings.json
+  --company, -c       Company context (e.g., goprint)
+  --project, -p       Project context (e.g., mobidruk)
+  --user, -u          User context (default: plumber)
+  --no-claude-md      Skip CLAUDE.md modification
 
 What it does:
-  Creates .claude/settings.json in the current directory with Herald MCP
-  configuration. This allows Claude Desktop to use Herald for AI-native
-  module design through CEDA.
+  1. Creates .claude/settings.json with Herald MCP configuration
+  2. Creates/updates CLAUDE.md with Herald integration instructions
 
 After running init:
   1. Open Claude Desktop
   2. Herald will be available as an MCP server
-  3. Ask Claude to use Herald for module design
+  3. Claude will know to use Herald for module design
 
 Example:
   cd my-project
-  npx @spilno/herald-mcp init
+  npx @spilno/herald-mcp init --company goprint --project mobidruk
 `);
 }
 
 export interface InitOptions {
   force?: boolean;
   help?: boolean;
+  company?: string;
+  project?: string;
+  user?: string;
+  noClaudeMd?: boolean;
 }
 
 export function parseInitArgs(args: string[]): InitOptions {
   const options: InitOptions = {};
   
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else if (arg === "--force" || arg === "-f") {
       options.force = true;
+    } else if (arg === "--company" || arg === "-c") {
+      options.company = args[++i];
+    } else if (arg === "--project" || arg === "-p") {
+      options.project = args[++i];
+    } else if (arg === "--user" || arg === "-u") {
+      options.user = args[++i];
+    } else if (arg === "--no-claude-md") {
+      options.noClaudeMd = true;
     }
   }
   
@@ -78,8 +95,16 @@ export function runInit(args: string[] = []): void {
   }
   
   const cwd = process.cwd();
+  const projectName = basename(cwd);
   const claudeDir = join(cwd, ".claude");
   const settingsPath = join(claudeDir, "settings.json");
+  const claudeMdPath = join(cwd, "CLAUDE.md");
+  
+  const context: HeraldContext = {
+    company: options.company || "default",
+    project: options.project || projectName,
+    user: options.user || "plumber",
+  };
   
   if (existsSync(settingsPath) && !options.force) {
     console.log(`
@@ -120,19 +145,31 @@ To overwrite:
   }
   
   writeFileSync(settingsPath, JSON.stringify(finalConfig, null, 2) + "\n", "utf-8");
+  console.log("Created .mcp.json with Herald config");
+  
+  if (!options.noClaudeMd) {
+    let existingClaudeMd: string | null = null;
+    if (existsSync(claudeMdPath)) {
+      existingClaudeMd = readFileSync(claudeMdPath, "utf-8");
+    }
+    
+    const updatedClaudeMd = updateClaudeMdContent(existingClaudeMd, context, projectName);
+    writeFileSync(claudeMdPath, updatedClaudeMd, "utf-8");
+    
+    if (existingClaudeMd) {
+      console.log("Updated CLAUDE.md with Herald integration");
+    } else {
+      console.log("Created CLAUDE.md with Herald integration");
+    }
+  }
+  
+  console.log(`Context: ${context.company}/${context.project}/${context.user}`);
   
   console.log(`
-Herald MCP configured successfully!
-
-Created: .claude/settings.json
-
-Configuration:
-${JSON.stringify(HERALD_MCP_CONFIG.mcpServers.herald, null, 2)}
-
-Next steps:
-  1. Open Claude Desktop
-  2. Herald will be available as an MCP server
-  3. Try: "Use Herald to design a safety assessment module"
+Herald is ready. Claude Code will now:
+  - Check patterns before building
+  - Use predictions as starting points
+  - Observe outcomes for learning
 
 Environment variables (optional):
   HERALD_API_URL      CEDA server URL (default: https://getceda.com)
