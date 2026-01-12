@@ -21,9 +21,10 @@ import { SessionService } from './services/session.service';
 import { TenantEmbeddingService } from './services/tenant-embedding.service';
 import { AntipatternService } from './services/antipattern.service';
 import { LegionService, GroundingFeedback, ExecutionResult } from './services/legion.service';
+import { ObservationService } from './services/observation.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, SEED_ANTIPATTERNS } from './seed';
-import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome } from './interfaces';
+import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, ObservationOutcome, StructurePrediction } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -116,6 +117,9 @@ const legionService = new LegionService();
 // Initialize tenant embedding service for AI-native multi-tenancy
 const tenantEmbeddingService = new TenantEmbeddingService(embeddingService, vectorStoreService);
 
+// CEDA-35: Initialize observation service for learning loop
+const observationService = new ObservationService(embeddingService);
+
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
   patternLibrary,
@@ -156,6 +160,15 @@ async function initializeVectorStore(): Promise<void> {
       console.log('[CEDA] AI-native multi-tenancy initialized');
     } else {
       console.warn('[CEDA] Failed to initialize tenants collection');
+    }
+
+    // CEDA-35: Initialize observations collection for learning loop
+    console.log('[CEDA] Initializing observations collection...');
+    const observationsInitialized = await observationService.initialize();
+    if (observationsInitialized) {
+      console.log('[CEDA] Observations collection ready');
+    } else {
+      console.warn('[CEDA] Failed to initialize observations collection');
     }
   } else {
     console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');
@@ -1150,6 +1163,187 @@ async function handleRequest(
       return;
     }
 
+    // === CEDA-35: OBSERVATION CAPTURE ENDPOINTS ===
+
+    // POST /api/observe - Capture pattern observation from Herald session
+    if (url === '/api/observe' && method === 'POST') {
+      const body = await parseBody<{
+        sessionId: string;
+        company: string;
+        project?: string;
+        user?: string;
+        outcome: string;
+        finalStructure?: StructurePrediction;
+        feedback?: string;
+        patternId?: string;
+        patternName?: string;
+        processingTime?: number;
+      }>(req);
+
+      if (!body.sessionId) {
+        sendJson(res, 400, { error: 'Missing required field: sessionId' });
+        return;
+      }
+
+      if (!body.company) {
+        sendJson(res, 400, { error: 'Missing required field: company' });
+        return;
+      }
+
+      if (!body.outcome || !['accepted', 'modified', 'rejected'].includes(body.outcome)) {
+        sendJson(res, 400, { 
+          error: 'Missing or invalid outcome',
+          validOutcomes: ['accepted', 'modified', 'rejected'],
+        });
+        return;
+      }
+
+      const session = sessionService.get(body.sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: 'Session not found', sessionId: body.sessionId });
+        return;
+      }
+
+      if (!session.currentPrediction) {
+        sendJson(res, 400, { error: 'No prediction in session to observe', sessionId: body.sessionId });
+        return;
+      }
+
+      try {
+        const observation = await observationService.capture(
+          session,
+          body.outcome as ObservationOutcome,
+          body.finalStructure,
+          body.feedback,
+          body.patternId,
+          body.patternName,
+          body.company,
+          body.project,
+          body.user,
+          body.processingTime,
+        );
+
+        console.log(`[CEDA] Observation captured: ${observation.id} (${body.outcome}, ${observation.modifications.length} modifications)`);
+
+        sendJson(res, 200, {
+          recorded: true,
+          observationId: observation.id,
+          sessionId: body.sessionId,
+          outcome: observation.outcome,
+          modificationsCount: observation.modifications.length,
+          timestamp: observation.timestamp,
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to capture observation:', error);
+        sendJson(res, 500, {
+          error: 'Failed to capture observation',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/observations/similar - Find similar observations using semantic search
+    if (url?.startsWith('/api/observations/similar') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const input = urlObj.searchParams.get('input');
+      const company = urlObj.searchParams.get('company');
+      const limitParam = urlObj.searchParams.get('limit');
+      const limit = limitParam ? parseInt(limitParam, 10) : 10;
+
+      if (!input) {
+        sendJson(res, 400, { error: 'Missing required query parameter: input' });
+        return;
+      }
+
+      if (!company) {
+        sendJson(res, 400, { error: 'Missing required query parameter: company' });
+        return;
+      }
+
+      try {
+        const observations = await observationService.findSimilar(input, company, limit);
+
+        sendJson(res, 200, {
+          observations: observations.map(obs => ({
+            id: obs.id,
+            sessionId: obs.sessionId,
+            patternId: obs.patternId,
+            patternName: obs.patternName,
+            outcome: obs.outcome,
+            input: obs.input,
+            confidence: obs.confidence,
+            modificationsCount: obs.modifications.length,
+            feedback: obs.feedback,
+            timestamp: obs.timestamp,
+          })),
+          count: observations.length,
+          query: { input, company, limit },
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to find similar observations:', error);
+        sendJson(res, 500, {
+          error: 'Failed to find similar observations',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/observations/pattern/:id/stats - Get statistics for a pattern's observations
+    if (url?.match(/^\/api\/observations\/pattern\/[^/]+\/stats/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const patternId = pathParts[3];
+      const company = urlObj.searchParams.get('company');
+
+      if (!patternId) {
+        sendJson(res, 400, { error: 'Missing pattern ID in URL' });
+        return;
+      }
+
+      try {
+        const stats = await observationService.getPatternStats(patternId, company || undefined);
+
+        sendJson(res, 200, {
+          patternId,
+          company: company || 'all',
+          stats,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to get pattern stats:', error);
+        sendJson(res, 500, {
+          error: 'Failed to get pattern statistics',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/observations/:id - Get a specific observation by ID
+    if (url?.match(/^\/api\/observations\/[^/]+$/) && !url.includes('/similar') && !url.includes('/pattern') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const observationId = pathParts[2];
+
+      if (!observationId) {
+        sendJson(res, 400, { error: 'Missing observation ID in URL' });
+        return;
+      }
+
+      const observation = observationService.getObservation(observationId);
+      if (!observation) {
+        sendJson(res, 404, { error: 'Observation not found', observationId });
+        return;
+      }
+
+      sendJson(res, 200, {
+        observation,
+      });
+      return;
+    }
+
     // === CEDA-32: GROUNDING LOOP ENDPOINTS ===
 
     // POST /api/ground - Receive execution feedback from LEGION
@@ -1270,6 +1464,10 @@ async function handleRequest(
       'PUT  /api/patterns/:id (CEDA-30: update pattern with company scope)',
       'DELETE /api/patterns/:id?company=X&user=Y (CEDA-30: delete pattern)',
       'POST /api/ground (CEDA-32: receive execution feedback for grounding loop)',
+      'POST /api/observe (CEDA-35: capture pattern observation)',
+      'GET  /api/observations/similar?input=X&company=Y (CEDA-35: find similar observations)',
+      'GET  /api/observations/pattern/:id/stats (CEDA-35: pattern observation statistics)',
+      'GET  /api/observations/:id (CEDA-35: get observation by ID)',
       'POST /api/herald/heartbeat',
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
@@ -1334,6 +1532,11 @@ server.listen(PORT, async () => {
 ║   - POST /observe    Receive session observations         ║
 ║   - POST /detect     Check behavior against antipatterns  ║
 ║   - POST /learn      Mark outcome for learning            ║
+║                                                           ║
+║   CEDA-35 Observation Capture:                            ║
+║   - POST /api/observe         Capture pattern observation ║
+║   - GET  /api/observations/similar  Find similar obs      ║
+║   - GET  /api/observations/pattern/:id/stats  Stats       ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 
