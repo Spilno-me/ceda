@@ -8,8 +8,22 @@ import {
   IntentClassification,
   IntentType,
   TenantContext,
+  PatternScope,
 } from '../interfaces';
 import { TenantEmbeddingContext } from './tenant-embedding.service';
+
+/**
+ * User-first pattern query context
+ * USER is the doorway - all pattern access flows through user context
+ */
+export interface UserPatternQuery {
+  /** Required: User ID - the primary doorway for pattern access */
+  user: string;
+  /** Optional: Company filter for narrowing results */
+  company?: string;
+  /** Optional: Project filter for narrowing results */
+  project?: string;
+}
 
 @Injectable()
 export class PatternLibraryService {
@@ -259,5 +273,89 @@ export class PatternLibraryService {
     const results = await vectorStore.searchByVector(fusedEmbedding, 20);
 
     return results.map(r => r.pattern);
+  }
+
+  /**
+   * CEDA-25: User-first pattern isolation
+   * Get patterns accessible to a user with optional company/project filters
+   * 
+   * USER is the doorway - all pattern access flows through user context.
+   * Patterns are returned based on scope hierarchy:
+   * 1. User-scoped patterns (user_id matches)
+   * 2. Project-scoped patterns (if project filter provided)
+   * 3. Company-scoped patterns (if company filter provided)
+   * 4. Global patterns (always included)
+   * 
+   * @param query - User-first query with required user and optional filters
+   * @returns Patterns accessible to the user, filtered by company/project if provided
+   */
+  getPatternsForUser(query: UserPatternQuery): Pattern[] {
+    const { user, company, project } = query;
+    const allPatterns = this.getAllPatterns();
+
+    return allPatterns.filter((pattern) => {
+      const scope = pattern.scope || PatternScope.GLOBAL;
+
+      switch (scope) {
+        case PatternScope.USER:
+          // User-scoped patterns: only visible to the owning user
+          return pattern.user_id === user;
+
+        case PatternScope.PROJECT:
+          // Project-scoped patterns: visible if user is in the project
+          // If project filter is provided, must match
+          if (project) {
+            return pattern.project === project;
+          }
+          // Without project filter, include if user has access (user_id matches or no user_id)
+          return !pattern.user_id || pattern.user_id === user;
+
+        case PatternScope.COMPANY:
+          // Company-scoped patterns: visible if user is in the company
+          // If company filter is provided, must match
+          if (company) {
+            return pattern.company === company;
+          }
+          // Without company filter, include if user has access
+          return !pattern.user_id || pattern.user_id === user;
+
+        case PatternScope.GLOBAL:
+          // Global patterns: always visible to all users
+          return true;
+
+        default:
+          // Default to global behavior for backward compatibility
+          return true;
+      }
+    });
+  }
+
+  /**
+   * CEDA-25: Check if a pattern is accessible to a user
+   * @param patternId - The pattern ID to check
+   * @param query - User-first query context
+   * @returns true if the user can access the pattern
+   */
+  isPatternAccessibleToUser(patternId: string, query: UserPatternQuery): boolean {
+    const pattern = this.getPattern(patternId);
+    if (!pattern) {
+      return false;
+    }
+
+    const accessiblePatterns = this.getPatternsForUser(query);
+    return accessiblePatterns.some((p) => p.id === patternId);
+  }
+
+  /**
+   * CEDA-25: Get a single pattern by ID with user access check
+   * @param patternId - The pattern ID to retrieve
+   * @param query - User-first query context
+   * @returns The pattern if accessible, undefined otherwise
+   */
+  getPatternForUser(patternId: string, query: UserPatternQuery): Pattern | undefined {
+    if (!this.isPatternAccessibleToUser(patternId, query)) {
+      return undefined;
+    }
+    return this.getPattern(patternId);
   }
 }

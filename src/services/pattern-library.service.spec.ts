@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PatternLibraryService } from './pattern-library.service';
-import { PatternCategory, IntentType } from '../interfaces';
+import { PatternLibraryService, UserPatternQuery } from './pattern-library.service';
+import { PatternCategory, IntentType, PatternScope } from '../interfaces';
 import { HSE_PATTERNS } from '../seed';
 
 describe('PatternLibraryService', () => {
@@ -283,6 +283,225 @@ describe('PatternLibraryService', () => {
       expect(patterns).toBeDefined();
       expect(Array.isArray(patterns)).toBe(true);
       expect(patterns.length).toBe(5);
+    });
+  });
+
+  describe('CEDA-25: User-first pattern isolation', () => {
+    describe('getPatternsForUser', () => {
+      it('should return all global patterns for any user', () => {
+        const query: UserPatternQuery = { user: 'user-123' };
+        const patterns = service.getPatternsForUser(query);
+        // HSE_PATTERNS are global by default (no scope set)
+        expect(patterns.length).toBe(5);
+      });
+
+      it('should return user-scoped patterns only to the owning user', () => {
+        const userPattern = {
+          id: 'user-pattern-1',
+          name: 'User Pattern',
+          category: PatternCategory.ASSESSMENT,
+          description: 'A user-specific pattern',
+          scope: PatternScope.USER,
+          user_id: 'user-123',
+          structure: {
+            sections: [{ name: 'Test', fieldTypes: ['text'], required: true }],
+            workflows: ['test'],
+            defaultFields: ['id'],
+          },
+          applicabilityRules: [],
+          confidenceFactors: [],
+          metadata: {
+            version: '1.0.0',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            usageCount: 0,
+            successRate: 0,
+          },
+        };
+        service.registerPattern(userPattern);
+
+        // Owner should see the pattern
+        const ownerQuery: UserPatternQuery = { user: 'user-123' };
+        const ownerPatterns = service.getPatternsForUser(ownerQuery);
+        expect(ownerPatterns.some(p => p.id === 'user-pattern-1')).toBe(true);
+
+        // Other user should NOT see the pattern
+        const otherQuery: UserPatternQuery = { user: 'user-456' };
+        const otherPatterns = service.getPatternsForUser(otherQuery);
+        expect(otherPatterns.some(p => p.id === 'user-pattern-1')).toBe(false);
+      });
+
+      it('should return project-scoped patterns when project filter matches', () => {
+        const projectPattern = {
+          id: 'project-pattern-1',
+          name: 'Project Pattern',
+          category: PatternCategory.ASSESSMENT,
+          description: 'A project-specific pattern',
+          scope: PatternScope.PROJECT,
+          project: 'project-abc',
+          structure: {
+            sections: [{ name: 'Test', fieldTypes: ['text'], required: true }],
+            workflows: ['test'],
+            defaultFields: ['id'],
+          },
+          applicabilityRules: [],
+          confidenceFactors: [],
+          metadata: {
+            version: '1.0.0',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            usageCount: 0,
+            successRate: 0,
+          },
+        };
+        service.registerPattern(projectPattern);
+
+        // User with matching project filter should see the pattern
+        const matchingQuery: UserPatternQuery = { user: 'user-123', project: 'project-abc' };
+        const matchingPatterns = service.getPatternsForUser(matchingQuery);
+        expect(matchingPatterns.some(p => p.id === 'project-pattern-1')).toBe(true);
+
+        // User with different project filter should NOT see the pattern
+        const differentQuery: UserPatternQuery = { user: 'user-123', project: 'project-xyz' };
+        const differentPatterns = service.getPatternsForUser(differentQuery);
+        expect(differentPatterns.some(p => p.id === 'project-pattern-1')).toBe(false);
+      });
+
+      it('should return company-scoped patterns when company filter matches', () => {
+        const companyPattern = {
+          id: 'company-pattern-1',
+          name: 'Company Pattern',
+          category: PatternCategory.ASSESSMENT,
+          description: 'A company-specific pattern',
+          scope: PatternScope.COMPANY,
+          company: 'company-abc',
+          structure: {
+            sections: [{ name: 'Test', fieldTypes: ['text'], required: true }],
+            workflows: ['test'],
+            defaultFields: ['id'],
+          },
+          applicabilityRules: [],
+          confidenceFactors: [],
+          metadata: {
+            version: '1.0.0',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            usageCount: 0,
+            successRate: 0,
+          },
+        };
+        service.registerPattern(companyPattern);
+
+        // User with matching company filter should see the pattern
+        const matchingQuery: UserPatternQuery = { user: 'user-123', company: 'company-abc' };
+        const matchingPatterns = service.getPatternsForUser(matchingQuery);
+        expect(matchingPatterns.some(p => p.id === 'company-pattern-1')).toBe(true);
+
+        // User with different company filter should NOT see the pattern
+        const differentQuery: UserPatternQuery = { user: 'user-123', company: 'company-xyz' };
+        const differentPatterns = service.getPatternsForUser(differentQuery);
+        expect(differentPatterns.some(p => p.id === 'company-pattern-1')).toBe(false);
+      });
+
+      it('should support combined user, company, and project filters', () => {
+        const query: UserPatternQuery = {
+          user: 'user-123',
+          company: 'company-abc',
+          project: 'project-abc',
+        };
+        const patterns = service.getPatternsForUser(query);
+        // Should include global patterns + any matching scoped patterns
+        expect(patterns.length).toBeGreaterThanOrEqual(5);
+      });
+    });
+
+    describe('isPatternAccessibleToUser', () => {
+      it('should return true for accessible global patterns', () => {
+        const query: UserPatternQuery = { user: 'user-123' };
+        const accessible = service.isPatternAccessibleToUser('hse-assessment-default', query);
+        expect(accessible).toBe(true);
+      });
+
+      it('should return false for non-existent patterns', () => {
+        const query: UserPatternQuery = { user: 'user-123' };
+        const accessible = service.isPatternAccessibleToUser('non-existent', query);
+        expect(accessible).toBe(false);
+      });
+
+      it('should return false for user-scoped patterns owned by another user', () => {
+        const userPattern = {
+          id: 'private-pattern',
+          name: 'Private Pattern',
+          category: PatternCategory.ASSESSMENT,
+          description: 'A private pattern',
+          scope: PatternScope.USER,
+          user_id: 'user-owner',
+          structure: {
+            sections: [{ name: 'Test', fieldTypes: ['text'], required: true }],
+            workflows: ['test'],
+            defaultFields: ['id'],
+          },
+          applicabilityRules: [],
+          confidenceFactors: [],
+          metadata: {
+            version: '1.0.0',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            usageCount: 0,
+            successRate: 0,
+          },
+        };
+        service.registerPattern(userPattern);
+
+        const query: UserPatternQuery = { user: 'user-other' };
+        const accessible = service.isPatternAccessibleToUser('private-pattern', query);
+        expect(accessible).toBe(false);
+      });
+    });
+
+    describe('getPatternForUser', () => {
+      it('should return pattern if accessible', () => {
+        const query: UserPatternQuery = { user: 'user-123' };
+        const pattern = service.getPatternForUser('hse-assessment-default', query);
+        expect(pattern).toBeDefined();
+        expect(pattern?.id).toBe('hse-assessment-default');
+      });
+
+      it('should return undefined if pattern not accessible', () => {
+        const userPattern = {
+          id: 'restricted-pattern',
+          name: 'Restricted Pattern',
+          category: PatternCategory.ASSESSMENT,
+          description: 'A restricted pattern',
+          scope: PatternScope.USER,
+          user_id: 'user-owner',
+          structure: {
+            sections: [{ name: 'Test', fieldTypes: ['text'], required: true }],
+            workflows: ['test'],
+            defaultFields: ['id'],
+          },
+          applicabilityRules: [],
+          confidenceFactors: [],
+          metadata: {
+            version: '1.0.0',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            usageCount: 0,
+            successRate: 0,
+          },
+        };
+        service.registerPattern(userPattern);
+
+        const query: UserPatternQuery = { user: 'user-other' };
+        const pattern = service.getPatternForUser('restricted-pattern', query);
+        expect(pattern).toBeUndefined();
+      });
+
+      it('should return undefined for non-existent patterns', () => {
+        const query: UserPatternQuery = { user: 'user-123' };
+        const pattern = service.getPatternForUser('non-existent', query);
+        expect(pattern).toBeUndefined();
+      });
     });
   });
 });
