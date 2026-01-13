@@ -18,6 +18,7 @@ import { AutoFixService } from './services/auto-fix.service';
 import { EmbeddingService } from './services/embedding.service';
 import { VectorStoreService } from './services/vector-store.service';
 import { SessionService } from './services/session.service';
+import { SessionHistoryService } from './services/session-history.service';
 import { TenantEmbeddingService } from './services/tenant-embedding.service';
 import { AntipatternService } from './services/antipattern.service';
 import { LegionService, GroundingFeedback, ExecutionResult } from './services/legion.service';
@@ -115,6 +116,9 @@ predictionEngine.setVectorStore(vectorStoreService);
 
 const validationService = new CognitiveValidationService();
 const sessionService = new SessionService();
+
+// CEDA-46: Initialize session history service for version tracking
+const sessionHistoryService = new SessionHistoryService();
 
 // CEDA-33: Initialize auto-fix service for validation auto-fix pipeline
 const autoFixService = new AutoFixService();
@@ -223,6 +227,15 @@ async function initializeVectorStore(): Promise<void> {
       console.log('[CEDA] Sessions collection ready');
     } else {
       console.warn('[CEDA] Failed to initialize sessions collection');
+    }
+
+    // CEDA-46: Initialize session history collection for version tracking
+    console.log('[CEDA] Initializing session history collection...');
+    const sessionHistoryInitialized = await sessionHistoryService.initialize();
+    if (sessionHistoryInitialized) {
+      console.log('[CEDA] Session history collection ready');
+    } else {
+      console.warn('[CEDA] Failed to initialize session history collection');
     }
   } else {
     console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');
@@ -890,6 +903,204 @@ async function handleRequest(
         console.error('[CEDA] Failed to cleanup sessions:', error);
         sendJson(res, 500, {
           error: 'Failed to cleanup sessions',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // === CEDA-46: Session History and Versioning Endpoints ===
+
+    // GET /api/session/:id/history - Get version history for a session
+    if (url?.match(/^\/api\/session\/[^/]+\/history$/) && method === 'GET') {
+      const sessionId = url.replace('/api/session/', '').replace('/history', '');
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const limitParam = urlObj.searchParams.get('limit');
+      const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) {
+          sendJson(res, 404, { error: 'Session not found', sessionId });
+          return;
+        }
+
+        const history = await sessionHistoryService.getHistory(sessionId, limit);
+
+        sendJson(res, 200, {
+          sessionId: history.sessionId,
+          versions: history.versions.map(v => ({
+            id: v.id,
+            version: v.version,
+            changeType: v.changeType,
+            changedFields: v.changedFields,
+            timestamp: v.timestamp.toISOString(),
+          })),
+          totalVersions: history.totalVersions,
+          currentVersion: history.currentVersion,
+          timestamp: history.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to get session history:', error);
+        sendJson(res, 500, {
+          error: 'Failed to get session history',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/session/:id/history/:version - Get specific version of a session
+    if (url?.match(/^\/api\/session\/[^/]+\/history\/\d+$/) && method === 'GET') {
+      const parts = url.replace('/api/session/', '').split('/history/');
+      const sessionId = parts[0];
+      const versionNumber = parseInt(parts[1], 10);
+
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) {
+          sendJson(res, 404, { error: 'Session not found', sessionId });
+          return;
+        }
+
+        const version = await sessionHistoryService.getVersion(sessionId, versionNumber);
+        if (!version) {
+          sendJson(res, 404, { error: 'Version not found', sessionId, version: versionNumber });
+          return;
+        }
+
+        sendJson(res, 200, {
+          id: version.id,
+          sessionId: version.sessionId,
+          version: version.version,
+          changeType: version.changeType,
+          changedFields: version.changedFields,
+          snapshot: version.snapshot,
+          timestamp: version.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to get session version:', error);
+        sendJson(res, 500, {
+          error: 'Failed to get session version',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // POST /api/session/:id/rollback?version=N - Rollback session to a previous version
+    if (url?.match(/^\/api\/session\/[^/]+\/rollback/) && method === 'POST') {
+      const sessionId = url.replace('/api/session/', '').replace(/\/rollback.*/, '');
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const versionParam = urlObj.searchParams.get('version');
+
+      if (!versionParam) {
+        sendJson(res, 400, { error: 'Missing required query parameter: version' });
+        return;
+      }
+
+      const targetVersion = parseInt(versionParam, 10);
+      if (isNaN(targetVersion) || targetVersion < 1) {
+        sendJson(res, 400, { error: 'Invalid version number', version: versionParam });
+        return;
+      }
+
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) {
+          sendJson(res, 404, { error: 'Session not found', sessionId });
+          return;
+        }
+
+        const result = await sessionHistoryService.rollback(
+          sessionId,
+          targetVersion,
+          async (restoredSession) => {
+            return sessionService.update(sessionId, {
+              currentPrediction: restoredSession.currentPrediction,
+              context: restoredSession.context,
+              participants: restoredSession.participants,
+              status: restoredSession.status,
+            });
+          },
+        );
+
+        if (!result) {
+          sendJson(res, 404, { error: 'Version not found or rollback failed', sessionId, version: targetVersion });
+          return;
+        }
+
+        console.log(`[CEDA] Session ${sessionId} rolled back to version ${targetVersion}`);
+
+        sendJson(res, 200, {
+          success: result.success,
+          sessionId: result.sessionId,
+          rolledBackToVersion: result.rolledBackToVersion,
+          newVersion: result.newVersion,
+          session: {
+            id: result.session.id,
+            status: result.session.status,
+            currentPrediction: result.session.currentPrediction,
+            participants: result.session.participants,
+            updatedAt: result.session.updatedAt.toISOString(),
+          },
+          timestamp: result.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to rollback session:', error);
+        sendJson(res, 500, {
+          error: 'Failed to rollback session',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/session/:id/diff?v1=N&v2=M - Compare two versions of a session
+    if (url?.match(/^\/api\/session\/[^/]+\/diff/) && method === 'GET') {
+      const sessionId = url.replace('/api/session/', '').replace(/\/diff.*/, '');
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const v1Param = urlObj.searchParams.get('v1');
+      const v2Param = urlObj.searchParams.get('v2');
+
+      if (!v1Param || !v2Param) {
+        sendJson(res, 400, { error: 'Missing required query parameters: v1, v2' });
+        return;
+      }
+
+      const v1 = parseInt(v1Param, 10);
+      const v2 = parseInt(v2Param, 10);
+
+      if (isNaN(v1) || isNaN(v2) || v1 < 1 || v2 < 1) {
+        sendJson(res, 400, { error: 'Invalid version numbers', v1: v1Param, v2: v2Param });
+        return;
+      }
+
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) {
+          sendJson(res, 404, { error: 'Session not found', sessionId });
+          return;
+        }
+
+        const diff = await sessionHistoryService.diff(sessionId, v1, v2);
+        if (!diff) {
+          sendJson(res, 404, { error: 'One or both versions not found', sessionId, v1, v2 });
+          return;
+        }
+
+        sendJson(res, 200, {
+          sessionId: diff.sessionId,
+          fromVersion: diff.fromVersion,
+          toVersion: diff.toVersion,
+          changedFields: diff.changedFields,
+          changes: diff.changes,
+          timestamp: diff.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to diff session versions:', error);
+        sendJson(res, 500, {
+          error: 'Failed to diff session versions',
           message: error instanceof Error ? error.message : 'Unknown error',
         });
       }
