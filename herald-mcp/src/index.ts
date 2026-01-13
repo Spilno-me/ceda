@@ -21,7 +21,8 @@ import * as readline from "readline";
 import { runInit } from "./cli/init.js";
 
 // Configuration - all sensitive values from environment only
-const CEDA_API_URL = process.env.HERALD_API_URL;
+// CEDA_URL is primary, HERALD_API_URL for backwards compat, default to cloud
+const CEDA_API_URL = process.env.CEDA_URL || process.env.HERALD_API_URL || "https://getceda.com";
 const CEDA_API_TOKEN = process.env.HERALD_API_TOKEN;
 const CEDA_API_USER = process.env.HERALD_API_USER;
 const CEDA_API_PASS = process.env.HERALD_API_PASS;
@@ -38,7 +39,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.8.0";
+const VERSION = "1.11.0";
 
 // Claude for Herald's voice - REQUIRES user's own API key
 // SECURITY: Never bundle API keys in npm packages
@@ -51,6 +52,64 @@ function getHeraldDir(): string {
 
 function getSessionFile(): string {
   return join(getHeraldDir(), "session");
+}
+
+function getBufferFile(): string {
+  return join(getHeraldDir(), "insight_buffer.json");
+}
+
+interface BufferedInsight {
+  insight: string;
+  topic?: string;
+  targetVault?: string;
+  sourceVault?: string;
+  company: string;
+  project: string;
+  user: string;
+  bufferedAt: string;
+}
+
+function bufferInsight(payload: Omit<BufferedInsight, "bufferedAt">): void {
+  ensureHeraldDir();
+  const bufferFile = getBufferFile();
+  let buffer: BufferedInsight[] = [];
+  if (existsSync(bufferFile)) {
+    try {
+      buffer = JSON.parse(readFileSync(bufferFile, "utf-8"));
+    } catch {
+      buffer = [];
+    }
+  }
+  buffer.push({ ...payload, bufferedAt: new Date().toISOString() });
+  writeFileSync(bufferFile, JSON.stringify(buffer, null, 2));
+}
+
+function getBufferedInsights(): BufferedInsight[] {
+  const bufferFile = getBufferFile();
+  if (existsSync(bufferFile)) {
+    try {
+      return JSON.parse(readFileSync(bufferFile, "utf-8"));
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function clearBuffer(): void {
+  const bufferFile = getBufferFile();
+  if (existsSync(bufferFile)) {
+    unlinkSync(bufferFile);
+  }
+}
+
+function saveFailedInsights(failed: BufferedInsight[]): void {
+  if (failed.length === 0) {
+    clearBuffer();
+  } else {
+    ensureHeraldDir();
+    writeFileSync(getBufferFile(), JSON.stringify(failed, null, 2));
+  }
 }
 
 function ensureHeraldDir(): void {
@@ -604,7 +663,7 @@ const tools: Tool[] = [
   },
   {
     name: "herald_share_insight",
-    description: "Share a pattern insight with another context",
+    description: "Share a pattern insight with another Herald context. Herald instances communicate through shared insights to propagate learned patterns across domains.",
     inputSchema: {
       type: "object",
       properties: {
@@ -613,6 +672,16 @@ const tools: Tool[] = [
         topic: { type: "string", description: "Topic category" },
       },
       required: ["insight"],
+    },
+  },
+  {
+    name: "herald_sync",
+    description: "Flush locally buffered insights to CEDA cloud. Use when insights were recorded in local mode (cloud unavailable) and need to be synced.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dry_run: { type: "boolean", description: "If true, show what would be synced without actually syncing" },
+      },
     },
   },
   {
@@ -763,9 +832,42 @@ Herald will:
       }
 
       case "herald_health": {
-        const result = await callCedaAPI("/health");
+        const cedaHealth = await callCedaAPI("/health");
+        const buffer = getBufferedInsights();
+        const cloudAvailable = !cedaHealth.error;
+
+        const config = {
+          cedaUrl: CEDA_API_URL,
+          company: HERALD_COMPANY,
+          project: HERALD_PROJECT,
+          user: HERALD_USER,
+          vault: HERALD_VAULT || "(not set)",
+        };
+
+        const warnings: string[] = [];
+        if (HERALD_COMPANY === "default") warnings.push("HERALD_COMPANY not set - using 'default'");
+        if (HERALD_PROJECT === "default") warnings.push("HERALD_PROJECT not set - using 'default'");
+        if (!process.env.CEDA_URL && !process.env.HERALD_API_URL) {
+          warnings.push("Using default CEDA_URL (getceda.com) - set CEDA_URL for custom endpoint");
+        }
+
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              herald: {
+                version: VERSION,
+                config,
+                warnings: warnings.length > 0 ? warnings : undefined,
+              },
+              ceda: cedaHealth,
+              buffer: {
+                size: buffer.length,
+                mode: cloudAvailable ? "cloud" : "local",
+                hint: buffer.length > 0 ? "Use herald_sync to flush buffered insights" : undefined,
+              },
+            }, null, 2)
+          }],
         };
       }
 
@@ -879,20 +981,140 @@ Herald will:
         const targetVault = args?.target_vault as string | undefined;
         const topic = args?.topic as string | undefined;
 
-        if (OFFSPRING_CLOUD_MODE) {
+        const payload = {
+          insight,
+          topic,
+          targetVault,
+          sourceVault: HERALD_VAULT || undefined,
+          company: HERALD_COMPANY,
+          project: HERALD_PROJECT,
+          user: HERALD_USER,
+        };
+
+        // Cloud-first: try to POST to CEDA, buffer locally on failure
+        try {
           const result = await callCedaAPI("/api/herald/insight", "POST", {
             insight,
             targetVault,
             topic,
             sourceVault: HERALD_VAULT,
           });
+
+          // Check if API returned an error
+          if (result.error) {
+            bufferInsight(payload);
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: true,
+                  mode: "local",
+                  message: "Insight buffered locally (cloud returned error)",
+                  error: result.error,
+                  bufferSize: getBufferedInsights().length,
+                  hint: "Use herald_sync to flush buffer when cloud recovers",
+                }, null, 2)
+              }],
+            };
+          }
+
           return {
-            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                ...result,
+                mode: "cloud",
+              }, null, 2)
+            }],
+          };
+        } catch (error) {
+          // Cloud unavailable - buffer locally
+          bufferInsight(payload);
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                mode: "local",
+                message: "Insight buffered locally (cloud unavailable)",
+                bufferSize: getBufferedInsights().length,
+                hint: "Use herald_sync to flush buffer when cloud recovers",
+              }, null, 2)
+            }],
+          };
+        }
+      }
+
+      case "herald_sync": {
+        const dryRun = args?.dry_run as boolean | undefined;
+        const buffer = getBufferedInsights();
+
+        if (buffer.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                message: "Buffer empty, nothing to sync",
+                synced: 0,
+              }, null, 2)
+            }],
           };
         }
 
+        if (dryRun) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                dryRun: true,
+                wouldSync: buffer.length,
+                insights: buffer.map(b => ({
+                  topic: b.topic,
+                  insight: b.insight.substring(0, 100) + (b.insight.length > 100 ? "..." : ""),
+                  bufferedAt: b.bufferedAt,
+                })),
+              }, null, 2)
+            }],
+          };
+        }
+
+        const synced: BufferedInsight[] = [];
+        const failed: BufferedInsight[] = [];
+
+        for (const item of buffer) {
+          try {
+            const result = await callCedaAPI("/api/herald/insight", "POST", {
+              insight: item.insight,
+              topic: item.topic,
+              targetVault: item.targetVault,
+              sourceVault: item.sourceVault,
+            });
+
+            if (result.error) {
+              failed.push(item);
+            } else {
+              synced.push(item);
+            }
+          } catch {
+            failed.push(item);
+          }
+        }
+
+        // Save only failed items back to buffer
+        saveFailedInsights(failed);
+
         return {
-          content: [{ type: "text", text: JSON.stringify({ success: true, message: "Insight recorded (local mode)" }, null, 2) }],
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: failed.length === 0 ? "All insights synced to CEDA" : "Partial sync completed",
+              synced: synced.length,
+              failed: failed.length,
+              remainingBuffer: failed.length,
+            }, null, 2)
+          }],
         };
       }
 
