@@ -13,6 +13,8 @@ export type AuditAction =
   | 'pattern_graduated'
   | 'pattern_deleted'
   | 'observation_captured'
+  | 'decay_job_executed'
+  | 'scheduled_decay_job'
   | 'document_created'
   | 'document_deleted';
 
