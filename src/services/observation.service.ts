@@ -170,7 +170,7 @@ class QdrantHttpClient {
 export class ObservationService {
   private client: QdrantHttpClient | null = null;
   private clientInitialized = false;
-  private readonly collectionName = 'observations';
+  private readonly collectionName = 'ceda_observations';
   private observations: Map<string, Observation> = new Map();
   private initialized = false;
 
@@ -425,7 +425,80 @@ export class ObservationService {
   }
 
   /**
+   * CEDA-42: Reconstruct Observation from Qdrant payload
+   * Used for persistent retrieval across redeploys
+   */
+  private reconstructObservationFromPayload(payload: ObservationVector['payload']): Observation {
+    return {
+      id: payload.observationId,
+      sessionId: payload.sessionId,
+      company: payload.company,
+      project: payload.project,
+      user: payload.user,
+      patternId: payload.patternId,
+      patternName: payload.patternName,
+      prediction: JSON.parse(payload.prediction),
+      outcome: payload.outcome,
+      modifications: JSON.parse(payload.modifications),
+      feedback: payload.feedback || undefined,
+      input: payload.input,
+      confidence: payload.confidence,
+      processingTime: payload.processingTime,
+      timestamp: new Date(payload.timestamp),
+      source: payload.source,
+    };
+  }
+
+  /**
+   * CEDA-42: Get all observations from Qdrant with optional company filter
+   * Retrieves from persistent storage, not just in-memory cache
+   */
+  async getObservations(filter?: { company?: string }): Promise<Observation[]> {
+    const client = this.getClient();
+    if (!client || !this.initialized) {
+      // Fallback to in-memory if Qdrant unavailable
+      const results: Observation[] = [];
+      for (const observation of this.observations.values()) {
+        if (!filter?.company || observation.company === filter.company) {
+          results.push(observation);
+        }
+      }
+      return results;
+    }
+
+    try {
+      const qdrantFilter: QdrantFilter | undefined = filter?.company
+        ? { must: [{ key: 'company', match: { value: filter.company } }] }
+        : undefined;
+
+      const result = await client.scroll(this.collectionName, qdrantFilter, 1000);
+
+      const observations: Observation[] = [];
+      for (const point of result.points) {
+        const payload = point.payload as ObservationVector['payload'];
+        const observation = this.reconstructObservationFromPayload(payload);
+        // Cache in memory for future requests
+        this.observations.set(observation.id, observation);
+        observations.push(observation);
+      }
+
+      return observations;
+    } catch (error) {
+      console.error('[ObservationService] Failed to get observations from Qdrant:', error instanceof Error ? error.message : error);
+      // Fallback to in-memory
+      const results: Observation[] = [];
+      for (const observation of this.observations.values()) {
+        if (!filter?.company || observation.company === filter.company) {
+          results.push(observation);
+        }
+      }
+      return results;
+    }
+  }
+
+  /**
    * Find similar observations using semantic search
+   * CEDA-42: Now reconstructs observations from Qdrant payload for persistence
    */
   async findSimilar(input: string, company: string, limit: number = 10): Promise<Observation[]> {
     const client = this.getClient();
@@ -450,10 +523,11 @@ export class ObservationService {
       const results: Observation[] = [];
       for (const hit of searchResult) {
         const payload = hit.payload as ObservationVector['payload'];
-        const observation = this.observations.get(payload.observationId);
-        if (observation) {
-          results.push(observation);
-        }
+        // CEDA-42: Reconstruct from payload for persistence across redeploys
+        const observation = this.reconstructObservationFromPayload(payload);
+        // Cache in memory for future requests
+        this.observations.set(observation.id, observation);
+        results.push(observation);
       }
 
       return results;
@@ -815,24 +889,68 @@ export class ObservationService {
   }
 
   /**
-   * CEDA-41: Get orphan observations (those with fallback patternIds)
+   * CEDA-41/42: Get orphan observations (those with fallback patternIds)
    * These are observations that didn't match a real pattern
+   * CEDA-42: Now retrieves from Qdrant for persistence across redeploys
    */
-  getOrphanObservations(company?: string): Observation[] {
-    const orphans: Observation[] = [];
-    for (const observation of this.observations.values()) {
-      if (this.isFallbackPatternId(observation.patternId)) {
-        if (!company || observation.company === company) {
+  async getOrphanObservations(company?: string): Promise<Observation[]> {
+    const client = this.getClient();
+    if (!client || !this.initialized) {
+      // Fallback to in-memory if Qdrant unavailable
+      const orphans: Observation[] = [];
+      for (const observation of this.observations.values()) {
+        if (this.isFallbackPatternId(observation.patternId)) {
+          if (!company || observation.company === company) {
+            orphans.push(observation);
+          }
+        }
+      }
+      return orphans;
+    }
+
+    try {
+      // Build filter for company and fallback patternIds
+      const qdrantFilter: QdrantFilter = {
+        must: company ? [{ key: 'company', match: { value: company } }] : undefined,
+        should: this.clusteringConfig.fallbackPatternIds.map(id => ({
+          key: 'patternId',
+          match: { value: id },
+        })),
+      };
+
+      const result = await client.scroll(this.collectionName, qdrantFilter, 1000);
+
+      const orphans: Observation[] = [];
+      for (const point of result.points) {
+        const payload = point.payload as ObservationVector['payload'];
+        if (this.isFallbackPatternId(payload.patternId)) {
+          const observation = this.reconstructObservationFromPayload(payload);
+          // Cache in memory for future requests
+          this.observations.set(observation.id, observation);
           orphans.push(observation);
         }
       }
+
+      return orphans;
+    } catch (error) {
+      console.error('[ObservationService] Failed to get orphan observations from Qdrant:', error instanceof Error ? error.message : error);
+      // Fallback to in-memory
+      const orphans: Observation[] = [];
+      for (const observation of this.observations.values()) {
+        if (this.isFallbackPatternId(observation.patternId)) {
+          if (!company || observation.company === company) {
+            orphans.push(observation);
+          }
+        }
+      }
+      return orphans;
     }
-    return orphans;
   }
 
   /**
-   * CEDA-41: Find similar orphan observations using semantic similarity
+   * CEDA-41/42: Find similar orphan observations using semantic similarity
    * Groups observations that are semantically similar
+   * CEDA-42: Now reconstructs observations from Qdrant payload for persistence
    */
   async findSimilarOrphans(input: string, company: string, limit: number = 20): Promise<Observation[]> {
     const client = this.getClient();
@@ -864,8 +982,11 @@ export class ObservationService {
         // Only include results above similarity threshold
         if (hit.score >= this.clusteringConfig.similarityThreshold) {
           const payload = hit.payload as ObservationVector['payload'];
-          const observation = this.observations.get(payload.observationId);
-          if (observation && this.isFallbackPatternId(observation.patternId)) {
+          // CEDA-42: Reconstruct from payload for persistence across redeploys
+          if (this.isFallbackPatternId(payload.patternId)) {
+            const observation = this.reconstructObservationFromPayload(payload);
+            // Cache in memory for future requests
+            this.observations.set(observation.id, observation);
             results.push(observation);
           }
         }
@@ -912,11 +1033,12 @@ export class ObservationService {
   }
 
   /**
-   * CEDA-41: Cluster similar orphan observations
+   * CEDA-41/42: Cluster similar orphan observations
    * Returns clusters that meet the minimum size and acceptance rate
+   * CEDA-42: Now awaits async getOrphanObservations for Qdrant persistence
    */
   async clusterOrphanObservations(company: string): Promise<ObservationCluster[]> {
-    const orphans = this.getOrphanObservations(company);
+    const orphans = await this.getOrphanObservations(company);
     if (orphans.length < this.clusteringConfig.minObservations) {
       return [];
     }
