@@ -38,11 +38,11 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.5.0";
+const VERSION = "1.6.0";
 
-// Claude for Herald's voice - bundled key with limits, users can override
-const HERALD_VOICE_KEY = "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";
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || HERALD_VOICE_KEY;
+// Claude for Herald's voice - REQUIRES user's own API key
+// SECURITY: Never bundle API keys in npm packages
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 
 // Session persistence - context-isolated paths
 function getHeraldDir(): string {
@@ -106,6 +106,10 @@ interface Message {
 }
 
 async function callClaude(systemPrompt: string, messages: Message[]): Promise<string> {
+  if (!ANTHROPIC_API_KEY) {
+    return "Claude voice unavailable. Set ANTHROPIC_API_KEY environment variable to enable chat mode.";
+  }
+
   const anthropicMessages = messages
     .filter(m => m.role !== "system")
     .map(m => ({ role: m.role, content: m.content }));
@@ -355,7 +359,7 @@ Environment:
   HERALD_COMPANY      Company context (default: default)
   HERALD_PROJECT      Project context (default: default)
   HERALD_USER         User context (default: default)
-  ANTHROPIC_API_KEY   Claude key override (optional, bundled key available)
+  ANTHROPIC_API_KEY   Claude API key (required for chat mode)
   HERALD_API_TOKEN    Bearer token (optional)
 
 MCP Mode:
