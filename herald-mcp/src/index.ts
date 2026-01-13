@@ -39,7 +39,10 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.11.0";
+const VERSION = "1.12.0";
+
+// Auto-sync buffer on startup (future: HERALD_AUTO_SYNC=false to disable)
+const AUTO_SYNC_ON_STARTUP = process.env.HERALD_AUTO_SYNC !== "false";
 
 // Claude for Herald's voice - REQUIRES user's own API key
 // SECURITY: Never bundle API keys in npm packages
@@ -1219,10 +1222,53 @@ Herald will:
   }
 });
 
+async function autoSyncBuffer(): Promise<void> {
+  if (!AUTO_SYNC_ON_STARTUP) return;
+
+  const buffer = getBufferedInsights();
+  if (buffer.length === 0) return;
+
+  console.error(`[Herald] Auto-syncing ${buffer.length} buffered insight(s)...`);
+
+  const synced: BufferedInsight[] = [];
+  const failed: BufferedInsight[] = [];
+
+  for (const item of buffer) {
+    try {
+      const result = await callCedaAPI("/api/herald/insight", "POST", {
+        insight: item.insight,
+        topic: item.topic,
+        targetVault: item.targetVault,
+        sourceVault: item.sourceVault,
+      });
+
+      if (result.error) {
+        failed.push(item);
+      } else {
+        synced.push(item);
+      }
+    } catch {
+      failed.push(item);
+    }
+  }
+
+  saveFailedInsights(failed);
+
+  if (synced.length > 0) {
+    console.error(`[Herald] Synced ${synced.length} insight(s) to cloud`);
+  }
+  if (failed.length > 0) {
+    console.error(`[Herald] ${failed.length} insight(s) failed - will retry on next startup`);
+  }
+}
+
 async function runMCP(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Herald MCP server running on stdio");
+
+  // Auto-sync buffered insights on startup
+  await autoSyncBuffer();
 }
 
 // ============================================
