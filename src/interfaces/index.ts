@@ -6,3 +6,4 @@ export * from './antipattern.interface';
 export * from './observation.interface';
 export * from './graduation.interface';
 export * from './abstraction.interface';
+export * from './session.interface';

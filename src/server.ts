@@ -205,6 +205,15 @@ async function initializeVectorStore(): Promise<void> {
     } else {
       console.warn('[CEDA] Failed to initialize audit collection');
     }
+
+    // CEDA-45: Initialize sessions collection for session persistence
+    console.log('[CEDA] Initializing sessions collection...');
+    const sessionsInitialized = await sessionService.initialize();
+    if (sessionsInitialized) {
+      console.log('[CEDA] Sessions collection ready');
+    } else {
+      console.warn('[CEDA] Failed to initialize sessions collection');
+    }
   } else {
     console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');
   }
@@ -480,11 +489,11 @@ async function handleRequest(
       }
 
       // For multi-turn, combine original signal with any refinements
-      const effectiveSignal = session.history.length > 0
+      const effectiveSignal = session.messages.length > 0
         ? sessionService.getCombinedSignal(sessionId) + '. ' + body.input
         : body.input;
 
-      console.log(`\n[CEDA] Processing: "${body.input}" (session: ${sessionId}, turn: ${session.history.length + 1})`);
+      console.log(`\n[CEDA] Processing: "${body.input}" (session: ${sessionId}, turn: ${session.messages.length + 1})`);
       const startTime = Date.now();
 
       // Build tenant context from request body for multi-tenant pattern isolation
@@ -514,7 +523,7 @@ async function handleRequest(
       sessionService.recordPrediction(
         sessionId,
         body.input,
-        session.history.length === 0 ? 'signal' : 'refinement',
+        session.messages.length === 0 ? 'signal' : 'refinement',
         finalPrediction,
         confidence,
         body.participant,
@@ -525,7 +534,7 @@ async function handleRequest(
       sendJson(res, 200, {
         success: result.success,
         sessionId,
-        turn: session.history.length,
+        turn: session.messages.length,
         prediction: finalPrediction,
         validation: result.validation,
         autoFixed: result.autoFixed || autoFixResult.applied.length > 0,
@@ -678,7 +687,7 @@ async function handleRequest(
       const combinedSignal = sessionService.getCombinedSignal(body.sessionId) + '. ' + body.refinement;
       const accumulatedContext = sessionService.getAccumulatedContext(body.sessionId);
 
-      console.log(`\n[CEDA] Refining: "${body.refinement}" (session: ${body.sessionId}, turn: ${session.history.length + 1})`);
+      console.log(`\n[CEDA] Refining: "${body.refinement}" (session: ${body.sessionId}, turn: ${session.messages.length + 1})`);
       const startTime = Date.now();
 
       // Build tenant context from request body for multi-tenant pattern isolation
@@ -704,7 +713,7 @@ async function handleRequest(
       sendJson(res, 200, {
         success: result.success,
         sessionId: body.sessionId,
-        turn: session.history.length,
+        turn: session.messages.length,
         refinement: body.refinement,
         prediction: result.prediction,
         validation: result.validation,
@@ -727,10 +736,10 @@ async function handleRequest(
       sendJson(res, 200, {
         sessionId: session.id,
         originalSignal: session.originalSignal,
-        turns: session.history.length,
+        turns: session.messages.length,
         participants: session.participants,
         currentPrediction: session.currentPrediction,
-        history: session.history.map(h => ({
+        history: session.messages.map((h: import('./interfaces').SessionMessage) => ({
           turn: h.turn,
           input: h.input,
           inputType: h.inputType,
@@ -800,6 +809,80 @@ async function handleRequest(
         sessionId,
         timestamp: new Date().toISOString(),
       });
+      return;
+    }
+
+    // === CEDA-45: Session Persistence Endpoints ===
+
+    // GET /api/sessions - List sessions with optional filters
+    if (url?.startsWith('/api/sessions') && method === 'GET' && !url.includes('/cleanup')) {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const company = urlObj.searchParams.get('company') || undefined;
+      const project = urlObj.searchParams.get('project') || undefined;
+      const user = urlObj.searchParams.get('user') || undefined;
+      const status = urlObj.searchParams.get('status') as 'active' | 'archived' | 'expired' | undefined;
+      const limitParam = urlObj.searchParams.get('limit');
+      const limit = limitParam ? parseInt(limitParam, 10) : 100;
+
+      try {
+        const sessions = await sessionService.list({
+          company,
+          project,
+          user,
+          status,
+          limit,
+        });
+
+        sendJson(res, 200, {
+          sessions: sessions.map(s => ({
+            id: s.id,
+            company: s.company,
+            project: s.project,
+            user: s.user,
+            status: s.status,
+            turns: s.messages.length,
+            participants: s.participants,
+            hasCurrentPrediction: !!s.currentPrediction,
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            expiresAt: s.expiresAt,
+          })),
+          count: sessions.length,
+          filter: { company, project, user, status, limit },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to list sessions:', error);
+        sendJson(res, 500, {
+          error: 'Failed to list sessions',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // POST /api/sessions/cleanup - Trigger session cleanup/expiration
+    if (url === '/api/sessions/cleanup' && method === 'POST') {
+      try {
+        const result = await sessionService.expireSessions();
+
+        console.log(`[CEDA] Session cleanup: ${result.expiredCount} expired, ${result.archivedCount} archived`);
+
+        sendJson(res, 200, {
+          success: true,
+          expiredCount: result.expiredCount,
+          archivedCount: result.archivedCount,
+          expiredIds: result.expiredIds,
+          archivedIds: result.archivedIds,
+          timestamp: result.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to cleanup sessions:', error);
+        sendJson(res, 500, {
+          error: 'Failed to cleanup sessions',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
       return;
     }
 
@@ -2314,6 +2397,8 @@ async function handleRequest(
       'GET  /api/session/:id',
       'PUT  /api/session/:id (CEDA-34: update session for stateless Herald)',
       'DELETE /api/session/:id (CEDA-34: delete session)',
+      'GET  /api/sessions?company=X&limit=N (CEDA-45: list sessions with filters)',
+      'POST /api/sessions/cleanup (CEDA-45: trigger session cleanup/expiration)',
       'POST /api/feedback',
       'GET  /api/stats',
       'GET  /api/patterns?user=X',
