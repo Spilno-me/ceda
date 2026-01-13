@@ -1,9 +1,9 @@
 /**
- * CEDA Demo Server
+ * CEDA Server v1.0.0
  *
- * Minimal HTTP server to demonstrate the cognitive pipeline.
- * Run: yarn demo
- * Test: curl -X POST http://localhost:3030/api/predict -H "Content-Type: application/json" -d '{"input": "create assessment module"}'
+ * Cognitive Event-Driven Architecture - AI-native pattern learning.
+ * Run: yarn serve
+ * Test: curl -X POST http://localhost:3030/api/predict -H "Content-Type: application/json" -d '{"input": "create assessment module", "company": "spilno"}'
  */
 
 import * as http from 'http';
