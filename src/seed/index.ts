@@ -25,8 +25,8 @@ export { SEED_ANTIPATTERNS, loadAntipatterns } from './antipatterns';
 // Design System domain patterns (global)
 export { DESIGNSYSTEM_PATTERNS, loadDesignSystemPatterns } from './designsystem-patterns';
 
-// Salvador ecosystem patterns (salvador CLI + salvador-mcp)
-export { SALVADOR_PATTERNS, loadSalvadorPatterns } from './salvador-patterns';
+// Anteater ecosystem patterns (anteater + salvador-mcp)
+export { ANTEATER_PATTERNS, loadAnteaterPatterns } from './anteater-patterns';
 
 // Methodology patterns (shared/cross-domain) - Five Hats AI Consilium 2026-01-13
 export { METHODOLOGY_PATTERNS, loadMethodologyPatterns } from './methodology-patterns';

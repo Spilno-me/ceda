@@ -5,7 +5,7 @@
  * These patterns enable high-confidence predictions for MCP servers like salvador-mcp.
  *
  * Multi-tenant Pattern Isolation (CEDA-30):
- * - Patterns with company='salvador' for design system domain
+ * - Patterns with company='anteater' for design system domain
  * - Can be shared globally (company=null) for general design system tasks
  */
 

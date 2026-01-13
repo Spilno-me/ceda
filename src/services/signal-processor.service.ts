@@ -71,8 +71,8 @@ export class SignalProcessorService {
     ['accessibility', [/accessibility/i, /wcag/i, /a11y/i, /contrast/i, /aria/i, /screen.?reader/i]],
     ['pattern', [/pattern/i, /layout/i, /responsive/i, /navigation/i, /grid/i]],
     ['review', [/review/i, /analyze/i, /audit/i, /check/i, /validate/i, /mcp/i, /project/i]],
-    // Salvador ecosystem patterns
-    ['scaffold', [/scaffold/i, /design.?system/i, /generate.*project/i, /create.*ds/i, /npx\s+salvador/i, /salvador\s+\w+/i]],
+    // Anteater ecosystem patterns (anteater + salvador-mcp)
+    ['scaffold', [/scaffold/i, /design.?system/i, /generate.*project/i, /create.*ds/i, /npx\s+anteater/i, /anteater\s+\w+/i]],
     ['oklch', [/oklch/i, /color.?scale/i, /perceptual/i, /lightness/i, /chroma/i]],
     ['semantic', [/semantic/i, /alias/i, /mapping/i, /interactive/i, /primitive/i]],
     ['shadcn', [/shadcn/i, /add\s+(button|card|dialog|input)/i, /fetch.*component/i, /radix/i]],

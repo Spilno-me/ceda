@@ -10,7 +10,7 @@
  * - Spilno patterns (company: spilno)
  *
  * Additional pattern sets:
- * - Salvador patterns (design system ecosystem)
+ * - Anteater patterns (design system ecosystem)
  * - Design System patterns (global)
  * - Methodology patterns (cross-domain)
  */
@@ -20,7 +20,7 @@ import {
   HSE_PATTERNS,
   GOPRINT_PATTERNS,
   SPILNO_PATTERNS,
-  SALVADOR_PATTERNS,
+  ANTEATER_PATTERNS,
   DESIGNSYSTEM_PATTERNS,
   METHODOLOGY_PATTERNS,
 } from '../seed';
@@ -45,10 +45,10 @@ async function seedPatterns(): Promise<void> {
   patternLibrary.loadPatterns(SPILNO_PATTERNS);
   console.log(`[CEDA] Loaded ${SPILNO_PATTERNS.length} Spilno patterns`);
 
-  // Load Salvador patterns (design system ecosystem)
-  console.log('[CEDA] Loading Salvador patterns (design system ecosystem)...');
-  patternLibrary.loadPatterns(SALVADOR_PATTERNS);
-  console.log(`[CEDA] Loaded ${SALVADOR_PATTERNS.length} Salvador patterns`);
+  // Load Anteater patterns (design system ecosystem)
+  console.log('[CEDA] Loading Anteater patterns (design system ecosystem)...');
+  patternLibrary.loadPatterns(ANTEATER_PATTERNS);
+  console.log(`[CEDA] Loaded ${ANTEATER_PATTERNS.length} Anteater patterns`);
 
   // Load Design System patterns (global)
   console.log('[CEDA] Loading Design System patterns (global)...');
