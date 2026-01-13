@@ -29,9 +29,10 @@ import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
 import { DocumentService } from './services/document.service';
 import { QualityScoreService } from './services/quality-score.service';
+import { LinkingService } from './services/linking.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, DESIGNSYSTEM_PATTERNS, SALVADOR_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
-import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel, CreateDocumentDto, UpdateDocumentDto, LinkDocumentDto, DocumentSearchParams, GraphQueryParams, DocumentType, DocumentLinkType } from './interfaces';
+import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel, CreateDocumentDto, UpdateDocumentDto, LinkDocumentDto, DocumentSearchParams, GraphQueryParams, DocumentType, DocumentLinkType, WrapEntityDto, CreateLinkDto, LinkableType, LinkType } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -159,6 +160,9 @@ const qualityScoreService = new QualityScoreService();
 
 // CEDA-47: Initialize document service for AI-native knowledge organization
 const documentService = new DocumentService(embeddingService);
+
+// CEDA-48: Initialize linking service for bidirectional linking
+const linkingService = new LinkingService(patternLibrary, observationService);
 
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
@@ -3113,6 +3117,158 @@ async function handleRequest(
       return;
     }
 
+    // === CEDA-48: Bidirectional Linking Endpoints ===
+
+    // POST /api/linking/wrap/:type/:id - Wrap a pattern or observation as a linkable node
+    if (url?.match(/^\/api\/linking\/wrap\/(pattern|observation)\/[^/]+$/) && method === 'POST') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const entityType = pathParts[2] as LinkableType;
+      const entityId = pathParts[3];
+
+      const body = await parseBody<WrapEntityDto>(req);
+
+      if (!body.company || !body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      if (checkRateLimitAndRespond(body.company, res)) {
+        return;
+      }
+
+      try {
+        let result;
+        if (entityType === 'pattern') {
+          result = linkingService.wrapPattern(entityId, body.company, body.user, body);
+        } else {
+          result = await linkingService.wrapObservation(entityId, body.company, body.user, body);
+        }
+
+        sendJson(res, result.isNew ? 201 : 200, {
+          ...result,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        sendJson(res, 404, {
+          error: 'Entity not found or access denied',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // POST /api/linking/link - Create a link between entities
+    if (url === '/api/linking/link' && method === 'POST') {
+      const body = await parseBody<CreateLinkDto>(req);
+
+      if (!body.sourceId || !body.sourceType || !body.targetId || !body.targetType || !body.linkType || !body.company || !body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['sourceId', 'sourceType', 'targetId', 'targetType', 'linkType', 'company', 'user'],
+        });
+        return;
+      }
+
+      const validLinkTypes: LinkType[] = ['derived_from', 'supports', 'contradicts', 'related', 'refines'];
+      if (!validLinkTypes.includes(body.linkType)) {
+        sendJson(res, 400, {
+          error: 'Invalid link type',
+          validLinkTypes,
+        });
+        return;
+      }
+
+      if (checkRateLimitAndRespond(body.company, res)) {
+        return;
+      }
+
+      try {
+        const result = await linkingService.createLink(body);
+
+        sendJson(res, result.isNew ? 201 : 200, {
+          ...result,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        sendJson(res, 400, {
+          error: 'Failed to create link',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/patterns/:id/network - Get pattern network graph
+    if (url?.match(/^\/api\/patterns\/[^/]+\/network/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const patternId = pathParts[2];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+      const depth = parseInt(urlObj.searchParams.get('depth') || '2', 10);
+      const linkTypesParam = urlObj.searchParams.get('linkTypes');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const linkTypes = linkTypesParam ? linkTypesParam.split(',') as LinkType[] : undefined;
+      const network = linkingService.getPatternNetwork(patternId, depth, company, user, linkTypes);
+
+      sendJson(res, 200, {
+        network,
+        patternId,
+        depth,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/patterns/:id/related - Get related patterns
+    if (url?.match(/^\/api\/patterns\/[^/]+\/related/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const patternId = pathParts[2];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const relatedPatterns = linkingService.getRelatedPatterns(patternId, company, user);
+
+      sendJson(res, 200, {
+        patternId,
+        relatedPatterns,
+        count: relatedPatterns.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/linking/stats - Get linking service statistics
+    if (url === '/api/linking/stats' && method === 'GET') {
+      sendJson(res, 200, {
+        nodeCount: linkingService.getNodeCount(),
+        linkCount: linkingService.getLinkCount(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     // 404
     sendJson(res, 404, { error: 'Not found', availableEndpoints: [
       'GET  /health',
@@ -3158,6 +3314,11 @@ async function handleRequest(
       'POST /api/clustering/check (CEDA-41: trigger clustering for company)',
       'GET  /api/clustering/orphans (CEDA-41: get orphan observations)',
       'GET  /api/clustering/config (CEDA-41: get clustering configuration)',
+      'POST /api/linking/wrap/:type/:id (CEDA-48: wrap pattern/observation as linkable node)',
+      'POST /api/linking/link (CEDA-48: create link between entities)',
+      'GET  /api/patterns/:id/network (CEDA-48: get pattern network graph)',
+      'GET  /api/patterns/:id/related (CEDA-48: get related patterns)',
+      'GET  /api/linking/stats (CEDA-48: get linking service statistics)',
       'POST /api/herald/heartbeat',
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
