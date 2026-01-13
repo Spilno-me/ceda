@@ -30,6 +30,7 @@ import { AuditService } from './services/audit.service';
 import { DocumentService } from './services/document.service';
 import { QualityScoreService } from './services/quality-score.service';
 import { LinkingService } from './services/linking.service';
+import { AnomalyDetectionService } from './services/anomaly-detection.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, DESIGNSYSTEM_PATTERNS, SALVADOR_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel, CreateDocumentDto, UpdateDocumentDto, LinkDocumentDto, DocumentSearchParams, GraphQueryParams, DocumentType, DocumentLinkType, WrapEntityDto, CreateLinkDto, LinkableType, LinkType } from './interfaces';
@@ -164,6 +165,9 @@ const documentService = new DocumentService(embeddingService);
 // CEDA-48: Initialize linking service for bidirectional linking
 const linkingService = new LinkingService(patternLibrary, observationService);
 
+// CEDA-52: Initialize anomaly detection service for detecting suspicious patterns
+const anomalyDetectionService = new AnomalyDetectionService(patternLibrary, qualityScoreService);
+
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
   patternLibrary,
@@ -240,6 +244,15 @@ async function initializeVectorStore(): Promise<void> {
       console.log('[CEDA] Session history collection ready');
     } else {
       console.warn('[CEDA] Failed to initialize session history collection');
+    }
+
+    // CEDA-52: Initialize anomalies collection for anomaly detection
+    console.log('[CEDA] Initializing anomalies collection...');
+    const anomaliesInitialized = await anomalyDetectionService.initialize();
+    if (anomaliesInitialized) {
+      console.log('[CEDA] Anomalies collection ready');
+    } else {
+      console.warn('[CEDA] Failed to initialize anomalies collection');
     }
   } else {
     console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');
@@ -584,6 +597,7 @@ async function handleRequest(
         sessionId: string;
         accepted: boolean;
         comment?: string;
+        patternId?: string;
       }>(req);
 
       if (!body.sessionId) {
@@ -593,10 +607,25 @@ async function handleRequest(
 
       console.log(`[CEDA] Feedback for session ${body.sessionId}: ${body.accepted ? 'accepted' : 'rejected'}`);
 
+      // CEDA-51: Boost pattern quality score when prediction is accepted
+      let boostedPattern = null;
+      if (body.accepted && body.patternId) {
+        const pattern = patternLibrary.getPattern(body.patternId);
+        if (pattern) {
+          boostedPattern = qualityScoreService.boostOnUsage(pattern);
+          patternLibrary.registerPattern(boostedPattern);
+          console.log(`[CEDA-51] Boosted quality score for pattern ${body.patternId}: ${pattern.qualityScore ?? 'N/A'} -> ${boostedPattern.qualityScore}`);
+        }
+      }
+
       sendJson(res, 200, {
         recorded: true,
         sessionId: body.sessionId,
         feedback: body.accepted ? 'positive' : 'negative',
+        qualityBoost: boostedPattern ? {
+          patternId: body.patternId,
+          newScore: boostedPattern.qualityScore,
+        } : null,
       });
       return;
     }
@@ -1393,6 +1422,146 @@ async function handleRequest(
         });
         return;
       }
+    }
+
+    // === CEDA-51: Quality Decay Endpoints ===
+
+    // GET /api/patterns/:id/decay-preview - Preview decay for a specific pattern
+    if (url?.match(/^\/api\/patterns\/[^/]+\/decay-preview/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      
+      if (pathParts.length === 4 && pathParts[0] === 'api' && pathParts[1] === 'patterns' && pathParts[3] === 'decay-preview') {
+        const patternId = pathParts[2];
+        const user = urlObj.searchParams.get('user');
+        const threshold = parseInt(urlObj.searchParams.get('threshold') || '30', 10);
+
+        if (!user) {
+          sendJson(res, 400, {
+            error: 'Missing required query parameter: user',
+            message: 'USER is the doorway - all pattern access requires user context',
+          });
+          return;
+        }
+
+        const query: UserPatternQuery = {
+          user,
+          company: urlObj.searchParams.get('company') || undefined,
+          project: urlObj.searchParams.get('project') || undefined,
+        };
+
+        const pattern = patternLibrary.getPatternForUser(patternId, query);
+
+        if (!pattern) {
+          sendJson(res, 404, {
+            error: 'Pattern not found or not accessible',
+            patternId,
+            user,
+          });
+          return;
+        }
+
+        const decayPreview = qualityScoreService.getDecayPreview(pattern, threshold);
+
+        sendJson(res, 200, {
+          ...decayPreview,
+          decayConfig: qualityScoreService.getDecayConfig(),
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+
+    // POST /api/patterns/decay-job - Admin endpoint to trigger decay job
+    if (url === '/api/patterns/decay-job' && method === 'POST') {
+      const body = await parseBody<{
+        user: string;
+        company?: string;
+        project?: string;
+        threshold?: number;
+      }>(req);
+
+      if (!body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required field: user',
+          message: 'USER is the doorway - all pattern access requires user context',
+        });
+        return;
+      }
+
+      const query: UserPatternQuery = {
+        user: body.user,
+        company: body.company,
+        project: body.project,
+      };
+
+      const threshold = body.threshold ?? qualityScoreService.getDefaultThreshold();
+      const patterns = patternLibrary.getPatternsForUser(query);
+      
+      const { result, updatedPatterns } = qualityScoreService.runDecayJob(patterns, threshold);
+
+      // Update patterns in the library
+      for (const updatedPattern of updatedPatterns) {
+        patternLibrary.registerPattern(updatedPattern);
+      }
+
+      // CEDA-43: Audit log decay job execution
+      await auditService.log(
+        'decay_job_executed',
+        'system',
+        body.company || 'global',
+        body.user,
+        { 
+          processedCount: result.processedCount,
+          decayedCount: result.decayedCount,
+          droppedBelowThreshold: result.droppedBelowThreshold,
+        },
+        getClientIp(req),
+      );
+
+      sendJson(res, 200, {
+        ...result,
+        decayConfig: qualityScoreService.getDecayConfig(),
+      });
+      return;
+    }
+
+    // GET /api/patterns/decaying - Get patterns approaching decay threshold
+    if (url?.startsWith('/api/patterns/decaying') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const user = urlObj.searchParams.get('user');
+      const threshold = parseInt(urlObj.searchParams.get('threshold') || '30', 10);
+
+      if (!user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameter: user',
+          message: 'USER is the doorway - all pattern access requires user context',
+        });
+        return;
+      }
+
+      const query: UserPatternQuery = {
+        user,
+        company: urlObj.searchParams.get('company') || undefined,
+        project: urlObj.searchParams.get('project') || undefined,
+      };
+
+      const patterns = patternLibrary.getPatternsForUser(query);
+      const decayingPatterns = qualityScoreService.getDecayingPatterns(patterns, threshold);
+
+      sendJson(res, 200, {
+        patterns: decayingPatterns.map(({ pattern, preview }) => ({
+          id: pattern.id,
+          name: pattern.name,
+          category: pattern.category,
+          ...preview,
+        })),
+        count: decayingPatterns.length,
+        threshold,
+        decayConfig: qualityScoreService.getDecayConfig(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
     }
 
     // === CEDA-25: User-first Pattern Isolation Endpoints ===
@@ -2716,16 +2885,134 @@ async function handleRequest(
       return;
     }
 
-    // GET /api/clustering/config - Get clustering configuration
-    if (url === '/api/clustering/config' && method === 'GET') {
-      sendJson(res, 200, {
-        config: observationService.getClusteringConfig(),
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
+        // GET /api/clustering/config - Get clustering configuration
+        if (url === '/api/clustering/config' && method === 'GET') {
+          sendJson(res, 200, {
+            config: observationService.getClusteringConfig(),
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
 
-    // GET /api/abstractions/safety - Get safety settings
+        // === CEDA-52: ANOMALY DETECTION ENDPOINTS ===
+
+        // GET /api/anomalies - List anomalies with optional filtering
+        if (url?.startsWith('/api/anomalies') && method === 'GET' && !url.includes('/api/anomalies/')) {
+          const urlObj = new URL(url, `http://localhost:${PORT}`);
+          const company = urlObj.searchParams.get('company') || undefined;
+          const type = urlObj.searchParams.get('type') || undefined;
+          const status = urlObj.searchParams.get('status') || undefined;
+          const severity = urlObj.searchParams.get('severity') || undefined;
+
+          try {
+            const anomalies = await anomalyDetectionService.getAnomalies({
+              company,
+              type: type as import('./interfaces').AnomalyType | undefined,
+              status: status as import('./interfaces').AnomalyStatus | undefined,
+              severity: severity as import('./interfaces').AnomalySeverity | undefined,
+            });
+
+            sendJson(res, 200, {
+              anomalies,
+              count: anomalies.length,
+              filter: { company, type, status, severity },
+              timestamp: new Date().toISOString(),
+            });
+          } catch (error) {
+            console.error('[CEDA] Failed to get anomalies:', error);
+            sendJson(res, 500, {
+              error: 'Failed to get anomalies',
+              message: error instanceof Error ? error.message : 'Unknown error',
+            });
+          }
+          return;
+        }
+
+        // POST /api/anomalies/sweep - Trigger detection sweep
+        if (url === '/api/anomalies/sweep' && method === 'POST') {
+          const body = await parseBody<{
+            company?: string;
+          }>(req);
+
+          try {
+            const results = await anomalyDetectionService.runDetectionSweep(body.company);
+
+            const totalAnomalies = results.reduce((sum, r) => sum + r.anomaliesDetected.length, 0);
+            console.log(`[CEDA-52] Detection sweep complete: ${totalAnomalies} anomalies detected across ${results.length} companies`);
+
+            sendJson(res, 200, {
+              results,
+              totalAnomalies,
+              companiesScanned: results.length,
+              timestamp: new Date().toISOString(),
+            });
+          } catch (error) {
+            console.error('[CEDA] Detection sweep failed:', error);
+            sendJson(res, 500, {
+              error: 'Detection sweep failed',
+              message: error instanceof Error ? error.message : 'Unknown error',
+            });
+          }
+          return;
+        }
+
+        // POST /api/anomalies/:id/acknowledge - Acknowledge an anomaly
+        if (url?.match(/^\/api\/anomalies\/[^/]+\/acknowledge$/) && method === 'POST') {
+          const urlObj = new URL(url, `http://localhost:${PORT}`);
+          const pathParts = urlObj.pathname.split('/').filter(Boolean);
+          const anomalyId = pathParts[2];
+
+          const body = await parseBody<{
+            acknowledgedBy?: string;
+          }>(req);
+
+          const anomaly = await anomalyDetectionService.acknowledge(anomalyId, body.acknowledgedBy);
+
+          if (!anomaly) {
+            sendJson(res, 404, {
+              error: 'Anomaly not found',
+              anomalyId,
+            });
+            return;
+          }
+
+          sendJson(res, 200, {
+            acknowledged: true,
+            anomaly,
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+
+        // POST /api/anomalies/:id/resolve - Resolve an anomaly
+        if (url?.match(/^\/api\/anomalies\/[^/]+\/resolve$/) && method === 'POST') {
+          const urlObj = new URL(url, `http://localhost:${PORT}`);
+          const pathParts = urlObj.pathname.split('/').filter(Boolean);
+          const anomalyId = pathParts[2];
+
+          const body = await parseBody<{
+            resolvedBy?: string;
+          }>(req);
+
+          const anomaly = await anomalyDetectionService.resolve(anomalyId, body.resolvedBy);
+
+          if (!anomaly) {
+            sendJson(res, 404, {
+              error: 'Anomaly not found',
+              anomalyId,
+            });
+            return;
+          }
+
+          sendJson(res, 200, {
+            resolved: true,
+            anomaly,
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+
+        // GET /api/abstractions/safety - Get safety settings
     if (url === '/api/abstractions/safety' && method === 'GET') {
       const settings = abstractionService.getSafetySettings();
 
@@ -3323,10 +3610,14 @@ async function handleRequest(
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
       'GET  /api/herald/insights',
-      'POST /observe',
-      'POST /detect',
-      'POST /learn',
-    ]});
+          'POST /observe',
+          'POST /detect',
+          'POST /learn',
+          'GET  /api/anomalies (CEDA-52: list anomalies with optional filtering)',
+          'POST /api/anomalies/sweep (CEDA-52: trigger detection sweep)',
+          'POST /api/anomalies/:id/acknowledge (CEDA-52: acknowledge an anomaly)',
+          'POST /api/anomalies/:id/resolve (CEDA-52: resolve an anomaly)',
+        ]});
   } catch (error) {
     console.error('[CEDA] Error:', error);
     sendJson(res, 500, {
@@ -3374,10 +3665,78 @@ server.listen(PORT, async () => {
   initializeVectorStore().catch(err => {
     console.error('[CEDA] Vector store initialization error:', err);
   });
+
+  // CEDA-51: Schedule daily decay job at 3 AM UTC
+  scheduleDecayJob();
 });
+
+// CEDA-51: Decay job scheduler
+let decayJobTimer: NodeJS.Timeout | null = null;
+
+function scheduleDecayJob(): void {
+  const now = new Date();
+  const targetHour = 3; // 3 AM UTC
+  
+  // Calculate next 3 AM UTC
+  const next3AM = new Date(now);
+  next3AM.setUTCHours(targetHour, 0, 0, 0);
+  
+  // If we've already passed 3 AM today, schedule for tomorrow
+  if (now >= next3AM) {
+    next3AM.setUTCDate(next3AM.getUTCDate() + 1);
+  }
+  
+  const msUntilNext3AM = next3AM.getTime() - now.getTime();
+  
+  console.log(`[CEDA-51] Decay job scheduled for ${next3AM.toISOString()} (in ${Math.round(msUntilNext3AM / 1000 / 60)} minutes)`);
+  
+  decayJobTimer = setTimeout(() => {
+    runScheduledDecayJob();
+    // Schedule the next run (24 hours from now)
+    scheduleDecayJob();
+  }, msUntilNext3AM);
+}
+
+async function runScheduledDecayJob(): Promise<void> {
+  console.log('[CEDA-51] Running scheduled decay job at 3 AM UTC...');
+  
+  try {
+    const allPatterns = patternLibrary.getAllPatterns();
+    const threshold = qualityScoreService.getDefaultThreshold();
+    
+    const { result, updatedPatterns } = qualityScoreService.runDecayJob(allPatterns, threshold);
+    
+    // Update patterns in the library
+    for (const updatedPattern of updatedPatterns) {
+      patternLibrary.registerPattern(updatedPattern);
+    }
+    
+    // Log to audit service
+    await auditService.log(
+      'scheduled_decay_job',
+      'system',
+      'global',
+      'system',
+      {
+        processedCount: result.processedCount,
+        decayedCount: result.decayedCount,
+        droppedBelowThreshold: result.droppedBelowThreshold,
+        scheduledTime: new Date().toISOString(),
+      },
+      'localhost',
+    );
+    
+    console.log(`[CEDA-51] Scheduled decay job completed: ${result.decayedCount}/${result.processedCount} patterns decayed`);
+  } catch (error) {
+    console.error('[CEDA-51] Scheduled decay job failed:', error);
+  }
+}
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('\n[CEDA] Shutting down...');
+  if (decayJobTimer) {
+    clearTimeout(decayJobTimer);
+  }
   server.close(() => process.exit(0));
 });

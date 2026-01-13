@@ -9,3 +9,4 @@ export * from './abstraction.interface';
 export * from './document.interface';
 export * from './session.interface';
 export * from './linking.interface';
+export * from './anomaly.interface';

@@ -323,4 +323,291 @@ describe('QualityScoreService', () => {
       expect(sum).toBe(1);
     });
   });
+
+  // CEDA-51: Quality Decay Tests
+  describe('calculateDecay', () => {
+    it('should return 0 decay for recently used patterns', () => {
+      const pattern = createTestPattern({
+        qualityScore: 80,
+        confidence: {
+          base: 0.9,
+          lastGrounded: new Date(),
+          groundingCount: 10,
+          decayRate: 0.01,
+        },
+      });
+      
+      const decay = service.calculateDecay(pattern);
+      
+      expect(decay).toBe(0);
+    });
+
+    it('should calculate decay based on days since last use', () => {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      const pattern = createTestPattern({
+        qualityScore: 80,
+        metadata: {
+          version: '1.0.0',
+          createdAt: new Date(),
+          updatedAt: thirtyDaysAgo,
+          usageCount: 10,
+          successRate: 0,
+        },
+        confidence: {
+          base: 0.9,
+          lastGrounded: thirtyDaysAgo,
+          groundingCount: 10,
+          decayRate: 0.01,
+        },
+      });
+      
+      const decay = service.calculateDecay(pattern);
+      
+      // With 30 days (half-life), decay should be approximately 50% of score
+      expect(decay).toBeGreaterThan(0);
+      expect(decay).toBeLessThanOrEqual(40); // ~50% of 80
+    });
+
+    it('should slow decay for patterns with high acceptance rate', () => {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      const highAcceptancePattern = createTestPattern({
+        qualityScore: 80,
+        metadata: {
+          version: '1.0.0',
+          createdAt: new Date(),
+          updatedAt: thirtyDaysAgo,
+          usageCount: 100,
+          successRate: 0.9,
+        },
+        confidence: {
+          base: 0.9,
+          lastGrounded: thirtyDaysAgo,
+          groundingCount: 10,
+          decayRate: 0.01,
+        },
+      });
+      
+      const lowAcceptancePattern = createTestPattern({
+        qualityScore: 80,
+        metadata: {
+          version: '1.0.0',
+          createdAt: new Date(),
+          updatedAt: thirtyDaysAgo,
+          usageCount: 100,
+          successRate: 0.1,
+        },
+        confidence: {
+          base: 0.9,
+          lastGrounded: thirtyDaysAgo,
+          groundingCount: 10,
+          decayRate: 0.01,
+        },
+      });
+      
+      const highAcceptanceDecay = service.calculateDecay(highAcceptancePattern);
+      const lowAcceptanceDecay = service.calculateDecay(lowAcceptancePattern);
+      
+      expect(highAcceptanceDecay).toBeLessThan(lowAcceptanceDecay);
+    });
+  });
+
+  describe('applyDecay', () => {
+    it('should reduce quality score by decay amount', () => {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      const pattern = createTestPattern({
+        qualityScore: 80,
+        confidence: {
+          base: 0.9,
+          lastGrounded: thirtyDaysAgo,
+          groundingCount: 10,
+          decayRate: 0.01,
+        },
+      });
+      
+      const decayedPattern = service.applyDecay(pattern);
+      
+      expect(decayedPattern.qualityScore).toBeLessThan(80);
+      expect(decayedPattern.qualityScore).toBeGreaterThanOrEqual(10); // minScore
+    });
+
+    it('should not reduce score below minScore floor', () => {
+      const longTimeAgo = new Date();
+      longTimeAgo.setFullYear(longTimeAgo.getFullYear() - 1);
+      
+      const pattern = createTestPattern({
+        qualityScore: 15,
+        confidence: {
+          base: 0.5,
+          lastGrounded: longTimeAgo,
+          groundingCount: 1,
+          decayRate: 0.01,
+        },
+      });
+      
+      const decayedPattern = service.applyDecay(pattern);
+      
+      expect(decayedPattern.qualityScore).toBeGreaterThanOrEqual(10);
+    });
+  });
+
+  describe('boostOnUsage', () => {
+    it('should increase quality score by usageBoost amount', () => {
+      const pattern = createTestPattern({
+        qualityScore: 50,
+      });
+      
+      const boostedPattern = service.boostOnUsage(pattern);
+      
+      expect(boostedPattern.qualityScore).toBe(52); // 50 + 2 (usageBoost)
+    });
+
+    it('should not exceed maximum score of 100', () => {
+      const pattern = createTestPattern({
+        qualityScore: 99,
+      });
+      
+      const boostedPattern = service.boostOnUsage(pattern);
+      
+      expect(boostedPattern.qualityScore).toBe(100);
+    });
+
+    it('should update metadata usageCount', () => {
+      const pattern = createTestPattern({
+        qualityScore: 50,
+        metadata: {
+          version: '1.0.0',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          usageCount: 5,
+          successRate: 0.8,
+        },
+      });
+      
+      const boostedPattern = service.boostOnUsage(pattern);
+      
+      expect(boostedPattern.metadata?.usageCount).toBe(6);
+    });
+
+    it('should update confidence lastGrounded and groundingCount', () => {
+      const oldDate = new Date();
+      oldDate.setDate(oldDate.getDate() - 10);
+      
+      const pattern = createTestPattern({
+        qualityScore: 50,
+        confidence: {
+          base: 0.8,
+          lastGrounded: oldDate,
+          groundingCount: 5,
+          decayRate: 0.01,
+        },
+      });
+      
+      const boostedPattern = service.boostOnUsage(pattern);
+      
+      expect(boostedPattern.confidence?.groundingCount).toBe(6);
+      expect(boostedPattern.confidence?.lastGrounded).not.toEqual(oldDate);
+    });
+  });
+
+  describe('runDecayJob', () => {
+    it('should process all patterns and return statistics', () => {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      const patterns = [
+        createTestPattern({
+          id: 'pattern-1',
+          qualityScore: 80,
+          confidence: {
+            base: 0.9,
+            lastGrounded: thirtyDaysAgo,
+            groundingCount: 10,
+            decayRate: 0.01,
+          },
+        }),
+        createTestPattern({
+          id: 'pattern-2',
+          qualityScore: 60,
+          confidence: {
+            base: 0.8,
+            lastGrounded: new Date(),
+            groundingCount: 5,
+            decayRate: 0.01,
+          },
+        }),
+      ];
+      
+      const { result, updatedPatterns } = service.runDecayJob(patterns);
+      
+      expect(result.processedCount).toBe(2);
+      expect(updatedPatterns).toHaveLength(2);
+      expect(result.timestamp).toBeDefined();
+    });
+
+    it('should track patterns that drop below threshold', () => {
+      const longTimeAgo = new Date();
+      longTimeAgo.setFullYear(longTimeAgo.getFullYear() - 1);
+      
+      const patterns = [
+        createTestPattern({
+          id: 'will-drop',
+          qualityScore: 35,
+          confidence: {
+            base: 0.5,
+            lastGrounded: longTimeAgo,
+            groundingCount: 1,
+            decayRate: 0.01,
+          },
+        }),
+      ];
+      
+      const { result } = service.runDecayJob(patterns, 30);
+      
+      expect(result.droppedBelowThreshold).toContain('will-drop');
+    });
+  });
+
+  describe('getDecayConfig', () => {
+    it('should return default decay configuration', () => {
+      const config = service.getDecayConfig();
+      
+      expect(config.halfLife).toBe(30);
+      expect(config.minScore).toBe(10);
+      expect(config.usageBoost).toBe(2);
+      expect(config.acceptanceWeight).toBe(0.5);
+    });
+  });
+
+  describe('getDecayPreview', () => {
+    it('should return decay preview without applying changes', () => {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      const pattern = createTestPattern({
+        id: 'preview-pattern',
+        qualityScore: 80,
+        confidence: {
+          base: 0.9,
+          lastGrounded: thirtyDaysAgo,
+          groundingCount: 10,
+          decayRate: 0.01,
+        },
+      });
+      
+      const preview = service.getDecayPreview(pattern, 30);
+      
+      expect(preview.patternId).toBe('preview-pattern');
+      expect(preview.currentScore).toBe(80);
+      expect(preview.projectedScore).toBeLessThan(80);
+      expect(preview.decayAmount).toBeGreaterThan(0);
+      expect(preview.daysSinceLastUse).toBeGreaterThanOrEqual(30);
+      expect(typeof preview.willDropBelowThreshold).toBe('boolean');
+    });
+  });
 });
