@@ -27,7 +27,7 @@ import { AbstractionService } from './services/abstraction.service';
 import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
-import { HSE_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
+import { HSE_PATTERNS, DESIGNSYSTEM_PATTERNS, SALVADOR_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
@@ -94,9 +94,11 @@ const heraldStorage = {
 const signalProcessor = new SignalProcessorService();
 const patternLibrary = new PatternLibraryService();
 
-// Load domain-specific patterns (HSE for this demo)
+// Load domain-specific patterns
 // In production, patterns would come from database or external config
 patternLibrary.loadPatterns(HSE_PATTERNS);
+patternLibrary.loadPatterns(DESIGNSYSTEM_PATTERNS);
+patternLibrary.loadPatterns(SALVADOR_PATTERNS);
 
 // Load methodology patterns (shared/cross-domain) from Five Hats AI Consilium
 patternLibrary.loadPatterns(METHODOLOGY_PATTERNS);

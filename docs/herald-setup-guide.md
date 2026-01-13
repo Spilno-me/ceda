@@ -74,7 +74,7 @@ Herald will query CEDA and return relevant patterns.
 |----------|-------------|---------|
 | `CEDA_URL` | CEDA backend URL | `https://getceda.com` |
 | `HERALD_COMPANY` | Your organization | `spilno`, `goprint` |
-| `HERALD_PROJECT` | Your project name | `anteater`, `mobidruk` |
+| `HERALD_PROJECT` | Your project name | `salvador`, `mobidruk` |
 
 ---
 
