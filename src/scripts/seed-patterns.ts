@@ -1,17 +1,29 @@
 /**
  * CEDA Pattern Seeding Script
  *
- * Seeds all company-specific patterns into the pattern library.
+ * Seeds all patterns into the pattern library.
  * Run: yarn seed
  *
  * CEDA-31: Company Pattern Seeds
  * - HSE patterns (company: disrupt)
  * - GoPrint patterns (company: goprint)
  * - Spilno patterns (company: spilno)
+ *
+ * Additional pattern sets:
+ * - Salvador patterns (design system ecosystem)
+ * - Design System patterns (global)
+ * - Methodology patterns (cross-domain)
  */
 
 import { PatternLibraryService } from '../services/pattern-library.service';
-import { HSE_PATTERNS, GOPRINT_PATTERNS, SPILNO_PATTERNS } from '../seed';
+import {
+  HSE_PATTERNS,
+  GOPRINT_PATTERNS,
+  SPILNO_PATTERNS,
+  SALVADOR_PATTERNS,
+  DESIGNSYSTEM_PATTERNS,
+  METHODOLOGY_PATTERNS,
+} from '../seed';
 
 async function seedPatterns(): Promise<void> {
   console.log('[CEDA] Starting pattern seeding...');
@@ -32,6 +44,21 @@ async function seedPatterns(): Promise<void> {
   console.log('[CEDA] Loading Spilno patterns (company: spilno)...');
   patternLibrary.loadPatterns(SPILNO_PATTERNS);
   console.log(`[CEDA] Loaded ${SPILNO_PATTERNS.length} Spilno patterns`);
+
+  // Load Salvador patterns (design system ecosystem)
+  console.log('[CEDA] Loading Salvador patterns (design system ecosystem)...');
+  patternLibrary.loadPatterns(SALVADOR_PATTERNS);
+  console.log(`[CEDA] Loaded ${SALVADOR_PATTERNS.length} Salvador patterns`);
+
+  // Load Design System patterns (global)
+  console.log('[CEDA] Loading Design System patterns (global)...');
+  patternLibrary.loadPatterns(DESIGNSYSTEM_PATTERNS);
+  console.log(`[CEDA] Loaded ${DESIGNSYSTEM_PATTERNS.length} Design System patterns`);
+
+  // Load Methodology patterns (cross-domain)
+  console.log('[CEDA] Loading Methodology patterns (cross-domain)...');
+  patternLibrary.loadPatterns(METHODOLOGY_PATTERNS);
+  console.log(`[CEDA] Loaded ${METHODOLOGY_PATTERNS.length} Methodology patterns`);
 
   // Summary
   const totalPatterns = patternLibrary.getPatternCount();

@@ -64,6 +64,12 @@ export interface Pattern {
    * CEDA-36: Timestamp when pattern was last graduated
    */
   graduatedAt?: Date;
+  /**
+   * CEDA-44: Pattern quality score (0-100)
+   * Calculated based on usage frequency, acceptance rate, consistency, recency, and completeness
+   * @default 50
+   */
+  qualityScore?: number;
 }
 
 /**
@@ -145,4 +151,37 @@ export interface PatternMatch {
   pattern: Pattern;
   score: number;
   matchedRules: string[];
+}
+
+/**
+ * CEDA-44: Quality factors breakdown for pattern quality score calculation
+ * Each factor contributes to the overall quality score with specific weights
+ */
+export interface QualityFactors {
+  /** Usage frequency factor (0-100), weight: 30% */
+  usageFrequency: number;
+  /** Acceptance rate factor (0-100), weight: 30% */
+  acceptanceRate: number;
+  /** Consistency factor (0-100), weight: 20% */
+  consistency: number;
+  /** Recency factor (0-100), weight: 10% */
+  recency: number;
+  /** Completeness factor (0-100), weight: 10% */
+  completeness: number;
+}
+
+/**
+ * CEDA-44: Quality score result with breakdown
+ */
+export interface QualityScoreResult {
+  /** Pattern ID */
+  patternId: string;
+  /** Overall quality score (0-100) */
+  score: number;
+  /** Breakdown of quality factors */
+  factors: QualityFactors;
+  /** Whether the pattern is flagged as low quality */
+  isLowQuality: boolean;
+  /** Threshold used for low quality determination */
+  threshold: number;
 }

@@ -7,3 +7,4 @@ export * from './observation.interface';
 export * from './graduation.interface';
 export * from './abstraction.interface';
 export * from './document.interface';
+export * from './session.interface';

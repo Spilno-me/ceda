@@ -27,8 +27,9 @@ import { AbstractionService } from './services/abstraction.service';
 import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
 import { DocumentService } from './services/document.service';
+import { QualityScoreService } from './services/quality-score.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
-import { HSE_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
+import { HSE_PATTERNS, DESIGNSYSTEM_PATTERNS, SALVADOR_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel, CreateDocumentDto, UpdateDocumentDto, LinkDocumentDto, DocumentSearchParams, GraphQueryParams, DocumentType, DocumentLinkType } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
@@ -95,9 +96,11 @@ const heraldStorage = {
 const signalProcessor = new SignalProcessorService();
 const patternLibrary = new PatternLibraryService();
 
-// Load domain-specific patterns (HSE for this demo)
+// Load domain-specific patterns
 // In production, patterns would come from database or external config
 patternLibrary.loadPatterns(HSE_PATTERNS);
+patternLibrary.loadPatterns(DESIGNSYSTEM_PATTERNS);
+patternLibrary.loadPatterns(SALVADOR_PATTERNS);
 
 // Load methodology patterns (shared/cross-domain) from Five Hats AI Consilium
 patternLibrary.loadPatterns(METHODOLOGY_PATTERNS);
@@ -146,6 +149,9 @@ const rateLimiterService = new RateLimiterService(100, 60000);
 
 // CEDA-43: Initialize audit service for compliance logging
 const auditService = new AuditService();
+
+// CEDA-44: Initialize quality score service for pattern quality assessment
+const qualityScoreService = new QualityScoreService();
 
 // CEDA-47: Initialize document service for AI-native knowledge organization
 const documentService = new DocumentService(embeddingService);
@@ -208,6 +214,15 @@ async function initializeVectorStore(): Promise<void> {
       console.log('[CEDA] Audit collection ready');
     } else {
       console.warn('[CEDA] Failed to initialize audit collection');
+    }
+
+    // CEDA-45: Initialize sessions collection for session persistence
+    console.log('[CEDA] Initializing sessions collection...');
+    const sessionsInitialized = await sessionService.initialize();
+    if (sessionsInitialized) {
+      console.log('[CEDA] Sessions collection ready');
+    } else {
+      console.warn('[CEDA] Failed to initialize sessions collection');
     }
   } else {
     console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');
@@ -484,11 +499,11 @@ async function handleRequest(
       }
 
       // For multi-turn, combine original signal with any refinements
-      const effectiveSignal = session.history.length > 0
+      const effectiveSignal = session.messages.length > 0
         ? sessionService.getCombinedSignal(sessionId) + '. ' + body.input
         : body.input;
 
-      console.log(`\n[CEDA] Processing: "${body.input}" (session: ${sessionId}, turn: ${session.history.length + 1})`);
+      console.log(`\n[CEDA] Processing: "${body.input}" (session: ${sessionId}, turn: ${session.messages.length + 1})`);
       const startTime = Date.now();
 
       // Build tenant context from request body for multi-tenant pattern isolation
@@ -518,7 +533,7 @@ async function handleRequest(
       sessionService.recordPrediction(
         sessionId,
         body.input,
-        session.history.length === 0 ? 'signal' : 'refinement',
+        session.messages.length === 0 ? 'signal' : 'refinement',
         finalPrediction,
         confidence,
         body.participant,
@@ -529,7 +544,7 @@ async function handleRequest(
       sendJson(res, 200, {
         success: result.success,
         sessionId,
-        turn: session.history.length,
+        turn: session.messages.length,
         prediction: finalPrediction,
         validation: result.validation,
         autoFixed: result.autoFixed || autoFixResult.applied.length > 0,
@@ -682,7 +697,7 @@ async function handleRequest(
       const combinedSignal = sessionService.getCombinedSignal(body.sessionId) + '. ' + body.refinement;
       const accumulatedContext = sessionService.getAccumulatedContext(body.sessionId);
 
-      console.log(`\n[CEDA] Refining: "${body.refinement}" (session: ${body.sessionId}, turn: ${session.history.length + 1})`);
+      console.log(`\n[CEDA] Refining: "${body.refinement}" (session: ${body.sessionId}, turn: ${session.messages.length + 1})`);
       const startTime = Date.now();
 
       // Build tenant context from request body for multi-tenant pattern isolation
@@ -708,7 +723,7 @@ async function handleRequest(
       sendJson(res, 200, {
         success: result.success,
         sessionId: body.sessionId,
-        turn: session.history.length,
+        turn: session.messages.length,
         refinement: body.refinement,
         prediction: result.prediction,
         validation: result.validation,
@@ -731,10 +746,10 @@ async function handleRequest(
       sendJson(res, 200, {
         sessionId: session.id,
         originalSignal: session.originalSignal,
-        turns: session.history.length,
+        turns: session.messages.length,
         participants: session.participants,
         currentPrediction: session.currentPrediction,
-        history: session.history.map(h => ({
+        history: session.messages.map((h: import('./interfaces').SessionMessage) => ({
           turn: h.turn,
           input: h.input,
           inputType: h.inputType,
@@ -804,6 +819,80 @@ async function handleRequest(
         sessionId,
         timestamp: new Date().toISOString(),
       });
+      return;
+    }
+
+    // === CEDA-45: Session Persistence Endpoints ===
+
+    // GET /api/sessions - List sessions with optional filters
+    if (url?.startsWith('/api/sessions') && method === 'GET' && !url.includes('/cleanup')) {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const company = urlObj.searchParams.get('company') || undefined;
+      const project = urlObj.searchParams.get('project') || undefined;
+      const user = urlObj.searchParams.get('user') || undefined;
+      const status = urlObj.searchParams.get('status') as 'active' | 'archived' | 'expired' | undefined;
+      const limitParam = urlObj.searchParams.get('limit');
+      const limit = limitParam ? parseInt(limitParam, 10) : 100;
+
+      try {
+        const sessions = await sessionService.list({
+          company,
+          project,
+          user,
+          status,
+          limit,
+        });
+
+        sendJson(res, 200, {
+          sessions: sessions.map(s => ({
+            id: s.id,
+            company: s.company,
+            project: s.project,
+            user: s.user,
+            status: s.status,
+            turns: s.messages.length,
+            participants: s.participants,
+            hasCurrentPrediction: !!s.currentPrediction,
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            expiresAt: s.expiresAt,
+          })),
+          count: sessions.length,
+          filter: { company, project, user, status, limit },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to list sessions:', error);
+        sendJson(res, 500, {
+          error: 'Failed to list sessions',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // POST /api/sessions/cleanup - Trigger session cleanup/expiration
+    if (url === '/api/sessions/cleanup' && method === 'POST') {
+      try {
+        const result = await sessionService.expireSessions();
+
+        console.log(`[CEDA] Session cleanup: ${result.expiredCount} expired, ${result.archivedCount} archived`);
+
+        sendJson(res, 200, {
+          success: true,
+          expiredCount: result.expiredCount,
+          archivedCount: result.archivedCount,
+          expiredIds: result.expiredIds,
+          archivedIds: result.archivedIds,
+          timestamp: result.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to cleanup sessions:', error);
+        sendJson(res, 500, {
+          error: 'Failed to cleanup sessions',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
       return;
     }
 
@@ -946,6 +1035,149 @@ async function handleRequest(
         timestamp: new Date().toISOString(),
       });
       return;
+    }
+
+    // === CEDA-44: Pattern Quality Score Endpoints ===
+
+    // GET /api/patterns/low-quality - Get patterns below quality threshold
+    if (url?.startsWith('/api/patterns/low-quality') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const threshold = parseInt(urlObj.searchParams.get('threshold') || '50', 10);
+      const user = urlObj.searchParams.get('user');
+
+      // User is required for pattern access (user-first isolation)
+      if (!user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameter: user',
+          message: 'USER is the doorway - all pattern access requires user context',
+        });
+        return;
+      }
+
+      const query: UserPatternQuery = {
+        user,
+        company: urlObj.searchParams.get('company') || undefined,
+        project: urlObj.searchParams.get('project') || undefined,
+      };
+
+      const accessiblePatterns = patternLibrary.getPatternsForUser(query);
+      const lowQualityPatterns = qualityScoreService.flagLowQuality(accessiblePatterns, threshold);
+
+      sendJson(res, 200, {
+        patterns: lowQualityPatterns.map(p => ({
+          ...p,
+          qualityScore: p.qualityScore ?? qualityScoreService.calculateScore(p),
+          qualityFactors: qualityScoreService.getQualityFactors(p),
+        })),
+        count: lowQualityPatterns.length,
+        threshold,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/patterns/quality-check - Bulk quality check for patterns
+    if (url === '/api/patterns/quality-check' && method === 'POST') {
+      const body = await parseBody<{
+        patternIds?: string[];
+        user: string;
+        company?: string;
+        project?: string;
+        threshold?: number;
+      }>(req);
+
+      // User is required for pattern access (user-first isolation)
+      if (!body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required field: user',
+          message: 'USER is the doorway - all pattern access requires user context',
+        });
+        return;
+      }
+
+      const query: UserPatternQuery = {
+        user: body.user,
+        company: body.company,
+        project: body.project,
+      };
+
+      const threshold = body.threshold ?? qualityScoreService.getDefaultThreshold();
+      let patternsToCheck: import('./interfaces').Pattern[];
+
+      if (body.patternIds && body.patternIds.length > 0) {
+        // Check specific patterns
+        patternsToCheck = body.patternIds
+          .map(id => patternLibrary.getPatternForUser(id, query))
+          .filter((p): p is import('./interfaces').Pattern => p !== undefined);
+      } else {
+        // Check all accessible patterns
+        patternsToCheck = patternLibrary.getPatternsForUser(query);
+      }
+
+      const results = patternsToCheck.map(pattern => 
+        qualityScoreService.getQualityScoreResult(pattern, threshold)
+      );
+
+      const lowQualityCount = results.filter(r => r.isLowQuality).length;
+
+      sendJson(res, 200, {
+        results,
+        summary: {
+          total: results.length,
+          lowQuality: lowQualityCount,
+          highQuality: results.length - lowQualityCount,
+          threshold,
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/patterns/:id/quality - Get quality score for a specific pattern
+    if (url?.match(/^\/api\/patterns\/[^/]+\/quality/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      
+      if (pathParts.length === 4 && pathParts[0] === 'api' && pathParts[1] === 'patterns' && pathParts[3] === 'quality') {
+        const patternId = pathParts[2];
+        const user = urlObj.searchParams.get('user');
+        const threshold = parseInt(urlObj.searchParams.get('threshold') || '30', 10);
+
+        // User is required for pattern access (user-first isolation)
+        if (!user) {
+          sendJson(res, 400, {
+            error: 'Missing required query parameter: user',
+            message: 'USER is the doorway - all pattern access requires user context',
+          });
+          return;
+        }
+
+        const query: UserPatternQuery = {
+          user,
+          company: urlObj.searchParams.get('company') || undefined,
+          project: urlObj.searchParams.get('project') || undefined,
+        };
+
+        const pattern = patternLibrary.getPatternForUser(patternId, query);
+
+        if (!pattern) {
+          sendJson(res, 404, {
+            error: 'Pattern not found or not accessible',
+            patternId,
+            user,
+          });
+          return;
+        }
+
+        const qualityResult = qualityScoreService.getQualityScoreResult(pattern, threshold);
+
+        sendJson(res, 200, {
+          ...qualityResult,
+          weights: qualityScoreService.getWeights(),
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
     }
 
     // === CEDA-25: User-first Pattern Isolation Endpoints ===
@@ -2678,6 +2910,8 @@ async function handleRequest(
       'GET  /api/session/:id',
       'PUT  /api/session/:id (CEDA-34: update session for stateless Herald)',
       'DELETE /api/session/:id (CEDA-34: delete session)',
+      'GET  /api/sessions?company=X&limit=N (CEDA-45: list sessions with filters)',
+      'POST /api/sessions/cleanup (CEDA-45: trigger session cleanup/expiration)',
       'POST /api/feedback',
       'GET  /api/stats',
       'GET  /api/patterns?user=X',
