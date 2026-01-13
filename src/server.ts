@@ -29,6 +29,7 @@ import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
 import { DocumentService } from './services/document.service';
 import { QualityScoreService } from './services/quality-score.service';
+import { AnomalyDetectionService } from './services/anomaly-detection.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, DESIGNSYSTEM_PATTERNS, SALVADOR_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel, CreateDocumentDto, UpdateDocumentDto, LinkDocumentDto, DocumentSearchParams, GraphQueryParams, DocumentType, DocumentLinkType } from './interfaces';
@@ -160,6 +161,8 @@ const qualityScoreService = new QualityScoreService();
 // CEDA-47: Initialize document service for AI-native knowledge organization
 const documentService = new DocumentService(embeddingService);
 
+// CEDA-52: Initialize anomaly detection service for detecting suspicious patterns
+const anomalyDetectionService = new AnomalyDetectionService(patternLibrary, qualityScoreService);
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
   patternLibrary,
@@ -236,6 +239,15 @@ async function initializeVectorStore(): Promise<void> {
       console.log('[CEDA] Session history collection ready');
     } else {
       console.warn('[CEDA] Failed to initialize session history collection');
+    }
+
+    // CEDA-52: Initialize anomalies collection for anomaly detection
+    console.log('[CEDA] Initializing anomalies collection...');
+    const anomaliesInitialized = await anomalyDetectionService.initialize();
+    if (anomaliesInitialized) {
+      console.log('[CEDA] Anomalies collection ready');
+    } else {
+      console.warn('[CEDA] Failed to initialize anomalies collection');
     }
   } else {
     console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');
@@ -2868,16 +2880,134 @@ async function handleRequest(
       return;
     }
 
-    // GET /api/clustering/config - Get clustering configuration
-    if (url === '/api/clustering/config' && method === 'GET') {
-      sendJson(res, 200, {
-        config: observationService.getClusteringConfig(),
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
+        // GET /api/clustering/config - Get clustering configuration
+        if (url === '/api/clustering/config' && method === 'GET') {
+          sendJson(res, 200, {
+            config: observationService.getClusteringConfig(),
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
 
-    // GET /api/abstractions/safety - Get safety settings
+        // === CEDA-52: ANOMALY DETECTION ENDPOINTS ===
+
+        // GET /api/anomalies - List anomalies with optional filtering
+        if (url?.startsWith('/api/anomalies') && method === 'GET' && !url.includes('/api/anomalies/')) {
+          const urlObj = new URL(url, `http://localhost:${PORT}`);
+          const company = urlObj.searchParams.get('company') || undefined;
+          const type = urlObj.searchParams.get('type') || undefined;
+          const status = urlObj.searchParams.get('status') || undefined;
+          const severity = urlObj.searchParams.get('severity') || undefined;
+
+          try {
+            const anomalies = await anomalyDetectionService.getAnomalies({
+              company,
+              type: type as import('./interfaces').AnomalyType | undefined,
+              status: status as import('./interfaces').AnomalyStatus | undefined,
+              severity: severity as import('./interfaces').AnomalySeverity | undefined,
+            });
+
+            sendJson(res, 200, {
+              anomalies,
+              count: anomalies.length,
+              filter: { company, type, status, severity },
+              timestamp: new Date().toISOString(),
+            });
+          } catch (error) {
+            console.error('[CEDA] Failed to get anomalies:', error);
+            sendJson(res, 500, {
+              error: 'Failed to get anomalies',
+              message: error instanceof Error ? error.message : 'Unknown error',
+            });
+          }
+          return;
+        }
+
+        // POST /api/anomalies/sweep - Trigger detection sweep
+        if (url === '/api/anomalies/sweep' && method === 'POST') {
+          const body = await parseBody<{
+            company?: string;
+          }>(req);
+
+          try {
+            const results = await anomalyDetectionService.runDetectionSweep(body.company);
+
+            const totalAnomalies = results.reduce((sum, r) => sum + r.anomaliesDetected.length, 0);
+            console.log(`[CEDA-52] Detection sweep complete: ${totalAnomalies} anomalies detected across ${results.length} companies`);
+
+            sendJson(res, 200, {
+              results,
+              totalAnomalies,
+              companiesScanned: results.length,
+              timestamp: new Date().toISOString(),
+            });
+          } catch (error) {
+            console.error('[CEDA] Detection sweep failed:', error);
+            sendJson(res, 500, {
+              error: 'Detection sweep failed',
+              message: error instanceof Error ? error.message : 'Unknown error',
+            });
+          }
+          return;
+        }
+
+        // POST /api/anomalies/:id/acknowledge - Acknowledge an anomaly
+        if (url?.match(/^\/api\/anomalies\/[^/]+\/acknowledge$/) && method === 'POST') {
+          const urlObj = new URL(url, `http://localhost:${PORT}`);
+          const pathParts = urlObj.pathname.split('/').filter(Boolean);
+          const anomalyId = pathParts[2];
+
+          const body = await parseBody<{
+            acknowledgedBy?: string;
+          }>(req);
+
+          const anomaly = await anomalyDetectionService.acknowledge(anomalyId, body.acknowledgedBy);
+
+          if (!anomaly) {
+            sendJson(res, 404, {
+              error: 'Anomaly not found',
+              anomalyId,
+            });
+            return;
+          }
+
+          sendJson(res, 200, {
+            acknowledged: true,
+            anomaly,
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+
+        // POST /api/anomalies/:id/resolve - Resolve an anomaly
+        if (url?.match(/^\/api\/anomalies\/[^/]+\/resolve$/) && method === 'POST') {
+          const urlObj = new URL(url, `http://localhost:${PORT}`);
+          const pathParts = urlObj.pathname.split('/').filter(Boolean);
+          const anomalyId = pathParts[2];
+
+          const body = await parseBody<{
+            resolvedBy?: string;
+          }>(req);
+
+          const anomaly = await anomalyDetectionService.resolve(anomalyId, body.resolvedBy);
+
+          if (!anomaly) {
+            sendJson(res, 404, {
+              error: 'Anomaly not found',
+              anomalyId,
+            });
+            return;
+          }
+
+          sendJson(res, 200, {
+            resolved: true,
+            anomaly,
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+
+        // GET /api/abstractions/safety - Get safety settings
     if (url === '/api/abstractions/safety' && method === 'GET') {
       const settings = abstractionService.getSafetySettings();
 
@@ -3318,10 +3448,14 @@ async function handleRequest(
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
       'GET  /api/herald/insights',
-      'POST /observe',
-      'POST /detect',
-      'POST /learn',
-    ]});
+          'POST /observe',
+          'POST /detect',
+          'POST /learn',
+          'GET  /api/anomalies (CEDA-52: list anomalies with optional filtering)',
+          'POST /api/anomalies/sweep (CEDA-52: trigger detection sweep)',
+          'POST /api/anomalies/:id/acknowledge (CEDA-52: acknowledge an anomaly)',
+          'POST /api/anomalies/:id/resolve (CEDA-52: resolve an anomaly)',
+        ]});
   } catch (error) {
     console.error('[CEDA] Error:', error);
     sendJson(res, 500, {
