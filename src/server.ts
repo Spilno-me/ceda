@@ -18,6 +18,7 @@ import { AutoFixService } from './services/auto-fix.service';
 import { EmbeddingService } from './services/embedding.service';
 import { VectorStoreService } from './services/vector-store.service';
 import { SessionService } from './services/session.service';
+import { SessionHistoryService } from './services/session-history.service';
 import { TenantEmbeddingService } from './services/tenant-embedding.service';
 import { AntipatternService } from './services/antipattern.service';
 import { LegionService, GroundingFeedback, ExecutionResult } from './services/legion.service';
@@ -26,10 +27,11 @@ import { GraduationService } from './services/graduation.service';
 import { AbstractionService } from './services/abstraction.service';
 import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
+import { DocumentService } from './services/document.service';
 import { QualityScoreService } from './services/quality-score.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, DESIGNSYSTEM_PATTERNS, SALVADOR_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
-import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
+import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel, CreateDocumentDto, UpdateDocumentDto, LinkDocumentDto, DocumentSearchParams, GraphQueryParams, DocumentType, DocumentLinkType } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -115,6 +117,9 @@ predictionEngine.setVectorStore(vectorStoreService);
 const validationService = new CognitiveValidationService();
 const sessionService = new SessionService();
 
+// CEDA-46: Initialize session history service for version tracking
+const sessionHistoryService = new SessionHistoryService();
+
 // CEDA-33: Initialize auto-fix service for validation auto-fix pipeline
 const autoFixService = new AutoFixService();
 
@@ -151,6 +156,9 @@ const auditService = new AuditService();
 
 // CEDA-44: Initialize quality score service for pattern quality assessment
 const qualityScoreService = new QualityScoreService();
+
+// CEDA-47: Initialize document service for AI-native knowledge organization
+const documentService = new DocumentService(embeddingService);
 
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
@@ -219,6 +227,15 @@ async function initializeVectorStore(): Promise<void> {
       console.log('[CEDA] Sessions collection ready');
     } else {
       console.warn('[CEDA] Failed to initialize sessions collection');
+    }
+
+    // CEDA-46: Initialize session history collection for version tracking
+    console.log('[CEDA] Initializing session history collection...');
+    const sessionHistoryInitialized = await sessionHistoryService.initialize();
+    if (sessionHistoryInitialized) {
+      console.log('[CEDA] Session history collection ready');
+    } else {
+      console.warn('[CEDA] Failed to initialize session history collection');
     }
   } else {
     console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');
@@ -902,6 +919,204 @@ async function handleRequest(
         console.error('[CEDA] Failed to cleanup sessions:', error);
         sendJson(res, 500, {
           error: 'Failed to cleanup sessions',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // === CEDA-46: Session History and Versioning Endpoints ===
+
+    // GET /api/session/:id/history - Get version history for a session
+    if (url?.match(/^\/api\/session\/[^/]+\/history$/) && method === 'GET') {
+      const sessionId = url.replace('/api/session/', '').replace('/history', '');
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const limitParam = urlObj.searchParams.get('limit');
+      const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) {
+          sendJson(res, 404, { error: 'Session not found', sessionId });
+          return;
+        }
+
+        const history = await sessionHistoryService.getHistory(sessionId, limit);
+
+        sendJson(res, 200, {
+          sessionId: history.sessionId,
+          versions: history.versions.map(v => ({
+            id: v.id,
+            version: v.version,
+            changeType: v.changeType,
+            changedFields: v.changedFields,
+            timestamp: v.timestamp.toISOString(),
+          })),
+          totalVersions: history.totalVersions,
+          currentVersion: history.currentVersion,
+          timestamp: history.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to get session history:', error);
+        sendJson(res, 500, {
+          error: 'Failed to get session history',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/session/:id/history/:version - Get specific version of a session
+    if (url?.match(/^\/api\/session\/[^/]+\/history\/\d+$/) && method === 'GET') {
+      const parts = url.replace('/api/session/', '').split('/history/');
+      const sessionId = parts[0];
+      const versionNumber = parseInt(parts[1], 10);
+
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) {
+          sendJson(res, 404, { error: 'Session not found', sessionId });
+          return;
+        }
+
+        const version = await sessionHistoryService.getVersion(sessionId, versionNumber);
+        if (!version) {
+          sendJson(res, 404, { error: 'Version not found', sessionId, version: versionNumber });
+          return;
+        }
+
+        sendJson(res, 200, {
+          id: version.id,
+          sessionId: version.sessionId,
+          version: version.version,
+          changeType: version.changeType,
+          changedFields: version.changedFields,
+          snapshot: version.snapshot,
+          timestamp: version.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to get session version:', error);
+        sendJson(res, 500, {
+          error: 'Failed to get session version',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // POST /api/session/:id/rollback?version=N - Rollback session to a previous version
+    if (url?.match(/^\/api\/session\/[^/]+\/rollback/) && method === 'POST') {
+      const sessionId = url.replace('/api/session/', '').replace(/\/rollback.*/, '');
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const versionParam = urlObj.searchParams.get('version');
+
+      if (!versionParam) {
+        sendJson(res, 400, { error: 'Missing required query parameter: version' });
+        return;
+      }
+
+      const targetVersion = parseInt(versionParam, 10);
+      if (isNaN(targetVersion) || targetVersion < 1) {
+        sendJson(res, 400, { error: 'Invalid version number', version: versionParam });
+        return;
+      }
+
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) {
+          sendJson(res, 404, { error: 'Session not found', sessionId });
+          return;
+        }
+
+        const result = await sessionHistoryService.rollback(
+          sessionId,
+          targetVersion,
+          async (restoredSession) => {
+            return sessionService.update(sessionId, {
+              currentPrediction: restoredSession.currentPrediction,
+              context: restoredSession.context,
+              participants: restoredSession.participants,
+              status: restoredSession.status,
+            });
+          },
+        );
+
+        if (!result) {
+          sendJson(res, 404, { error: 'Version not found or rollback failed', sessionId, version: targetVersion });
+          return;
+        }
+
+        console.log(`[CEDA] Session ${sessionId} rolled back to version ${targetVersion}`);
+
+        sendJson(res, 200, {
+          success: result.success,
+          sessionId: result.sessionId,
+          rolledBackToVersion: result.rolledBackToVersion,
+          newVersion: result.newVersion,
+          session: {
+            id: result.session.id,
+            status: result.session.status,
+            currentPrediction: result.session.currentPrediction,
+            participants: result.session.participants,
+            updatedAt: result.session.updatedAt.toISOString(),
+          },
+          timestamp: result.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to rollback session:', error);
+        sendJson(res, 500, {
+          error: 'Failed to rollback session',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/session/:id/diff?v1=N&v2=M - Compare two versions of a session
+    if (url?.match(/^\/api\/session\/[^/]+\/diff/) && method === 'GET') {
+      const sessionId = url.replace('/api/session/', '').replace(/\/diff.*/, '');
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const v1Param = urlObj.searchParams.get('v1');
+      const v2Param = urlObj.searchParams.get('v2');
+
+      if (!v1Param || !v2Param) {
+        sendJson(res, 400, { error: 'Missing required query parameters: v1, v2' });
+        return;
+      }
+
+      const v1 = parseInt(v1Param, 10);
+      const v2 = parseInt(v2Param, 10);
+
+      if (isNaN(v1) || isNaN(v2) || v1 < 1 || v2 < 1) {
+        sendJson(res, 400, { error: 'Invalid version numbers', v1: v1Param, v2: v2Param });
+        return;
+      }
+
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) {
+          sendJson(res, 404, { error: 'Session not found', sessionId });
+          return;
+        }
+
+        const diff = await sessionHistoryService.diff(sessionId, v1, v2);
+        if (!diff) {
+          sendJson(res, 404, { error: 'One or both versions not found', sessionId, v1, v2 });
+          return;
+        }
+
+        sendJson(res, 200, {
+          sessionId: diff.sessionId,
+          fromVersion: diff.fromVersion,
+          toVersion: diff.toVersion,
+          changedFields: diff.changedFields,
+          changes: diff.changes,
+          timestamp: diff.timestamp.toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA] Failed to diff session versions:', error);
+        sendJson(res, 500, {
+          error: 'Failed to diff session versions',
           message: error instanceof Error ? error.message : 'Unknown error',
         });
       }
@@ -2689,6 +2904,366 @@ async function handleRequest(
       sendJson(res, 200, {
         updated: true,
         settings: abstractionService.getSafetySettings(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // === CEDA-47: Document Management Endpoints ===
+
+    // POST /api/documents - Create a new document
+    if (url === '/api/documents' && method === 'POST') {
+      const body = await parseBody<CreateDocumentDto>(req);
+
+      if (!body.type || !body.title || !body.content || !body.company || !body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['type', 'title', 'content', 'company', 'user'],
+        });
+        return;
+      }
+
+      const validTypes: DocumentType[] = ['pattern', 'observation', 'session', 'insight', 'note'];
+      if (!validTypes.includes(body.type)) {
+        sendJson(res, 400, {
+          error: 'Invalid document type',
+          validTypes,
+        });
+        return;
+      }
+
+      if (checkRateLimitAndRespond(body.company, res)) {
+        return;
+      }
+
+      const document = await documentService.create(body);
+
+      await auditService.log(
+        'document_created',
+        document.id,
+        body.company,
+        body.user,
+        { title: body.title, type: body.type },
+        getClientIp(req),
+      );
+
+      sendJson(res, 201, {
+        created: true,
+        document,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/search - Search documents
+    if (url?.startsWith('/api/documents/search') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const query = urlObj.searchParams.get('q') || urlObj.searchParams.get('query');
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+      const type = urlObj.searchParams.get('type') as DocumentType | null;
+      const tagsParam = urlObj.searchParams.get('tags');
+      const limit = parseInt(urlObj.searchParams.get('limit') || '20', 10);
+
+      if (!query || !company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['q', 'company', 'user'],
+        });
+        return;
+      }
+
+      const searchParams: DocumentSearchParams = {
+        query,
+        company,
+        user,
+        type: type || undefined,
+        tags: tagsParam ? tagsParam.split(',') : undefined,
+        limit,
+      };
+
+      const results = await documentService.search(searchParams);
+
+      sendJson(res, 200, {
+        results,
+        count: results.length,
+        query: searchParams,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/tags - Get documents by tags
+    if (url?.startsWith('/api/documents/tags') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+      const tagsParam = urlObj.searchParams.get('tags');
+
+      if (!company || !user || !tagsParam) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user', 'tags'],
+        });
+        return;
+      }
+
+      const tags = tagsParam.split(',');
+      const documents = documentService.getByTags(company, user, tags);
+
+      sendJson(res, 200, {
+        documents,
+        count: documents.length,
+        tags,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/graph - Get document graph
+    if (url?.startsWith('/api/documents/graph') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+      const depth = parseInt(urlObj.searchParams.get('depth') || '2', 10);
+      const startId = urlObj.searchParams.get('startId') || undefined;
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const params: GraphQueryParams = {
+        company,
+        user,
+        depth,
+        startId,
+      };
+
+      const graph = documentService.getGraph(params);
+
+      sendJson(res, 200, {
+        graph,
+        params,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/:id/backlinks - Get backlinks for a document
+    if (url?.match(/^\/api\/documents\/[^/]+\/backlinks/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const documentId = pathParts[2];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const backlinks = documentService.getBacklinks(documentId, company, user);
+
+      sendJson(res, 200, {
+        documentId,
+        backlinks,
+        count: backlinks.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/documents/:id/link - Link to another document
+    if (url?.match(/^\/api\/documents\/[^/]+\/link$/) && method === 'POST') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const sourceId = pathParts[2];
+
+      const body = await parseBody<LinkDocumentDto>(req);
+
+      if (!body.targetId || !body.linkType || !body.company || !body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['targetId', 'linkType', 'company', 'user'],
+        });
+        return;
+      }
+
+      const validLinkTypes: DocumentLinkType[] = ['references', 'related', 'parent', 'derived_from'];
+      if (!validLinkTypes.includes(body.linkType)) {
+        sendJson(res, 400, {
+          error: 'Invalid link type',
+          validLinkTypes,
+        });
+        return;
+      }
+
+      const link = documentService.link(sourceId, body);
+
+      if (!link) {
+        sendJson(res, 404, {
+          error: 'Failed to create link',
+          message: 'Source or target document not found, or access denied',
+        });
+        return;
+      }
+
+      sendJson(res, 201, {
+        linked: true,
+        link,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // DELETE /api/documents/:id/link/:targetId - Unlink from a document
+    if (url?.match(/^\/api\/documents\/[^/]+\/link\/[^/]+$/) && method === 'DELETE') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const sourceId = pathParts[2];
+      const targetId = pathParts[4];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const unlinked = documentService.unlink(sourceId, targetId, company, user);
+
+      if (!unlinked) {
+        sendJson(res, 404, {
+          error: 'Failed to unlink',
+          message: 'Link not found or access denied',
+        });
+        return;
+      }
+
+      sendJson(res, 200, {
+        unlinked: true,
+        sourceId,
+        targetId,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/:id - Get a document by ID
+    if (url?.match(/^\/api\/documents\/[^/]+$/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const documentId = pathParts[2];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const document = documentService.getById(documentId, company, user);
+
+      if (!document) {
+        sendJson(res, 404, {
+          error: 'Document not found or access denied',
+          documentId,
+        });
+        return;
+      }
+
+      sendJson(res, 200, {
+        document,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // PUT /api/documents/:id - Update a document
+    if (url?.match(/^\/api\/documents\/[^/]+$/) && method === 'PUT') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const documentId = pathParts[2];
+
+      const body = await parseBody<UpdateDocumentDto>(req);
+
+      if (!body.company || !body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const document = await documentService.update(documentId, body);
+
+      if (!document) {
+        sendJson(res, 404, {
+          error: 'Document not found or access denied',
+          documentId,
+        });
+        return;
+      }
+
+      sendJson(res, 200, {
+        updated: true,
+        document,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // DELETE /api/documents/:id - Delete a document
+    if (url?.match(/^\/api\/documents\/[^/]+$/) && method === 'DELETE') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const documentId = pathParts[2];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const deleted = documentService.delete(documentId, company, user);
+
+      if (!deleted) {
+        sendJson(res, 404, {
+          error: 'Document not found or access denied',
+          documentId,
+        });
+        return;
+      }
+
+      await auditService.log(
+        'document_deleted',
+        documentId,
+        company,
+        user,
+        {},
+        getClientIp(req),
+      );
+
+      sendJson(res, 200, {
+        deleted: true,
+        documentId,
         timestamp: new Date().toISOString(),
       });
       return;

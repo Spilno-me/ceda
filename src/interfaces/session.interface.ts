@@ -150,3 +150,96 @@ export interface SessionSummary {
   /** Session status */
   status: SessionStatus;
 }
+
+/**
+ * CEDA-46: Session History and Versioning Interfaces
+ */
+
+/**
+ * Type of change that triggered a new version
+ */
+export type SessionChangeType = 'created' | 'updated' | 'message_added' | 'context_changed';
+
+/**
+ * A version snapshot of a session
+ */
+export interface SessionVersion {
+  /** Unique version ID */
+  id: string;
+  /** Reference to parent session */
+  sessionId: string;
+  /** Version number (1, 2, 3, ...) */
+  version: number;
+  /** Full session state at this version */
+  snapshot: Session;
+  /** Type of change that created this version */
+  changeType: SessionChangeType;
+  /** Fields that changed from previous version */
+  changedFields: string[];
+  /** When this version was created */
+  timestamp: Date;
+}
+
+/**
+ * Diff between two session versions
+ */
+export interface SessionDiff {
+  /** Session ID */
+  sessionId: string;
+  /** First version number */
+  fromVersion: number;
+  /** Second version number */
+  toVersion: number;
+  /** Fields that changed */
+  changedFields: string[];
+  /** Detailed changes per field */
+  changes: SessionFieldChange[];
+  /** Timestamp of diff generation */
+  timestamp: Date;
+}
+
+/**
+ * A single field change between versions
+ */
+export interface SessionFieldChange {
+  /** Field name */
+  field: string;
+  /** Value in first version */
+  oldValue: unknown;
+  /** Value in second version */
+  newValue: unknown;
+}
+
+/**
+ * Result of a rollback operation
+ */
+export interface SessionRollbackResult {
+  /** Whether rollback was successful */
+  success: boolean;
+  /** Session ID */
+  sessionId: string;
+  /** Version rolled back to */
+  rolledBackToVersion: number;
+  /** New version number after rollback */
+  newVersion: number;
+  /** Restored session state */
+  session: Session;
+  /** Timestamp of rollback */
+  timestamp: Date;
+}
+
+/**
+ * Session history list response
+ */
+export interface SessionHistoryResponse {
+  /** Session ID */
+  sessionId: string;
+  /** List of versions */
+  versions: SessionVersion[];
+  /** Total version count */
+  totalVersions: number;
+  /** Current version number */
+  currentVersion: number;
+  /** Timestamp of response */
+  timestamp: Date;
+}
