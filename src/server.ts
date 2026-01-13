@@ -31,6 +31,7 @@ import { DocumentService } from './services/document.service';
 import { QualityScoreService } from './services/quality-score.service';
 import { LinkingService } from './services/linking.service';
 import { AnomalyDetectionService } from './services/anomaly-detection.service';
+import { AnalyticsService } from './services/analytics.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, DESIGNSYSTEM_PATTERNS, SALVADOR_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel, CreateDocumentDto, UpdateDocumentDto, LinkDocumentDto, DocumentSearchParams, GraphQueryParams, DocumentType, DocumentLinkType, WrapEntityDto, CreateLinkDto, LinkableType, LinkType } from './interfaces';
@@ -168,6 +169,13 @@ const linkingService = new LinkingService(patternLibrary, observationService);
 // CEDA-52: Initialize anomaly detection service for detecting suspicious patterns
 const anomalyDetectionService = new AnomalyDetectionService(patternLibrary, qualityScoreService);
 
+// CEDA-50: Initialize analytics service for dashboard metrics
+const analyticsService = new AnalyticsService(
+  auditService,
+  observationService,
+  patternLibrary,
+  sessionService,
+);
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
   patternLibrary,
@@ -3012,8 +3020,124 @@ async function handleRequest(
           return;
         }
 
+        // === CEDA-50: Analytics Dashboard Endpoints ===
+
+        // GET /api/analytics - Full company analytics dashboard
+        if (url?.startsWith('/api/analytics') && method === 'GET') {
+          const urlObj = new URL(url, `http://localhost:${PORT}`);
+          const pathParts = url.split('?')[0].split('/').filter(Boolean);
+
+          // GET /api/analytics/system - System-wide analytics (admin only)
+          if (pathParts[2] === 'system') {
+            try {
+              const systemAnalytics = await analyticsService.getSystemAnalytics();
+              sendJson(res, 200, {
+                ...systemAnalytics,
+                timestamp: new Date().toISOString(),
+              });
+            } catch (error) {
+              console.error('[CEDA-50] System analytics failed:', error);
+              sendJson(res, 500, {
+                error: 'Failed to get system analytics',
+                message: error instanceof Error ? error.message : 'Unknown error',
+              });
+            }
+            return;
+          }
+
+          // All other analytics endpoints require company
+          const company = urlObj.searchParams.get('company');
+          if (!company) {
+            sendJson(res, 400, {
+              error: 'Missing required parameter: company',
+              message: 'Analytics endpoints require company context',
+            });
+            return;
+          }
+
+          const period = (urlObj.searchParams.get('period') || 'week') as 'day' | 'week' | 'month';
+          if (!['day', 'week', 'month'].includes(period)) {
+            sendJson(res, 400, {
+              error: 'Invalid period parameter',
+              message: 'Period must be one of: day, week, month',
+            });
+            return;
+          }
+
+          const query = { company, period };
+
+          try {
+            // GET /api/analytics/metrics - Core metrics only
+            if (pathParts[2] === 'metrics') {
+              const metrics = await analyticsService.getMetrics(query);
+              sendJson(res, 200, {
+                company,
+                period,
+                metrics,
+                timestamp: new Date().toISOString(),
+              });
+              return;
+            }
+
+            // GET /api/analytics/trends - Trend data over time
+            if (pathParts[2] === 'trends') {
+              const trends = await analyticsService.getTrends(query);
+              sendJson(res, 200, {
+                company,
+                period,
+                trends,
+                count: trends.length,
+                timestamp: new Date().toISOString(),
+              });
+              return;
+            }
+
+            // GET /api/analytics/patterns - Top patterns usage
+            if (pathParts[2] === 'patterns') {
+              const limit = parseInt(urlObj.searchParams.get('limit') || '10', 10);
+              const topPatterns = await analyticsService.getTopPatterns(query, limit);
+              sendJson(res, 200, {
+                company,
+                period,
+                topPatterns,
+                count: topPatterns.length,
+                timestamp: new Date().toISOString(),
+              });
+              return;
+            }
+
+            // GET /api/analytics/users - Active users data
+            if (pathParts[2] === 'users') {
+              const limit = parseInt(urlObj.searchParams.get('limit') || '10', 10);
+              const activeUsers = await analyticsService.getActiveUsers(query, limit);
+              sendJson(res, 200, {
+                company,
+                period,
+                activeUsers,
+                count: activeUsers.length,
+                timestamp: new Date().toISOString(),
+              });
+              return;
+            }
+
+            // GET /api/analytics - Full dashboard data
+            const analytics = await analyticsService.getCompanyAnalytics(query);
+            sendJson(res, 200, {
+              ...analytics,
+              timestamp: new Date().toISOString(),
+            });
+          } catch (error) {
+            console.error('[CEDA-50] Analytics failed:', error);
+            sendJson(res, 500, {
+              error: 'Failed to get analytics',
+              message: error instanceof Error ? error.message : 'Unknown error',
+            });
+          }
+          return;
+        }
+
         // GET /api/abstractions/safety - Get safety settings
-    if (url === '/api/abstractions/safety' && method === 'GET') {
+        if (url === '/api/abstractions/safety' && method === 'GET') {
       const settings = abstractionService.getSafetySettings();
 
       sendJson(res, 200, {
@@ -3606,6 +3730,12 @@ async function handleRequest(
       'GET  /api/patterns/:id/network (CEDA-48: get pattern network graph)',
       'GET  /api/patterns/:id/related (CEDA-48: get related patterns)',
       'GET  /api/linking/stats (CEDA-48: get linking service statistics)',
+      'GET  /api/analytics?company=X&period=day|week|month (CEDA-50: full analytics dashboard)',
+      'GET  /api/analytics/metrics?company=X&period=day|week|month (CEDA-50: core metrics)',
+      'GET  /api/analytics/trends?company=X&period=day|week|month (CEDA-50: trend data)',
+      'GET  /api/analytics/patterns?company=X&period=day|week|month (CEDA-50: top patterns)',
+      'GET  /api/analytics/users?company=X&period=day|week|month (CEDA-50: active users)',
+      'GET  /api/analytics/system (CEDA-50: system-wide analytics, admin only)',
       'POST /api/herald/heartbeat',
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
