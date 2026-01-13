@@ -56,6 +56,7 @@ export class SignalProcessorService {
   ]);
 
   private readonly domainPatterns: Map<string, RegExp[]> = new Map([
+    // HSE domain patterns
     [
       'safety',
       [/safety/i, /incident/i, /hazard/i, /risk/i, /assessment/i, /inspection/i],
@@ -64,6 +65,25 @@ export class SignalProcessorService {
     ['compliance', [/compliance/i, /audit/i, /regulation/i, /policy/i]],
     ['workflow', [/workflow/i, /process/i, /task/i, /assignment/i]],
     ['user', [/user/i, /account/i, /profile/i, /role/i, /permission/i]],
+    // Design System domain patterns
+    ['component', [/component/i, /button/i, /input/i, /card/i, /modal/i, /dialog/i, /form/i, /ui\b/i]],
+    ['token', [/token/i, /color/i, /spacing/i, /typography/i, /scale/i, /theme/i]],
+    ['accessibility', [/accessibility/i, /wcag/i, /a11y/i, /contrast/i, /aria/i, /screen.?reader/i]],
+    ['pattern', [/pattern/i, /layout/i, /responsive/i, /navigation/i, /grid/i]],
+    ['review', [/review/i, /analyze/i, /audit/i, /check/i, /validate/i, /mcp/i, /project/i]],
+    // Anteater ecosystem patterns
+    ['scaffold', [/scaffold/i, /design.?system/i, /generate.*project/i, /create.*ds/i, /npx\s+anteater/i, /anteater\s+\w+/i]],
+    ['oklch', [/oklch/i, /color.?scale/i, /perceptual/i, /lightness/i, /chroma/i]],
+    ['semantic', [/semantic/i, /alias/i, /mapping/i, /interactive/i, /primitive/i]],
+    ['shadcn', [/shadcn/i, /add\s+(button|card|dialog|input)/i, /fetch.*component/i, /radix/i]],
+    ['transform', [/transform/i, /convert/i, /map.*token/i, /replace/i]],
+    ['claude', [/\.claude/i, /ai.?context/i, /agent.?context/i, /skills/i]],
+    ['storybook', [/storybook/i, /story/i, /stories/i, /allstates/i]],
+    ['hookify', [/hookify/i, /hook.*rule/i, /validation.*rule/i, /enforcement/i]],
+    ['skill', [/skill/i, /workflow/i, /prompt/i, /reusable/i]],
+    ['mcp', [/mcp/i, /model.?context/i, /tool.*definition/i, /server.*tool/i]],
+    ['tailwind', [/tailwind/i, /preset/i, /utility/i, /tw\b/i]],
+    ['audit', [/audit/i, /scan/i, /drift/i, /compliance/i]],
   ]);
 
   private readonly handlerMap: Map<IntentType, { handler: string; priority: number }> = new Map([
