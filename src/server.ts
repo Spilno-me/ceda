@@ -122,6 +122,12 @@ const tenantEmbeddingService = new TenantEmbeddingService(embeddingService, vect
 // CEDA-35: Initialize observation service for learning loop
 const observationService = new ObservationService(embeddingService);
 
+// CEDA-41: Set pattern creation callback for auto-generated patterns from clustering
+observationService.setPatternCreationCallback((pattern) => {
+  patternLibrary.registerPattern(pattern);
+  console.log(`[CEDA-41] Auto-registered pattern: ${pattern.id} "${pattern.name}"`);
+});
+
 // CEDA-36: Initialize graduation service for pattern evolution
 const graduationService = new GraduationService(patternLibrary, observationService);
 
@@ -1233,6 +1239,18 @@ async function handleRequest(
 
         console.log(`[CEDA] Observation captured: ${observation.id} (${body.outcome}, ${observation.modifications.length} modifications)`);
 
+        // CEDA-41: Check for clusterable observations and auto-create patterns
+        let autoCreatedPatterns: { id: string; name: string }[] = [];
+        try {
+          const patterns = await observationService.checkAndCreatePatterns(body.company);
+          autoCreatedPatterns = patterns.map(p => ({ id: p.id, name: p.name }));
+          if (patterns.length > 0) {
+            console.log(`[CEDA-41] Auto-created ${patterns.length} pattern(s) from observation clusters`);
+          }
+        } catch (clusterError) {
+          console.warn('[CEDA-41] Clustering check failed (non-fatal):', clusterError instanceof Error ? clusterError.message : clusterError);
+        }
+
         sendJson(res, 200, {
           recorded: true,
           observationId: observation.id,
@@ -1240,6 +1258,8 @@ async function handleRequest(
           outcome: observation.outcome,
           modificationsCount: observation.modifications.length,
           timestamp: observation.timestamp,
+          // CEDA-41: Include auto-created patterns info
+          autoCreatedPatterns: autoCreatedPatterns.length > 0 ? autoCreatedPatterns : undefined,
         });
       } catch (error) {
         console.error('[CEDA] Failed to capture observation:', error);
@@ -1295,6 +1315,18 @@ async function handleRequest(
 
         console.log(`[CEDA] Direct observation created: ${observation.id} (${body.outcome}, session: ${observation.sessionId})`);
 
+        // CEDA-41: Check for clusterable observations and auto-create patterns
+        let autoCreatedPatterns: { id: string; name: string }[] = [];
+        try {
+          const patterns = await observationService.checkAndCreatePatterns(body.company);
+          autoCreatedPatterns = patterns.map(p => ({ id: p.id, name: p.name }));
+          if (patterns.length > 0) {
+            console.log(`[CEDA-41] Auto-created ${patterns.length} pattern(s) from observation clusters`);
+          }
+        } catch (clusterError) {
+          console.warn('[CEDA-41] Clustering check failed (non-fatal):', clusterError instanceof Error ? clusterError.message : clusterError);
+        }
+
         sendJson(res, 201, {
           recorded: true,
           observationId: observation.id,
@@ -1303,6 +1335,8 @@ async function handleRequest(
           outcome: observation.outcome,
           modificationsCount: observation.modifications.length,
           timestamp: observation.timestamp,
+          // CEDA-41: Include auto-created patterns info
+          autoCreatedPatterns: autoCreatedPatterns.length > 0 ? autoCreatedPatterns : undefined,
         });
       } catch (error) {
         console.error('[CEDA] Failed to create direct observation:', error);
@@ -1967,6 +2001,81 @@ async function handleRequest(
       return;
     }
 
+    // === CEDA-41: Observation Clustering Endpoints ===
+
+    // POST /api/clustering/check - Manually trigger clustering for a company
+    if (url === '/api/clustering/check' && method === 'POST') {
+      const body = await parseBody<{
+        company: string;
+      }>(req);
+
+      if (!body.company) {
+        sendJson(res, 400, { error: 'Missing required field: company' });
+        return;
+      }
+
+      try {
+        const orphanCount = observationService.getOrphanObservations(body.company).length;
+        const patterns = await observationService.checkAndCreatePatterns(body.company);
+
+        console.log(`[CEDA-41] Manual clustering check for ${body.company}: ${orphanCount} orphans, ${patterns.length} patterns created`);
+
+        sendJson(res, 200, {
+          company: body.company,
+          orphanObservations: orphanCount,
+          patternsCreated: patterns.map(p => ({
+            id: p.id,
+            name: p.name,
+            level: p.level,
+            description: p.description,
+          })),
+          count: patterns.length,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[CEDA-41] Clustering check failed:', error);
+        sendJson(res, 500, {
+          error: 'Clustering check failed',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // GET /api/clustering/orphans - Get orphan observations (those without real patterns)
+    if (url?.startsWith('/api/clustering/orphans') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const company = urlObj.searchParams.get('company');
+
+      const orphans = observationService.getOrphanObservations(company || undefined);
+
+      sendJson(res, 200, {
+        orphans: orphans.map(o => ({
+          id: o.id,
+          input: o.input,
+          patternId: o.patternId,
+          outcome: o.outcome,
+          feedback: o.feedback,
+          company: o.company,
+          timestamp: o.timestamp,
+        })),
+        count: orphans.length,
+        company: company || 'all',
+        config: observationService.getClusteringConfig(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/clustering/config - Get clustering configuration
+    if (url === '/api/clustering/config' && method === 'GET') {
+      sendJson(res, 200, {
+        config: observationService.getClusteringConfig(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     // GET /api/abstractions/safety - Get safety settings
     if (url === '/api/abstractions/safety' && method === 'GET') {
       const settings = abstractionService.getSafetySettings();
@@ -2039,6 +2148,9 @@ async function handleRequest(
       'GET  /api/abstractions/audit (CEDA-37: get audit log)',
       'GET  /api/abstractions/safety (CEDA-37: get safety settings)',
       'PUT  /api/abstractions/safety (CEDA-37: update safety settings)',
+      'POST /api/clustering/check (CEDA-41: trigger clustering for company)',
+      'GET  /api/clustering/orphans (CEDA-41: get orphan observations)',
+      'GET  /api/clustering/config (CEDA-41: get clustering configuration)',
       'POST /api/herald/heartbeat',
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
