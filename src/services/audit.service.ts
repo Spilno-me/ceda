@@ -12,7 +12,9 @@ export type AuditAction =
   | 'pattern_created'
   | 'pattern_graduated'
   | 'pattern_deleted'
-  | 'observation_captured';
+  | 'observation_captured'
+  | 'document_created'
+  | 'document_deleted';
 
 export interface AuditEvent {
   id: string;
