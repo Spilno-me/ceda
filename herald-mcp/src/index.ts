@@ -272,7 +272,12 @@ async function callCedaAPI(endpoint: string, method = "GET", body?: Record<strin
   }
 
   let url = `${CEDA_API_URL}${endpoint}`;
-  if (method === "GET" && endpoint.startsWith("/api/")) {
+  // Only add tenant params to endpoints that need them (patterns, session queries)
+  // Don't add to simple endpoints like /api/stats, /health
+  const needsTenantParams = endpoint.startsWith("/api/patterns") ||
+                            endpoint.startsWith("/api/session/") ||
+                            endpoint.startsWith("/api/observations");
+  if (method === "GET" && needsTenantParams) {
     const separator = endpoint.includes("?") ? "&" : "?";
     url += `${separator}company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}`;
   }
@@ -640,9 +645,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "herald_predict": {
         const signal = args?.signal as string;
-        const context = args?.context as string | undefined;
+        const contextStr = args?.context as string | undefined;
         const sessionId = args?.session_id as string | undefined;
         const participant = args?.participant as string | undefined;
+
+        // Convert string context to CEDA's expected array format
+        const context = contextStr
+          ? [{ type: "user_context", value: contextStr, source: "herald" }]
+          : undefined;
 
         const result = await callCedaAPI("/api/predict", "POST", {
           input: signal,
@@ -660,8 +670,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "herald_refine": {
         const sessionId = args?.session_id as string;
         const refinement = args?.refinement as string;
-        const context = args?.context as string | undefined;
+        const contextStr = args?.context as string | undefined;
         const participant = args?.participant as string | undefined;
+
+        // Convert string context to CEDA's expected array format
+        const context = contextStr
+          ? [{ type: "user_context", value: contextStr, source: "herald" }]
+          : undefined;
 
         const result = await callCedaAPI("/api/refine", "POST", {
           sessionId,
