@@ -38,7 +38,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.6.0";
+const VERSION = "1.7.0";
 
 // Claude for Herald's voice - REQUIRES user's own API key
 // SECURITY: Never bundle API keys in npm packages
@@ -526,6 +526,11 @@ const server = new Server(
 
 const tools: Tool[] = [
   {
+    name: "herald_help",
+    description: "Get started with Herald MCP - shows available tools, quick examples, and links to documentation",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "herald_health",
     description: "Check Herald and CEDA system status",
     inputSchema: { type: "object", properties: {} },
@@ -633,6 +638,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
+      case "herald_help": {
+        const contextStr = getContextString();
+        const helpText = `# Herald MCP v${VERSION}
+
+Welcome to Herald - your AI-native interface to CEDA (Cognitive Event-Driven Architecture).
+
+## Current Context
+- Company: ${HERALD_COMPANY}
+- Project: ${HERALD_PROJECT}
+- User: ${HERALD_USER}
+
+## Available Tools
+
+**Getting Started:**
+- \`herald_help\` - This guide
+- \`herald_health\` - Check CEDA connection
+- \`herald_stats\` - View patterns and sessions
+
+**Core Workflow:**
+1. \`herald_predict\` - Generate structure predictions from natural language
+   Example: "create a safety incident module"
+2. \`herald_refine\` - Improve predictions iteratively
+3. \`herald_feedback\` - Accept or reject predictions (feeds learning loop)
+
+**Sessions:**
+- \`herald_session\` - View session history
+
+**Context Sync:**
+- \`herald_context_status\` - See other Herald instances
+- \`herald_share_insight\` - Share patterns across projects
+- \`herald_query_insights\` - Get accumulated insights
+
+## Quick Example
+
+Ask me to create something:
+> "Create a module for tracking safety incidents with forms for reporting and investigation"
+
+Herald will:
+1. Generate a structure prediction based on learned patterns
+2. Let you refine it ("add OSHA compliance fields")
+3. Learn from your feedback to improve future predictions
+
+## Resources
+- Setup Guide: https://getceda.com/docs/herald-setup-guide.md
+- CEDA Backend: ${CEDA_API_URL || "not configured"}
+
+## Tips
+- Be specific in your requests - Herald learns from patterns
+- Use refine to iterate on predictions
+- Your feedback (accept/reject) improves CEDA for everyone
+`;
+        return {
+          content: [{ type: "text", text: helpText }],
+        };
+      }
+
       case "herald_health": {
         const result = await callCedaAPI("/health");
         return {

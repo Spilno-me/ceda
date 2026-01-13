@@ -279,6 +279,100 @@ async function handleRequest(
   }
 
   try {
+    // Landing page
+    if (url === '/' && method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CEDA - Cognitive Event-Driven Architecture</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; padding: 2rem; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #fff; }
+    .tagline { color: #888; font-size: 1.2rem; margin-bottom: 2rem; }
+    .section { background: #1a1a1a; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    h2 { color: #4a9eff; margin-bottom: 1rem; font-size: 1.3rem; }
+    p { line-height: 1.6; margin-bottom: 1rem; }
+    code { background: #2a2a2a; padding: 0.2rem 0.5rem; border-radius: 4px; font-family: 'SF Mono', Monaco, monospace; font-size: 0.9rem; }
+    pre { background: #2a2a2a; padding: 1rem; border-radius: 4px; overflow-x: auto; margin: 1rem 0; }
+    pre code { background: none; padding: 0; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; text-align: center; }
+    .stat { background: #2a2a2a; padding: 1rem; border-radius: 8px; }
+    .stat-value { font-size: 2rem; font-weight: bold; color: #4a9eff; }
+    .stat-label { color: #888; font-size: 0.9rem; }
+    a { color: #4a9eff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .footer { text-align: center; color: #666; margin-top: 2rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>CEDA</h1>
+    <p class="tagline">Cognitive Event-Driven Architecture</p>
+
+    <div class="section">
+      <h2>What is CEDA?</h2>
+      <p>CEDA learns from how you work. It observes patterns, clusters similar observations, and graduates successful patterns for reuse across projects.</p>
+      <p>Think of it as Elisp for business intelligence - use it, and it improves.</p>
+    </div>
+
+    <div class="section">
+      <h2>Quick Start</h2>
+      <p>Connect via Herald MCP in Claude CLI:</p>
+      <pre><code>{
+  "mcpServers": {
+    "herald": {
+      "command": "npx",
+      "args": ["@spilno/herald-mcp"],
+      "env": {
+        "CEDA_URL": "https://getceda.com",
+        "HERALD_COMPANY": "your-company",
+        "HERALD_PROJECT": "your-project"
+      }
+    }
+  }
+}</code></pre>
+      <p>Save as <code>.mcp.json</code> in your project root, restart Claude CLI.</p>
+    </div>
+
+    <div class="section">
+      <h2>Current Status</h2>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-value">${patternLibrary.getAllPatterns().length}</div>
+          <div class="stat-label">Patterns</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value">${sessionService.getActiveSessionCount()}</div>
+          <div class="stat-label">Sessions</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value">OK</div>
+          <div class="stat-label">Status</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Resources</h2>
+      <p>
+        <a href="https://github.com/Spilno-me/ceda/blob/main/docs/herald-setup-guide.md">Setup Guide</a> ·
+        <a href="/health">Health Check</a> ·
+        <a href="https://github.com/Spilno-me/ceda">GitHub</a>
+      </p>
+    </div>
+
+    <p class="footer">Built by Spilno</p>
+  </div>
+</body>
+</html>`);
+      return;
+    }
+
     // Health check
     if (url === '/health' && method === 'GET') {
       const health = orchestrator.getHealthStatus();
