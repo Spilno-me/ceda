@@ -2,10 +2,10 @@
  * Design System Domain Patterns
  *
  * Patterns for AI-assisted design system development and component creation.
- * These patterns enable high-confidence predictions for MCP servers like anteater-mcp.
+ * These patterns enable high-confidence predictions for MCP servers like salvador-mcp.
  *
  * Multi-tenant Pattern Isolation (CEDA-30):
- * - Patterns with company='anteater' for design system domain
+ * - Patterns with company='salvador' for design system domain
  * - Can be shared globally (company=null) for general design system tasks
  */
 

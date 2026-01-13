@@ -1,9 +1,9 @@
 /**
- * Anteater Ecosystem Patterns
+ * Salvador Ecosystem Patterns
  *
- * Patterns for the Anteater design system toolchain:
- * - anteater CLI: Design system generator (tokens + AI context)
- * - anteater-mcp: MCP server for design system intelligence
+ * Patterns for the Salvador design system toolchain:
+ * - salvador CLI: Design system generator (tokens + AI context)
+ * - salvador-mcp: MCP server for design system intelligence
  *
  * These patterns enable high-confidence predictions for:
  * - Design system scaffolding
@@ -11,6 +11,7 @@
  * - Component addition and management
  * - AI context generation (.claude/ directory)
  * - Storybook story creation
+ *
  */
 
 import {
@@ -20,12 +21,12 @@ import {
 } from '../interfaces';
 
 /**
- * Anteater Ecosystem Patterns
+ * Salvador Ecosystem Patterns
  */
-export const ANTEATER_PATTERNS: Pattern[] = [
+export const SALVADOR_PATTERNS: Pattern[] = [
   // Design System Scaffold (full project generation)
   {
-    id: 'anteater-scaffold',
+    id: 'salvador-scaffold',
     name: 'Design System Scaffold',
     category: 'scaffold' as PatternCategory,
     description: 'Generate a complete design system with tokens, AI context, and component infrastructure',
@@ -51,7 +52,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // OKLCH Token Generation
   {
-    id: 'anteater-token-gen',
+    id: 'salvador-token-gen',
     name: 'OKLCH Token Generation',
     category: 'token' as PatternCategory,
     description: 'Generate perceptually uniform color scales using OKLCH color space',
@@ -77,7 +78,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // Semantic Token Mapping
   {
-    id: 'anteater-token-map',
+    id: 'salvador-token-map',
     name: 'Semantic Token Mapping',
     category: 'token' as PatternCategory,
     description: 'Map primitive tokens to semantic aliases for component usage',
@@ -103,7 +104,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // Component Addition (shadcn fetch + transform)
   {
-    id: 'anteater-component-add',
+    id: 'salvador-component-add',
     name: 'Component Addition',
     category: 'component' as PatternCategory,
     description: 'Fetch shadcn components and transform to use semantic tokens',
@@ -129,7 +130,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // Token Transformation Rules
   {
-    id: 'anteater-transform',
+    id: 'salvador-transform',
     name: 'Token Transformation',
     category: 'token' as PatternCategory,
     description: 'Transform shadcn default tokens to semantic design system tokens',
@@ -154,7 +155,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // AI Context Generation (.claude/ directory)
   {
-    id: 'anteater-ai-context',
+    id: 'salvador-ai-context',
     name: 'AI Context Generation',
     category: 'scaffold' as PatternCategory,
     description: 'Generate Claude Code context with skills, hookify rules, and token constraints',
@@ -179,7 +180,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // Storybook Story Generation
   {
-    id: 'anteater-story',
+    id: 'salvador-story',
     name: 'Storybook Story',
     category: 'pattern' as PatternCategory,
     description: 'Generate Storybook stories with AllStates pattern and proper controls',
@@ -204,7 +205,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // Hookify Rule Creation
   {
-    id: 'anteater-hookify',
+    id: 'salvador-hookify',
     name: 'Hookify Rule',
     category: 'pattern' as PatternCategory,
     description: 'Create validation rules for AI code generation (color enforcement, accessibility, etc.)',
@@ -229,7 +230,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // Skill Creation
   {
-    id: 'anteater-skill',
+    id: 'salvador-skill',
     name: 'Claude Skill',
     category: 'pattern' as PatternCategory,
     description: 'Create reusable Claude Code skills for design system workflows',
@@ -252,12 +253,12 @@ export const ANTEATER_PATTERNS: Pattern[] = [
     metadata: { version: '1.0.0', createdAt: new Date(), updatedAt: new Date(), usageCount: 0, successRate: 0 },
   },
 
-  // Anteater MCP Tool
+  // Salvador MCP Tool
   {
-    id: 'anteater-mcp-tool',
+    id: 'salvador-mcp-tool',
     name: 'MCP Tool Definition',
     category: 'component' as PatternCategory,
-    description: 'Create a new tool for the anteater-mcp server',
+    description: 'Create a new tool for the salvador-mcp server',
     company: undefined,
     structure: {
       sections: [
@@ -280,7 +281,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // Tailwind Preset Configuration
   {
-    id: 'anteater-tailwind',
+    id: 'salvador-tailwind',
     name: 'Tailwind Preset',
     category: 'token' as PatternCategory,
     description: 'Configure Tailwind CSS preset with design system tokens',
@@ -305,7 +306,7 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 
   // Design System Audit
   {
-    id: 'anteater-audit',
+    id: 'salvador-audit',
     name: 'Design System Audit',
     category: 'review' as PatternCategory,
     description: 'Audit design system for token usage, accessibility, and consistency',
@@ -330,8 +331,8 @@ export const ANTEATER_PATTERNS: Pattern[] = [
 ];
 
 /**
- * Load Anteater patterns into a PatternLibraryService
+ * Load Salvador patterns into a PatternLibraryService
  */
-export function loadAnteaterPatterns(patternLibrary: { loadPatterns: (patterns: Pattern[]) => void }): void {
-  patternLibrary.loadPatterns(ANTEATER_PATTERNS);
+export function loadSalvadorPatterns(patternLibrary: { loadPatterns: (patterns: Pattern[]) => void }): void {
+  patternLibrary.loadPatterns(SALVADOR_PATTERNS);
 }
