@@ -24,6 +24,8 @@ import { LegionService, GroundingFeedback, ExecutionResult } from './services/le
 import { ObservationService } from './services/observation.service';
 import { GraduationService } from './services/graduation.service';
 import { AbstractionService } from './services/abstraction.service';
+import { RateLimiterService } from './services/rate-limiter.service';
+import { AuditService } from './services/audit.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
@@ -138,6 +140,12 @@ const graduationService = new GraduationService(patternLibrary, observationServi
 // CEDA-37: Initialize abstraction service for cross-domain learning
 const abstractionService = new AbstractionService(patternLibrary, observationService);
 
+// CEDA-43: Initialize rate limiter service for adversarial hardening (100 req/min per company)
+const rateLimiterService = new RateLimiterService(100, 60000);
+
+// CEDA-43: Initialize audit service for compliance logging
+const auditService = new AuditService();
+
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
   patternLibrary,
@@ -187,6 +195,15 @@ async function initializeVectorStore(): Promise<void> {
       console.log('[CEDA] Observations collection ready');
     } else {
       console.warn('[CEDA] Failed to initialize observations collection');
+    }
+
+    // CEDA-43: Initialize audit collection for compliance logging
+    console.log('[CEDA] Initializing audit collection...');
+    const auditInitialized = await auditService.initialize();
+    if (auditInitialized) {
+      console.log('[CEDA] Audit collection ready');
+    } else {
+      console.warn('[CEDA] Failed to initialize audit collection');
     }
   } else {
     console.warn('[CEDA] Failed to initialize vector store - falling back to rule-based matching');
@@ -255,6 +272,44 @@ async function parseBody<T>(req: http.IncomingMessage): Promise<T> {
 function sendJson(res: http.ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data, null, 2));
+}
+
+/**
+ * CEDA-43: Extract client IP from request headers
+ */
+function getClientIp(req: http.IncomingMessage): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    const ips = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    return ips.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+/**
+ * CEDA-43: Check rate limit and send 429 response if exceeded
+ * Returns true if request should be blocked
+ */
+function checkRateLimitAndRespond(
+  company: string,
+  res: http.ServerResponse,
+): boolean {
+  const result = rateLimiterService.checkRateLimit(company);
+  if (!result.allowed) {
+    res.writeHead(429, {
+      'Content-Type': 'application/json',
+      'Retry-After': String(result.retryAfter),
+    });
+    res.end(JSON.stringify({
+      error: 'Too Many Requests',
+      message: `Rate limit exceeded for company: ${company}`,
+      retryAfter: result.retryAfter,
+      limit: rateLimiterService.getConfig().maxRequests,
+      windowMs: rateLimiterService.getConfig().windowMs,
+    }, null, 2));
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -400,6 +455,11 @@ async function handleRequest(
           error: 'Missing required field: company',
           message: 'Multi-tenant pattern isolation requires company context',
         });
+        return;
+      }
+
+      // CEDA-43: Rate limiting check
+      if (checkRateLimitAndRespond(body.company, res)) {
         return;
       }
 
@@ -993,6 +1053,11 @@ async function handleRequest(
         return;
       }
 
+      // CEDA-43: Rate limiting check
+      if (checkRateLimitAndRespond(body.company, res)) {
+        return;
+      }
+
       // Check if pattern already exists
       const existingPattern = patternLibrary.getPattern(body.id);
       if (existingPattern) {
@@ -1025,6 +1090,16 @@ async function handleRequest(
 
       patternLibrary.registerPattern(newPattern);
       console.log(`[CEDA] Pattern created: ${body.id} for company ${body.company}`);
+
+      // CEDA-43: Audit log pattern creation
+      await auditService.log(
+        'pattern_created',
+        body.id,
+        body.company,
+        body.user,
+        { name: body.name, category: body.category },
+        getClientIp(req),
+      );
 
       sendJson(res, 201, {
         created: true,
@@ -1162,6 +1237,16 @@ async function handleRequest(
       patternLibrary.loadPatterns(patterns);
       
       console.log(`[CEDA] Pattern deleted: ${patternId} by user ${user}`);
+
+      // CEDA-43: Audit log pattern deletion
+      await auditService.log(
+        'pattern_deleted',
+        patternId,
+        company,
+        user,
+        { name: existingPattern.name, category: existingPattern.category },
+        getClientIp(req),
+      );
 
       sendJson(res, 200, {
         deleted: true,
@@ -1385,6 +1470,11 @@ async function handleRequest(
         return;
       }
 
+      // CEDA-43: Rate limiting check
+      if (checkRateLimitAndRespond(body.company, res)) {
+        return;
+      }
+
       if (!body.prediction) {
         sendJson(res, 400, { error: 'Missing required field: prediction' });
         return;
@@ -1411,6 +1501,16 @@ async function handleRequest(
         const observation = await observationService.createDirect(body);
 
         console.log(`[CEDA] Direct observation created: ${observation.id} (${body.outcome}, session: ${observation.sessionId})`);
+
+        // CEDA-43: Audit log observation capture
+        await auditService.log(
+          'observation_captured',
+          observation.id,
+          body.company,
+          body.user || 'unknown',
+          { outcome: body.outcome, patternId: body.patternId, source: 'direct' },
+          getClientIp(req),
+        );
 
         // CEDA-41: Check for clusterable observations and auto-create patterns
         let autoCreatedPatterns: { id: string; name: string }[] = [];
