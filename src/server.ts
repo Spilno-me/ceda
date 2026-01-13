@@ -2015,7 +2015,8 @@ async function handleRequest(
       }
 
       try {
-        const orphanCount = observationService.getOrphanObservations(body.company).length;
+        const orphans = await observationService.getOrphanObservations(body.company);
+        const orphanCount = orphans.length;
         const patterns = await observationService.checkAndCreatePatterns(body.company);
 
         console.log(`[CEDA-41] Manual clustering check for ${body.company}: ${orphanCount} orphans, ${patterns.length} patterns created`);
@@ -2047,10 +2048,10 @@ async function handleRequest(
       const urlObj = new URL(url, `http://localhost:${PORT}`);
       const company = urlObj.searchParams.get('company');
 
-      const orphans = observationService.getOrphanObservations(company || undefined);
+      const orphans = await observationService.getOrphanObservations(company || undefined);
 
       sendJson(res, 200, {
-        orphans: orphans.map(o => ({
+        orphans: orphans.map((o: { id: string; input: string; patternId: string; outcome?: string; feedback?: string; company: string; timestamp: Date }) => ({
           id: o.id,
           input: o.input,
           patternId: o.patternId,

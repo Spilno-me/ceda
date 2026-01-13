@@ -86,6 +86,15 @@ class QdrantHttpClient {
     }
     return this.request('POST', `/collections/${collection}/points/search`, body);
   }
+
+  /**
+   * CEDA-42: Count points in a collection
+   * Used to check if collection is empty before seeding
+   */
+  async count(collection: string): Promise<number> {
+    const result = await this.request<{ count: number }>('POST', `/collections/${collection}/points/count`, {});
+    return result.count;
+  }
 }
 
 /** Qdrant filter structure for tenant filtering */
@@ -187,6 +196,10 @@ export class VectorStoreService {
     }
   }
 
+  /**
+   * CEDA-42: Seed patterns to Qdrant only if collection is empty
+   * This ensures patterns persist across Railway redeploys without duplicates
+   */
   async seedPatterns(patterns: Pattern[]): Promise<boolean> {
     const client = this.getClient();
     if (!client || !this.embeddingService.isAvailable()) {
@@ -200,6 +213,18 @@ export class VectorStoreService {
     }
 
     try {
+      // CEDA-42: Check if collection already has patterns (persistence across redeploys)
+      const existingCount = await client.count(this.collectionName);
+      if (existingCount > 0) {
+        console.log(`[VectorStoreService] Collection already has ${existingCount} patterns - skipping seed`);
+        // Still load patterns into memory for local access
+        for (const pattern of patterns) {
+          this.patterns.set(pattern.id, pattern);
+        }
+        return true;
+      }
+
+      console.log('[VectorStoreService] Collection empty - seeding patterns...');
       const patternTexts = patterns.map(p => this.createPatternText(p));
       const embeddings = await this.embeddingService.generateEmbeddings(patternTexts);
 
