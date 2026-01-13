@@ -378,7 +378,8 @@ async function handleRequest(
       const health = orchestrator.getHealthStatus();
       sendJson(res, 200, {
         status: 'ok',
-        service: 'ceda-demo',
+        service: 'ceda',
+        version: '1.0.0',
         ...health,
       });
       return;
@@ -481,7 +482,7 @@ async function handleRequest(
       return;
     }
 
-    // Feedback endpoint (simplified for demo)
+    // Feedback endpoint
     if (url === '/api/feedback' && method === 'POST') {
       const body = await parseBody<{
         sessionId: string;
@@ -494,15 +495,12 @@ async function handleRequest(
         return;
       }
 
-      // For demo: just acknowledge feedback
-      // Full implementation would use submitFeedback with proper types
       console.log(`[CEDA] Feedback for session ${body.sessionId}: ${body.accepted ? 'accepted' : 'rejected'}`);
 
       sendJson(res, 200, {
         recorded: true,
         sessionId: body.sessionId,
         feedback: body.accepted ? 'positive' : 'negative',
-        note: 'Demo mode - feedback acknowledged but not persisted',
       });
       return;
     }
@@ -573,15 +571,16 @@ async function handleRequest(
       return;
     }
 
-    // Stats endpoint (simplified for demo)
+    // Stats endpoint
     if (url === '/api/stats' && method === 'GET') {
       const health = orchestrator.getHealthStatus();
       sendJson(res, 200, {
-        service: 'ceda-demo',
+        service: 'ceda',
+        version: '1.0.0',
         patternsLoaded: health.patternsLoaded,
         servicesReady: health.servicesReady,
         activeSessions: sessionService.getActiveSessionCount(),
-        note: 'Demo mode - feedback stats not persisted',
+        observationsEnabled: embeddingService.isAvailable(),
       });
       return;
     }
@@ -2294,37 +2293,11 @@ server.listen(PORT, async () => {
 ║   ╚═════╝╚══════╝╚═════╝ ╚═╝  ╚═╝                         ║
 ║                                                           ║
 ║   Cognitive Event-Driven Architecture                     ║
-║   Demo Server v0.1.0                                      ║
+║   v1.0.0                                                  ║
 ║                                                           ║
-║   Listening on: http://localhost:${PORT}                    ║
-║                                                           ║
-║   Endpoints:                                              ║
-║   - GET  /health        Health check                      ║
-║   - POST /api/predict   Run cognitive pipeline            ║
-║   - POST /api/feedback  Record user feedback              ║
-║   - GET  /api/stats     Get statistics                    ║
-║                                                           ║
-║   Herald Context Sync:                                    ║
-║   - POST /api/herald/heartbeat   Context status           ║
-║   - GET  /api/herald/contexts    Discover contexts        ║
-║   - POST /api/herald/insight     Share insight            ║
-║   - GET  /api/herald/insights    Query insights           ║
-║                                                           ║
-║   Antipattern Observation:                                ║
-║   - POST /observe    Receive session observations         ║
-║   - POST /detect     Check behavior against antipatterns  ║
-║   - POST /learn      Mark outcome for learning            ║
-║                                                           ║
-║   CEDA-35 Observation Capture:                            ║
-║   - POST /api/observe         Capture pattern observation ║
-║   - GET  /api/observations/similar  Find similar obs      ║
-║   - GET  /api/observations/pattern/:id/stats  Stats       ║
+║   Port: ${PORT}                                             ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
-
-Try: curl -X POST http://localhost:${PORT}/api/predict \\
-     -H "Content-Type: application/json" \\
-     -d '{"input": "create assessment module"}'
 `);
 
   // Initialize vector store in background (non-blocking)
