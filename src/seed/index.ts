@@ -22,6 +22,9 @@ export { SPILNO_PATTERNS, loadSpilnoPatterns } from './spilno-patterns';
 // Antipatterns for observation and learning
 export { SEED_ANTIPATTERNS, loadAntipatterns } from './antipatterns';
 
+// Methodology patterns (shared/cross-domain) - Five Hats AI Consilium 2026-01-13
+export { METHODOLOGY_PATTERNS, loadMethodologyPatterns } from './methodology-patterns';
+
 // Future domain patterns:
 // export { HR_PATTERNS, loadHRPatterns } from './hr-patterns';
 // export { FINANCE_PATTERNS, loadFinancePatterns } from './finance-patterns';

@@ -25,7 +25,7 @@ import { ObservationService } from './services/observation.service';
 import { GraduationService } from './services/graduation.service';
 import { AbstractionService } from './services/abstraction.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
-import { HSE_PATTERNS, SEED_ANTIPATTERNS } from './seed';
+import { HSE_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
@@ -95,6 +95,10 @@ const patternLibrary = new PatternLibraryService();
 // Load domain-specific patterns (HSE for this demo)
 // In production, patterns would come from database or external config
 patternLibrary.loadPatterns(HSE_PATTERNS);
+
+// Load methodology patterns (shared/cross-domain) from Five Hats AI Consilium
+patternLibrary.loadPatterns(METHODOLOGY_PATTERNS);
+console.log(`[CEDA] Loaded ${METHODOLOGY_PATTERNS.length} methodology patterns from AI consilium`);
 
 // Initialize embedding and vector store services
 const embeddingService = new EmbeddingService();
