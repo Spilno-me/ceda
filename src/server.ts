@@ -26,6 +26,7 @@ import { GraduationService } from './services/graduation.service';
 import { AbstractionService } from './services/abstraction.service';
 import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
+import { QualityScoreService } from './services/quality-score.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
@@ -145,6 +146,9 @@ const rateLimiterService = new RateLimiterService(100, 60000);
 
 // CEDA-43: Initialize audit service for compliance logging
 const auditService = new AuditService();
+
+// CEDA-44: Initialize quality score service for pattern quality assessment
+const qualityScoreService = new QualityScoreService();
 
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
@@ -942,6 +946,149 @@ async function handleRequest(
         timestamp: new Date().toISOString(),
       });
       return;
+    }
+
+    // === CEDA-44: Pattern Quality Score Endpoints ===
+
+    // GET /api/patterns/low-quality - Get patterns below quality threshold
+    if (url?.startsWith('/api/patterns/low-quality') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const threshold = parseInt(urlObj.searchParams.get('threshold') || '50', 10);
+      const user = urlObj.searchParams.get('user');
+
+      // User is required for pattern access (user-first isolation)
+      if (!user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameter: user',
+          message: 'USER is the doorway - all pattern access requires user context',
+        });
+        return;
+      }
+
+      const query: UserPatternQuery = {
+        user,
+        company: urlObj.searchParams.get('company') || undefined,
+        project: urlObj.searchParams.get('project') || undefined,
+      };
+
+      const accessiblePatterns = patternLibrary.getPatternsForUser(query);
+      const lowQualityPatterns = qualityScoreService.flagLowQuality(accessiblePatterns, threshold);
+
+      sendJson(res, 200, {
+        patterns: lowQualityPatterns.map(p => ({
+          ...p,
+          qualityScore: p.qualityScore ?? qualityScoreService.calculateScore(p),
+          qualityFactors: qualityScoreService.getQualityFactors(p),
+        })),
+        count: lowQualityPatterns.length,
+        threshold,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/patterns/quality-check - Bulk quality check for patterns
+    if (url === '/api/patterns/quality-check' && method === 'POST') {
+      const body = await parseBody<{
+        patternIds?: string[];
+        user: string;
+        company?: string;
+        project?: string;
+        threshold?: number;
+      }>(req);
+
+      // User is required for pattern access (user-first isolation)
+      if (!body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required field: user',
+          message: 'USER is the doorway - all pattern access requires user context',
+        });
+        return;
+      }
+
+      const query: UserPatternQuery = {
+        user: body.user,
+        company: body.company,
+        project: body.project,
+      };
+
+      const threshold = body.threshold ?? qualityScoreService.getDefaultThreshold();
+      let patternsToCheck: import('./interfaces').Pattern[];
+
+      if (body.patternIds && body.patternIds.length > 0) {
+        // Check specific patterns
+        patternsToCheck = body.patternIds
+          .map(id => patternLibrary.getPatternForUser(id, query))
+          .filter((p): p is import('./interfaces').Pattern => p !== undefined);
+      } else {
+        // Check all accessible patterns
+        patternsToCheck = patternLibrary.getPatternsForUser(query);
+      }
+
+      const results = patternsToCheck.map(pattern => 
+        qualityScoreService.getQualityScoreResult(pattern, threshold)
+      );
+
+      const lowQualityCount = results.filter(r => r.isLowQuality).length;
+
+      sendJson(res, 200, {
+        results,
+        summary: {
+          total: results.length,
+          lowQuality: lowQualityCount,
+          highQuality: results.length - lowQualityCount,
+          threshold,
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/patterns/:id/quality - Get quality score for a specific pattern
+    if (url?.match(/^\/api\/patterns\/[^/]+\/quality/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      
+      if (pathParts.length === 4 && pathParts[0] === 'api' && pathParts[1] === 'patterns' && pathParts[3] === 'quality') {
+        const patternId = pathParts[2];
+        const user = urlObj.searchParams.get('user');
+        const threshold = parseInt(urlObj.searchParams.get('threshold') || '30', 10);
+
+        // User is required for pattern access (user-first isolation)
+        if (!user) {
+          sendJson(res, 400, {
+            error: 'Missing required query parameter: user',
+            message: 'USER is the doorway - all pattern access requires user context',
+          });
+          return;
+        }
+
+        const query: UserPatternQuery = {
+          user,
+          company: urlObj.searchParams.get('company') || undefined,
+          project: urlObj.searchParams.get('project') || undefined,
+        };
+
+        const pattern = patternLibrary.getPatternForUser(patternId, query);
+
+        if (!pattern) {
+          sendJson(res, 404, {
+            error: 'Pattern not found or not accessible',
+            patternId,
+            user,
+          });
+          return;
+        }
+
+        const qualityResult = qualityScoreService.getQualityScoreResult(pattern, threshold);
+
+        sendJson(res, 200, {
+          ...qualityResult,
+          weights: qualityScoreService.getWeights(),
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
     }
 
     // === CEDA-25: User-first Pattern Isolation Endpoints ===
