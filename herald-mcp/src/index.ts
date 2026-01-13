@@ -38,7 +38,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.7.0";
+const VERSION = "1.8.0";
 
 // Claude for Herald's voice - REQUIRES user's own API key
 // SECURITY: Never bundle API keys in npm packages
@@ -627,6 +627,67 @@ const tools: Tool[] = [
       required: ["topic"],
     },
   },
+  // CEDA-49: Session Management Tools
+  {
+    name: "herald_session_list",
+    description: "List sessions for a company with optional filters. Returns session summaries including id, status, created/updated timestamps.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        company: { type: "string", description: "Filter by company (optional, defaults to HERALD_COMPANY)" },
+        project: { type: "string", description: "Filter by project (optional)" },
+        user: { type: "string", description: "Filter by user (optional)" },
+        status: { type: "string", description: "Filter by status: active, archived, or expired (optional)" },
+        limit: { type: "number", description: "Maximum number of sessions to return (optional, default 100)" },
+      },
+    },
+  },
+  {
+    name: "herald_session_get",
+    description: "Get detailed information about a specific session including current prediction state and message history.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID to retrieve" },
+      },
+      required: ["session_id"],
+    },
+  },
+  {
+    name: "herald_session_history",
+    description: "Get version history for a session. Shows all recorded versions with timestamps and change types.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID to get history for" },
+        limit: { type: "number", description: "Maximum number of versions to return (optional)" },
+      },
+      required: ["session_id"],
+    },
+  },
+  {
+    name: "herald_session_rollback",
+    description: "Restore a session to a previous version. Creates a new version entry recording the rollback.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID to rollback" },
+        version: { type: "number", description: "Version number to restore to" },
+      },
+      required: ["session_id", "version"],
+    },
+  },
+  {
+    name: "herald_session_archive",
+    description: "Archive a session. Archived sessions are preserved but marked as inactive.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID to archive" },
+      },
+      required: ["session_id"],
+    },
+  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -663,7 +724,14 @@ Welcome to Herald - your AI-native interface to CEDA (Cognitive Event-Driven Arc
 3. \`herald_feedback\` - Accept or reject predictions (feeds learning loop)
 
 **Sessions:**
-- \`herald_session\` - View session history
+- \`herald_session\` - View session history (legacy)
+
+**Session Management (CEDA-49):**
+- \`herald_session_list\` - List sessions with filters (company, project, user, status)
+- \`herald_session_get\` - Get detailed session info including prediction state
+- \`herald_session_history\` - View version history for a session
+- \`herald_session_rollback\` - Restore a session to a previous version
+- \`herald_session_archive\` - Archive a session (mark as inactive)
 
 **Context Sync:**
 - \`herald_context_status\` - See other Herald instances
@@ -844,6 +912,74 @@ Herald will:
 
         return {
           content: [{ type: "text", text: JSON.stringify({ insights: [], message: "Local mode - no shared insights" }, null, 2) }],
+        };
+      }
+
+      // CEDA-49: Session Management Tools
+      case "herald_session_list": {
+        const company = args?.company as string | undefined;
+        const project = args?.project as string | undefined;
+        const user = args?.user as string | undefined;
+        const status = args?.status as string | undefined;
+        const limit = args?.limit as number | undefined;
+
+        const params = new URLSearchParams();
+        params.set("company", company || HERALD_COMPANY);
+        if (project) params.set("project", project);
+        if (user) params.set("user", user);
+        if (status) params.set("status", status);
+        if (limit) params.set("limit", String(limit));
+
+        const result = await callCedaAPI(`/api/sessions?${params.toString()}`);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      }
+
+      case "herald_session_get": {
+        const sessionId = args?.session_id as string;
+        const result = await callCedaAPI(`/api/session/${sessionId}`);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      }
+
+      case "herald_session_history": {
+        const sessionId = args?.session_id as string;
+        const limit = args?.limit as number | undefined;
+
+        let endpoint = `/api/session/${sessionId}/history`;
+        if (limit) {
+          endpoint += `?limit=${limit}`;
+        }
+
+        const result = await callCedaAPI(endpoint);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      }
+
+      case "herald_session_rollback": {
+        const sessionId = args?.session_id as string;
+        const version = args?.version as number;
+
+        const result = await callCedaAPI(
+          `/api/session/${sessionId}/rollback?version=${version}`,
+          "POST"
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      }
+
+      case "herald_session_archive": {
+        const sessionId = args?.session_id as string;
+
+        const result = await callCedaAPI(`/api/session/${sessionId}`, "PUT", {
+          status: "archived",
+        });
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
       }
 
