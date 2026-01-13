@@ -406,7 +406,7 @@ Processing time: ${result.processingTime}ms`;
 const server = new Server(
   {
     name: 'herald',
-    version: '0.1.0',
+    version: '1.10.0',
   },
   {
     capabilities: {
@@ -535,34 +535,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
       }
 
-      case 'herald_health': {
-        // CEDA-34: Check CEDA connectivity for stateless Herald
-        const client = initCedaClient();
-        const cedaHealth = await client.isHealthy();
+            case 'herald_health': {
+              // CEDA-34: Check CEDA connectivity for stateless Herald
+              const client = initCedaClient();
+              const cedaHealth = await client.isHealthy();
         
-        let cedaStatus = '';
-        if (cedaHealth.healthy) {
-          try {
-            const health = await client.health();
-            cedaStatus = `CEDA Status: ✓ Connected\n  URL: ${client.getBaseUrl()}\n  Patterns: ${health.patternsLoaded}\n  Services: ${health.servicesReady ? 'ready' : 'not ready'}`;
-          } catch {
-            cedaStatus = `CEDA Status: ✓ Connected\n  URL: ${client.getBaseUrl()}`;
-          }
-        } else {
-          cedaStatus = `CEDA Status: ✗ Disconnected\n  URL: ${client.getBaseUrl()}\n  Error: ${cedaHealth.error}`;
-        }
+              let cedaStatus = '';
+              if (cedaHealth.healthy) {
+                try {
+                  const health = await client.health();
+                  cedaStatus = `CEDA Status: ✓ Connected\n  URL: ${client.getBaseUrl()}\n  Patterns: ${health.patternsLoaded}\n  Services: ${health.servicesReady ? 'ready' : 'not ready'}`;
+                } catch {
+                  cedaStatus = `CEDA Status: ✓ Connected\n  URL: ${client.getBaseUrl()}`;
+                }
+              } else {
+                cedaStatus = `CEDA Status: ✗ Disconnected\n  URL: ${client.getBaseUrl()}\n  Error: ${cedaHealth.error}`;
+              }
 
-        const localPatterns = patternLibrary.getAllPatterns().length;
+              const localPatterns = patternLibrary.getAllPatterns().length;
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `**Herald Status (Stateless Mode)**\n\n${cedaStatus}\n\nLocal Pattern Cache: ${localPatterns}\nCurrent Session: ${currentSessionId}\nCompany: ${currentCompany}`,
-            },
-          ],
-        };
-      }
+              // CEDA-54: Config warnings for missing company/project
+              const configWarnings: string[] = [];
+              const heraldCompany = process.env.HERALD_COMPANY || currentCompany;
+              const heraldProject = process.env.HERALD_PROJECT;
+        
+              if (!heraldCompany || heraldCompany === 'default') {
+                configWarnings.push('HERALD_COMPANY not set - patterns will use "default" company scope');
+              }
+              if (!heraldProject) {
+                configWarnings.push('HERALD_PROJECT not set - project-scoped patterns unavailable');
+              }
+
+              const warningsSection = configWarnings.length > 0
+                ? `\n\n**Configuration Warnings:**\n${configWarnings.map(w => `  ⚠ ${w}`).join('\n')}\n\n**Tip:** Run \`npx herald init\` to create a .env template with recommended settings.`
+                : '';
+
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `**Herald Status (Stateless Mode)**\n\n${cedaStatus}\n\nLocal Pattern Cache: ${localPatterns}\nCurrent Session: ${currentSessionId}\nCompany: ${heraldCompany || 'default'}${heraldProject ? `\nProject: ${heraldProject}` : ''}${warningsSection}`,
+                  },
+                ],
+              };
+            }
 
       case 'herald_observe': {
         const observation = args?.observation as string;
@@ -617,17 +633,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const heraldCompany = args?.HERALD_COMPANY as string | undefined;
         const heraldProject = args?.HERALD_PROJECT as string | undefined;
 
-        if (!heraldUser) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: 'Herald requires HERALD_USER - USER is the doorway for pattern access.',
-              },
-            ],
-            isError: true,
-          };
-        }
+                if (!heraldUser) {
+                  return {
+                    content: [
+                      {
+                        type: 'text',
+                        text: `Herald requires HERALD_USER - USER is the doorway for pattern access.
+
+        **Usage Example:**
+        \`\`\`
+        herald_patterns_for_user({
+          "HERALD_USER": "your-user-id",
+          "HERALD_COMPANY": "your-company",  // optional
+          "HERALD_PROJECT": "your-project"   // optional
+        })
+        \`\`\`
+
+        **Setup Tip:** Run \`npx herald init\` to create a .env template with default configuration.`,
+                      },
+                    ],
+                    isError: true,
+                  };
+                }
 
         const query: UserPatternQuery = {
           user: heraldUser,
@@ -662,17 +689,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const heraldCompany = args?.HERALD_COMPANY as string | undefined;
         const heraldProject = args?.HERALD_PROJECT as string | undefined;
 
-        if (!patternId || !heraldUser) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: 'Herald requires patternId and HERALD_USER - USER is the doorway for pattern access.',
-              },
-            ],
-            isError: true,
-          };
-        }
+                if (!patternId || !heraldUser) {
+                  return {
+                    content: [
+                      {
+                        type: 'text',
+                        text: `Herald requires patternId and HERALD_USER - USER is the doorway for pattern access.
+
+        **Usage Example:**
+        \`\`\`
+        herald_pattern_by_id({
+          "patternId": "hse-assessment-default",
+          "HERALD_USER": "your-user-id",
+          "HERALD_COMPANY": "your-company",  // optional
+          "HERALD_PROJECT": "your-project"   // optional
+        })
+        \`\`\`
+
+        **Setup Tip:** Run \`npx herald init\` to create a .env template with default configuration.`,
+                      },
+                    ],
+                    isError: true,
+                  };
+                }
 
         const query: UserPatternQuery = {
           user: heraldUser,
