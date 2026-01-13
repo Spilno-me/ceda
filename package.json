@@ -1,6 +1,6 @@
 {
   "name": "@spilno/ceda",
-  "version": "0.1.0",
+  "version": "1.10.0",
   "description": "Cognitive Event-Driven Architecture - AI-native copilot layer",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,6 +10,7 @@
     "serve:prod": "node dist/server.js",
     "herald": "ts-node src/mcp/herald.ts",
     "herald:prod": "node dist/mcp/herald.js",
+    "herald:init": "ts-node src/mcp/herald-init.ts",
     "seed": "ts-node src/scripts/seed-patterns.ts",
     "test": "jest",
     "test:watch": "jest --watch",

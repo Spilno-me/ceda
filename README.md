@@ -25,7 +25,27 @@ User Input → Signal Processor → Pattern Library → Prediction Engine → Va
 | `CognitiveOrchestratorService` | Pipeline orchestration with observability |
 | `FeedbackService` | Learning loop for continuous improvement |
 
-## Quick Start
+## Herald MCP Quick Start
+
+Get started with Herald in 4 steps:
+
+```bash
+# 1. Install Herald MCP
+npm install -g @spilno/ceda
+
+# 2. Initialize configuration
+npx herald init
+
+# 3. Configure your environment
+# Edit .env and set HERALD_COMPANY to your company identifier
+
+# 4. Run Herald
+npx herald
+```
+
+Herald works out of the box with https://getceda.com (zero-config). For local development, set `CEDA_URL=http://localhost:3030` in your `.env` file.
+
+## Development Quick Start
 
 ```bash
 yarn install

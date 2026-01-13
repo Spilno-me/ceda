@@ -83,7 +83,7 @@ export class CedaClient {
   private retryConfig: RetryConfig;
 
   constructor(baseUrl?: string, retryConfig?: Partial<RetryConfig>) {
-    this.baseUrl = baseUrl || process.env.CEDA_URL || 'http://localhost:3030';
+    this.baseUrl = baseUrl || process.env.CEDA_URL || 'https://getceda.com';
     this.retryConfig = { ...DEFAULT_RETRY_CONFIG, ...retryConfig };
   }
 
