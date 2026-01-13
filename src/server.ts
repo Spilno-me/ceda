@@ -26,9 +26,10 @@ import { GraduationService } from './services/graduation.service';
 import { AbstractionService } from './services/abstraction.service';
 import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
+import { DocumentService } from './services/document.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { HSE_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
-import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel } from './interfaces';
+import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel, CreateDocumentDto, UpdateDocumentDto, LinkDocumentDto, DocumentSearchParams, GraphQueryParams, DocumentType, DocumentLinkType } from './interfaces';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -145,6 +146,9 @@ const rateLimiterService = new RateLimiterService(100, 60000);
 
 // CEDA-43: Initialize audit service for compliance logging
 const auditService = new AuditService();
+
+// CEDA-47: Initialize document service for AI-native knowledge organization
+const documentService = new DocumentService(embeddingService);
 
 const orchestrator = new CognitiveOrchestratorService(
   signalProcessor,
@@ -2301,6 +2305,366 @@ async function handleRequest(
       sendJson(res, 200, {
         updated: true,
         settings: abstractionService.getSafetySettings(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // === CEDA-47: Document Management Endpoints ===
+
+    // POST /api/documents - Create a new document
+    if (url === '/api/documents' && method === 'POST') {
+      const body = await parseBody<CreateDocumentDto>(req);
+
+      if (!body.type || !body.title || !body.content || !body.company || !body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['type', 'title', 'content', 'company', 'user'],
+        });
+        return;
+      }
+
+      const validTypes: DocumentType[] = ['pattern', 'observation', 'session', 'insight', 'note'];
+      if (!validTypes.includes(body.type)) {
+        sendJson(res, 400, {
+          error: 'Invalid document type',
+          validTypes,
+        });
+        return;
+      }
+
+      if (checkRateLimitAndRespond(body.company, res)) {
+        return;
+      }
+
+      const document = await documentService.create(body);
+
+      await auditService.log(
+        'document_created',
+        document.id,
+        body.company,
+        body.user,
+        { title: body.title, type: body.type },
+        getClientIp(req),
+      );
+
+      sendJson(res, 201, {
+        created: true,
+        document,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/search - Search documents
+    if (url?.startsWith('/api/documents/search') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const query = urlObj.searchParams.get('q') || urlObj.searchParams.get('query');
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+      const type = urlObj.searchParams.get('type') as DocumentType | null;
+      const tagsParam = urlObj.searchParams.get('tags');
+      const limit = parseInt(urlObj.searchParams.get('limit') || '20', 10);
+
+      if (!query || !company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['q', 'company', 'user'],
+        });
+        return;
+      }
+
+      const searchParams: DocumentSearchParams = {
+        query,
+        company,
+        user,
+        type: type || undefined,
+        tags: tagsParam ? tagsParam.split(',') : undefined,
+        limit,
+      };
+
+      const results = await documentService.search(searchParams);
+
+      sendJson(res, 200, {
+        results,
+        count: results.length,
+        query: searchParams,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/tags - Get documents by tags
+    if (url?.startsWith('/api/documents/tags') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+      const tagsParam = urlObj.searchParams.get('tags');
+
+      if (!company || !user || !tagsParam) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user', 'tags'],
+        });
+        return;
+      }
+
+      const tags = tagsParam.split(',');
+      const documents = documentService.getByTags(company, user, tags);
+
+      sendJson(res, 200, {
+        documents,
+        count: documents.length,
+        tags,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/graph - Get document graph
+    if (url?.startsWith('/api/documents/graph') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+      const depth = parseInt(urlObj.searchParams.get('depth') || '2', 10);
+      const startId = urlObj.searchParams.get('startId') || undefined;
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const params: GraphQueryParams = {
+        company,
+        user,
+        depth,
+        startId,
+      };
+
+      const graph = documentService.getGraph(params);
+
+      sendJson(res, 200, {
+        graph,
+        params,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/:id/backlinks - Get backlinks for a document
+    if (url?.match(/^\/api\/documents\/[^/]+\/backlinks/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const documentId = pathParts[2];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const backlinks = documentService.getBacklinks(documentId, company, user);
+
+      sendJson(res, 200, {
+        documentId,
+        backlinks,
+        count: backlinks.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/documents/:id/link - Link to another document
+    if (url?.match(/^\/api\/documents\/[^/]+\/link$/) && method === 'POST') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const sourceId = pathParts[2];
+
+      const body = await parseBody<LinkDocumentDto>(req);
+
+      if (!body.targetId || !body.linkType || !body.company || !body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['targetId', 'linkType', 'company', 'user'],
+        });
+        return;
+      }
+
+      const validLinkTypes: DocumentLinkType[] = ['references', 'related', 'parent', 'derived_from'];
+      if (!validLinkTypes.includes(body.linkType)) {
+        sendJson(res, 400, {
+          error: 'Invalid link type',
+          validLinkTypes,
+        });
+        return;
+      }
+
+      const link = documentService.link(sourceId, body);
+
+      if (!link) {
+        sendJson(res, 404, {
+          error: 'Failed to create link',
+          message: 'Source or target document not found, or access denied',
+        });
+        return;
+      }
+
+      sendJson(res, 201, {
+        linked: true,
+        link,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // DELETE /api/documents/:id/link/:targetId - Unlink from a document
+    if (url?.match(/^\/api\/documents\/[^/]+\/link\/[^/]+$/) && method === 'DELETE') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const sourceId = pathParts[2];
+      const targetId = pathParts[4];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const unlinked = documentService.unlink(sourceId, targetId, company, user);
+
+      if (!unlinked) {
+        sendJson(res, 404, {
+          error: 'Failed to unlink',
+          message: 'Link not found or access denied',
+        });
+        return;
+      }
+
+      sendJson(res, 200, {
+        unlinked: true,
+        sourceId,
+        targetId,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/documents/:id - Get a document by ID
+    if (url?.match(/^\/api\/documents\/[^/]+$/) && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const documentId = pathParts[2];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const document = documentService.getById(documentId, company, user);
+
+      if (!document) {
+        sendJson(res, 404, {
+          error: 'Document not found or access denied',
+          documentId,
+        });
+        return;
+      }
+
+      sendJson(res, 200, {
+        document,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // PUT /api/documents/:id - Update a document
+    if (url?.match(/^\/api\/documents\/[^/]+$/) && method === 'PUT') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const documentId = pathParts[2];
+
+      const body = await parseBody<UpdateDocumentDto>(req);
+
+      if (!body.company || !body.user) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const document = await documentService.update(documentId, body);
+
+      if (!document) {
+        sendJson(res, 404, {
+          error: 'Document not found or access denied',
+          documentId,
+        });
+        return;
+      }
+
+      sendJson(res, 200, {
+        updated: true,
+        document,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // DELETE /api/documents/:id - Delete a document
+    if (url?.match(/^\/api\/documents\/[^/]+$/) && method === 'DELETE') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const pathParts = urlObj.pathname.split('/').filter(Boolean);
+      const documentId = pathParts[2];
+      const company = urlObj.searchParams.get('company');
+      const user = urlObj.searchParams.get('user');
+
+      if (!company || !user) {
+        sendJson(res, 400, {
+          error: 'Missing required query parameters',
+          required: ['company', 'user'],
+        });
+        return;
+      }
+
+      const deleted = documentService.delete(documentId, company, user);
+
+      if (!deleted) {
+        sendJson(res, 404, {
+          error: 'Document not found or access denied',
+          documentId,
+        });
+        return;
+      }
+
+      await auditService.log(
+        'document_deleted',
+        documentId,
+        company,
+        user,
+        {},
+        getClientIp(req),
+      );
+
+      sendJson(res, 200, {
+        deleted: true,
+        documentId,
         timestamp: new Date().toISOString(),
       });
       return;
