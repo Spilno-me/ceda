@@ -21,7 +21,8 @@ import * as readline from "readline";
 import { runInit } from "./cli/init.js";
 
 // Configuration - all sensitive values from environment only
-const CEDA_API_URL = process.env.HERALD_API_URL;
+// CEDA_URL takes priority, fallback to HERALD_API_URL, default to https://getceda.com
+const CEDA_API_URL = process.env.CEDA_URL || process.env.HERALD_API_URL || "https://getceda.com";
 const CEDA_API_TOKEN = process.env.HERALD_API_TOKEN;
 const CEDA_API_USER = process.env.HERALD_API_USER;
 const CEDA_API_PASS = process.env.HERALD_API_PASS;
@@ -38,7 +39,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.8.0";
+const VERSION = "1.9.0";
 
 // Claude for Herald's voice - REQUIRES user's own API key
 // SECURITY: Never bundle API keys in npm packages
@@ -82,6 +83,163 @@ function clearSession(): void {
 
 function getContextString(): string {
   return `${HERALD_COMPANY}:${HERALD_PROJECT}:${HERALD_USER}`;
+}
+
+// ============================================
+// INSIGHT BUFFER - Local resilient storage
+// ============================================
+
+interface BufferedInsight {
+  id: string;
+  insight: string;
+  topic?: string;
+  targetVault?: string;
+  sourceVault: string;
+  timestamp: string;
+  retryCount: number;
+}
+
+interface InsightBuffer {
+  insights: BufferedInsight[];
+  lastSyncAttempt?: string;
+  lastSuccessfulSync?: string;
+}
+
+function getInsightBufferFile(): string {
+  return join(getHeraldDir(), "insight_buffer.json");
+}
+
+function loadInsightBuffer(): InsightBuffer {
+  ensureHeraldDir();
+  const bufferFile = getInsightBufferFile();
+  if (existsSync(bufferFile)) {
+    try {
+      const content = readFileSync(bufferFile, "utf-8");
+      return JSON.parse(content) as InsightBuffer;
+    } catch {
+      return { insights: [] };
+    }
+  }
+  return { insights: [] };
+}
+
+function saveInsightBuffer(buffer: InsightBuffer): void {
+  ensureHeraldDir();
+  const bufferFile = getInsightBufferFile();
+  writeFileSync(bufferFile, JSON.stringify(buffer, null, 2), "utf-8");
+}
+
+function addToInsightBuffer(insight: string, topic?: string, targetVault?: string): void {
+  const buffer = loadInsightBuffer();
+  const newInsight: BufferedInsight = {
+    id: `insight-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    insight,
+    topic,
+    targetVault,
+    sourceVault: HERALD_VAULT,
+    timestamp: new Date().toISOString(),
+    retryCount: 0,
+  };
+  buffer.insights.push(newInsight);
+  saveInsightBuffer(buffer);
+}
+
+function removeFromInsightBuffer(insightId: string): void {
+  const buffer = loadInsightBuffer();
+  buffer.insights = buffer.insights.filter(i => i.id !== insightId);
+  saveInsightBuffer(buffer);
+}
+
+function updateBufferSyncTimestamp(success: boolean): void {
+  const buffer = loadInsightBuffer();
+  buffer.lastSyncAttempt = new Date().toISOString();
+  if (success) {
+    buffer.lastSuccessfulSync = new Date().toISOString();
+  }
+  saveInsightBuffer(buffer);
+}
+
+function getBufferStatus(): { pendingCount: number; lastSyncAttempt?: string; lastSuccessfulSync?: string } {
+  const buffer = loadInsightBuffer();
+  return {
+    pendingCount: buffer.insights.length,
+    lastSyncAttempt: buffer.lastSyncAttempt,
+    lastSuccessfulSync: buffer.lastSuccessfulSync,
+  };
+}
+
+async function checkCloudConnectivity(): Promise<{ connected: boolean; latencyMs?: number; error?: string }> {
+  const startTime = Date.now();
+  try {
+    const response = await fetch(`${CEDA_API_URL}/health`, {
+      method: "GET",
+      signal: AbortSignal.timeout(5000),
+    });
+    const latencyMs = Date.now() - startTime;
+    if (response.ok) {
+      return { connected: true, latencyMs };
+    }
+    return { connected: false, error: `HTTP ${response.status}` };
+  } catch (error) {
+    return { connected: false, error: String(error) };
+  }
+}
+
+async function syncInsightToCloud(insight: BufferedInsight): Promise<boolean> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  const authHeader = getAuthHeader();
+  if (authHeader) {
+    headers["Authorization"] = authHeader;
+  }
+
+  try {
+    const response = await fetch(`${CEDA_API_URL}/api/herald/insight`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        insight: insight.insight,
+        targetVault: insight.targetVault,
+        topic: insight.topic,
+        sourceVault: insight.sourceVault,
+        company: HERALD_COMPANY,
+        project: HERALD_PROJECT,
+        user: HERALD_USER,
+      }),
+    });
+
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function flushInsightBuffer(): Promise<{ synced: number; failed: number; remaining: number }> {
+  const buffer = loadInsightBuffer();
+  let synced = 0;
+  let failed = 0;
+
+  for (const insight of [...buffer.insights]) {
+    const success = await syncInsightToCloud(insight);
+    if (success) {
+      removeFromInsightBuffer(insight.id);
+      synced++;
+    } else {
+      insight.retryCount++;
+      failed++;
+    }
+  }
+
+  updateBufferSyncTimestamp(synced > 0 && failed === 0);
+
+  const updatedBuffer = loadInsightBuffer();
+  return {
+    synced,
+    failed,
+    remaining: updatedBuffer.insights.length,
+  };
 }
 
 const HERALD_SYSTEM_PROMPT = `You are Herald, the voice of CEDA (Cognitive Event-Driven Architecture).
@@ -688,6 +846,15 @@ const tools: Tool[] = [
       required: ["session_id"],
     },
   },
+  // CEDA-53: Resilient Sync Tool
+  {
+    name: "herald_sync",
+    description: "Flush the local insight buffer to the cloud. Use this to sync buffered insights that failed to upload previously.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -763,9 +930,29 @@ Herald will:
       }
 
       case "herald_health": {
-        const result = await callCedaAPI("/health");
+        const cedaHealth = await callCedaAPI("/health");
+        const cloudStatus = await checkCloudConnectivity();
+        const bufferStatus = getBufferStatus();
+
+        const healthResult = {
+          version: VERSION,
+          context: getContextString(),
+          ceda: cedaHealth,
+          cloud: {
+            url: CEDA_API_URL,
+            connected: cloudStatus.connected,
+            latencyMs: cloudStatus.latencyMs,
+            error: cloudStatus.error,
+          },
+          buffer: {
+            pendingInsights: bufferStatus.pendingCount,
+            lastSyncAttempt: bufferStatus.lastSyncAttempt,
+            lastSuccessfulSync: bufferStatus.lastSuccessfulSync,
+          },
+        };
+
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(healthResult, null, 2) }],
         };
       }
 
@@ -879,20 +1066,39 @@ Herald will:
         const targetVault = args?.target_vault as string | undefined;
         const topic = args?.topic as string | undefined;
 
-        if (OFFSPRING_CLOUD_MODE) {
-          const result = await callCedaAPI("/api/herald/insight", "POST", {
-            insight,
-            targetVault,
-            topic,
-            sourceVault: HERALD_VAULT,
-          });
+        // Cloud-first: Try to sync to cloud, buffer locally on failure
+        const cloudResult = await callCedaAPI("/api/herald/insight", "POST", {
+          insight,
+          targetVault,
+          topic,
+          sourceVault: HERALD_VAULT,
+        });
+
+        if (cloudResult.success !== false && !cloudResult.error) {
+          // Cloud sync succeeded
           return {
-            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({
+              success: true,
+              synced: true,
+              message: "Insight shared to cloud",
+              result: cloudResult,
+            }, null, 2) }],
           };
         }
 
+        // Cloud sync failed - buffer locally
+        addToInsightBuffer(insight, topic, targetVault);
+        const bufferStatus = getBufferStatus();
+
         return {
-          content: [{ type: "text", text: JSON.stringify({ success: true, message: "Insight recorded (local mode)" }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({
+            success: true,
+            synced: false,
+            buffered: true,
+            message: "Cloud unavailable - insight buffered locally for later sync",
+            pendingInsights: bufferStatus.pendingCount,
+            cloudError: cloudResult.error,
+          }, null, 2) }],
         };
       }
 
@@ -980,6 +1186,28 @@ Herald will:
         });
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      }
+
+      // CEDA-53: Resilient Sync Tool
+      case "herald_sync": {
+        const syncResult = await flushInsightBuffer();
+        const bufferStatus = getBufferStatus();
+
+        return {
+          content: [{ type: "text", text: JSON.stringify({
+            success: true,
+            synced: syncResult.synced,
+            failed: syncResult.failed,
+            remaining: syncResult.remaining,
+            lastSyncAttempt: bufferStatus.lastSyncAttempt,
+            lastSuccessfulSync: bufferStatus.lastSuccessfulSync,
+            message: syncResult.synced > 0
+              ? `Successfully synced ${syncResult.synced} insight(s) to cloud`
+              : syncResult.remaining === 0
+                ? "No insights to sync"
+                : `Failed to sync ${syncResult.failed} insight(s) - will retry later`,
+          }, null, 2) }],
         };
       }
 

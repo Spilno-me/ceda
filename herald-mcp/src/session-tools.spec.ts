@@ -129,14 +129,14 @@ describe('CEDA-49: Session Management Tools', () => {
   });
 
   describe('Version', () => {
-    it('should be version 1.8.0 in index.ts', () => {
-      expect(indexContent).toContain('const VERSION = "1.8.0"');
+    it('should be version 1.9.0 in index.ts', () => {
+      expect(indexContent).toContain('const VERSION = "1.9.0"');
     });
 
     it('should have matching version in package.json', () => {
       const packagePath = path.join(process.cwd(), 'package.json');
       const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
-      expect(packageJson.version).toBe('1.8.0');
+      expect(packageJson.version).toBe('1.9.0');
     });
   });
 
