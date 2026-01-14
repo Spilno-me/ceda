@@ -1341,14 +1341,71 @@ async function handleRequest(
         return;
       }
 
+      const clientIp = getClientIp(req);
+
+      // CEDA-65: Sanitize data before storage
+      const { SanitizationService, DataClassification } = await import('./services/sanitization.service');
+      const sanitizationService = new SanitizationService();
+
+      // Combine all text fields for sanitization
+      const textToSanitize = [
+        body.session,
+        body.insight,
+        body.signal,
+        body.reinforcement,
+        body.warning,
+      ].filter(Boolean).join(' | ');
+
+      const sanitizationResult = sanitizationService.sanitize(textToSanitize);
+
+      // Block storage if RESTRICTED data detected
+      if (sanitizationResult.dataClass === DataClassification.RESTRICTED) {
+        await auditService.logSanitization(
+          body.company || 'default',
+          body.user || 'default',
+          true,
+          sanitizationResult.detectedTypes,
+          sanitizationResult.dataClass,
+          clientIp,
+        );
+
+        sendJson(res, 400, {
+          error: 'Content blocked due to restricted data',
+          blocked: true,
+          detectedTypes: sanitizationResult.detectedTypes,
+          dataClass: sanitizationResult.dataClass,
+          message: 'Private keys and other restricted data cannot be stored. Please remove sensitive content and try again.',
+        });
+        return;
+      }
+
+      // Log sanitization if any redactions were made
+      if (sanitizationResult.detectedTypes.length > 0) {
+        await auditService.logSanitization(
+          body.company || 'default',
+          body.user || 'default',
+          false,
+          sanitizationResult.detectedTypes,
+          sanitizationResult.dataClass,
+          clientIp,
+        );
+      }
+
+      // Use sanitized text for storage
+      const sanitizedSession = sanitizationService.sanitize(body.session).sanitizedText;
+      const sanitizedInsight = body.insight ? sanitizationService.sanitize(body.insight).sanitizedText : undefined;
+      const sanitizedSignal = body.signal ? sanitizationService.sanitize(body.signal).sanitizedText : undefined;
+      const sanitizedReinforcement = body.reinforcement ? sanitizationService.sanitize(body.reinforcement).sanitizedText : undefined;
+      const sanitizedWarning = body.warning ? sanitizationService.sanitize(body.warning).sanitizedText : undefined;
+
       const reflectionId = randomUUID();
       const timestamp = new Date().toISOString();
       const captureMethod = body.method || 'direct';
 
-      // Store as insight for pattern learning (legacy format)
-      const patternText = body.insight
-        ? `${body.insight} | Context: ${body.session}`
-        : body.session;
+      // Store as insight for pattern learning (legacy format) - using sanitized text
+      const patternText = sanitizedInsight
+        ? `${sanitizedInsight} | Context: ${sanitizedSession}`
+        : sanitizedSession;
 
       const insights = heraldStorage.loadInsights();
       const reflectionInsight: HeraldInsight = {
@@ -1362,19 +1419,19 @@ async function handleRequest(
       insights.push(reflectionInsight);
       heraldStorage.saveInsights(insights);
 
-      // Store reflection with method tracking (meta-learning)
+      // Store reflection with method tracking (meta-learning) - using sanitized values
       const reflections = heraldStorage.loadReflections();
       const reflection: HeraldReflection = {
         id: reflectionId,
-        session: body.session,
+        session: sanitizedSession,
         feeling: body.feeling,
-        insight: body.insight || body.session,
+        insight: sanitizedInsight || sanitizedSession,
         method: captureMethod,
-        // AI-extracted fields
-        signal: body.signal,
+        // AI-extracted fields - using sanitized values
+        signal: sanitizedSignal,
         outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
-        reinforcement: body.reinforcement,
-        warning: body.warning,
+        reinforcement: sanitizedReinforcement,
+        warning: sanitizedWarning,
         // Context
         company: body.company || 'default',
         project: body.project || 'default',
@@ -1417,6 +1474,244 @@ async function handleRequest(
       console.log(`[Herald] Reflection recorded: ${body.feeling} via ${captureMethod} from ${body.vault || body.user || 'unknown'}`);
 
       sendJson(res, 200, response);
+      return;
+    }
+
+    // CEDA-65: Dry-run mode for reflection - preview what would be captured without storing
+    if (url === '/api/herald/reflect/dry-run' && method === 'POST') {
+      const body = await parseBody<{
+        session: string;
+        feeling: 'stuck' | 'success';
+        insight?: string;
+        company?: string;
+        project?: string;
+        user?: string;
+      }>(req);
+
+      if (!body.session || !body.feeling) {
+        sendJson(res, 400, { error: 'Missing required fields: session, feeling' });
+        return;
+      }
+
+      const clientIp = getClientIp(req);
+
+      // Import sanitization service dynamically to avoid circular deps
+      const { SanitizationService } = await import('./services/sanitization.service');
+      const sanitizationService = new SanitizationService();
+
+      // Analyze what would be sanitized
+      const textToAnalyze = body.insight
+        ? `${body.insight} | Context: ${body.session}`
+        : body.session;
+
+      const sanitizationResult = sanitizationService.dryRun(textToAnalyze);
+
+      // Log dry-run audit event
+      await auditService.log(
+        'reflection_dry_run',
+        `dry-run-${body.company || 'default'}`,
+        body.company || 'default',
+        body.user || 'default',
+        {
+          feeling: body.feeling,
+          wouldSanitize: sanitizationResult.wouldSanitize,
+          wouldBlock: sanitizationResult.wouldBlock,
+          detectedTypes: sanitizationResult.detectedTypes,
+          classification: sanitizationResult.classification,
+        },
+        clientIp,
+      );
+
+      sendJson(res, 200, {
+        dryRun: true,
+        feeling: body.feeling,
+        insight: body.insight,
+        session: body.session,
+        sanitization: {
+          wouldSanitize: sanitizationResult.wouldSanitize,
+          wouldBlock: sanitizationResult.wouldBlock,
+          blockReason: sanitizationResult.blockReason,
+          detectedTypes: sanitizationResult.detectedTypes,
+          classification: sanitizationResult.classification,
+          redactionCount: sanitizationResult.redactionCount,
+        },
+        message: sanitizationResult.wouldBlock
+          ? 'Content would be BLOCKED due to restricted data'
+          : sanitizationResult.wouldSanitize
+            ? `Content would be sanitized (${sanitizationResult.redactionCount} redactions)`
+            : 'Content is safe to store',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // CEDA-65: GDPR Article 17 - Right to Erasure (herald_forget)
+    if (url === '/api/herald/forget' && method === 'DELETE') {
+      const body = await parseBody<{
+        patternId?: string;
+        sessionId?: string;
+        all?: boolean;
+        company?: string;
+        project?: string;
+        user?: string;
+      }>(req);
+
+      const company = body.company || 'default';
+      const project = body.project || 'default';
+      const user = body.user || 'default';
+      const clientIp = getClientIp(req);
+
+      if (!body.patternId && !body.sessionId && !body.all) {
+        sendJson(res, 400, { error: 'At least one parameter required: patternId, sessionId, or all' });
+        return;
+      }
+
+      let deletedCount = 0;
+      let reflections = heraldStorage.loadReflections();
+      const originalCount = reflections.length;
+
+      if (body.patternId) {
+        // Delete specific pattern
+        reflections = reflections.filter(r => r.id !== body.patternId);
+        deletedCount = originalCount - reflections.length;
+      } else if (body.sessionId) {
+        // Delete all patterns from a session
+        reflections = reflections.filter(r => r.session !== body.sessionId);
+        deletedCount = originalCount - reflections.length;
+      } else if (body.all) {
+        // Delete all patterns for this context
+        reflections = reflections.filter(r =>
+          !(r.company === company && r.project === project && r.user === user)
+        );
+        deletedCount = originalCount - reflections.length;
+      }
+
+      heraldStorage.saveReflections(reflections);
+
+      // Also clean up insights
+      let insights = heraldStorage.loadInsights();
+      const originalInsightCount = insights.length;
+
+      if (body.patternId) {
+        insights = insights.filter(i => i.id !== body.patternId);
+      } else if (body.sessionId) {
+        const sessionIdToMatch = body.sessionId;
+        insights = insights.filter(i => !i.insight.includes(sessionIdToMatch));
+      } else if (body.all) {
+        insights = insights.filter(i => i.fromContext !== user);
+      }
+
+      heraldStorage.saveInsights(insights);
+      const deletedInsights = originalInsightCount - insights.length;
+
+      // Log GDPR deletion audit event
+      await auditService.logDataDeletion(
+        company,
+        user,
+        body.patternId ? 'pattern' : body.sessionId ? 'session' : 'all',
+        body.patternId || body.sessionId,
+        deletedCount + deletedInsights,
+        clientIp,
+      );
+
+      sendJson(res, 200, {
+        success: true,
+        deleted: {
+          reflections: deletedCount,
+          insights: deletedInsights,
+          total: deletedCount + deletedInsights,
+        },
+        gdprArticle: 'Article 17 - Right to Erasure',
+        context: { company, project, user },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // CEDA-65: GDPR Article 20 - Right to Data Portability (herald_export)
+    if (url?.startsWith('/api/herald/export') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const company = urlObj.searchParams.get('company') || 'default';
+      const project = urlObj.searchParams.get('project') || 'default';
+      const user = urlObj.searchParams.get('user') || 'default';
+      const format = urlObj.searchParams.get('format') || 'json';
+      const clientIp = getClientIp(req);
+
+      // Get all reflections for this context
+      let reflections = heraldStorage.loadReflections();
+      reflections = reflections.filter(r =>
+        r.company === company && r.project === project && r.user === user
+      );
+
+      // Get all insights for this context
+      let insights = heraldStorage.loadInsights();
+      insights = insights.filter(i => i.fromContext === user);
+
+      const exportData = {
+        exportedAt: new Date().toISOString(),
+        gdprArticle: 'Article 20 - Right to Data Portability',
+        context: { company, project, user },
+        data: {
+          reflections: reflections.map(r => ({
+            id: r.id,
+            session: r.session,
+            feeling: r.feeling,
+            insight: r.insight,
+            method: r.method,
+            signal: r.signal,
+            outcome: r.outcome,
+            reinforcement: r.reinforcement,
+            warning: r.warning,
+            timestamp: r.timestamp,
+          })),
+          insights: insights.map(i => ({
+            id: i.id,
+            topic: i.topic,
+            insight: i.insight,
+            timestamp: i.timestamp,
+          })),
+        },
+        counts: {
+          reflections: reflections.length,
+          insights: insights.length,
+          total: reflections.length + insights.length,
+        },
+      };
+
+      // Log GDPR export audit event
+      await auditService.logDataExport(
+        company,
+        user,
+        format,
+        exportData.counts.total,
+        clientIp,
+      );
+
+      if (format === 'csv') {
+        // Convert to CSV format
+        const csvLines: string[] = [];
+        csvLines.push('type,id,timestamp,content,feeling,method');
+
+        for (const r of reflections) {
+          const escapedInsight = `"${(r.insight || '').replace(/"/g, '""')}"`;
+          csvLines.push(`reflection,${r.id},${r.timestamp},${escapedInsight},${r.feeling},${r.method}`);
+        }
+
+        for (const i of insights) {
+          const escapedInsight = `"${(i.insight || '').replace(/"/g, '""')}"`;
+          csvLines.push(`insight,${i.id},${i.timestamp},${escapedInsight},,`);
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/csv',
+          'Content-Disposition': `attachment; filename="ceda-export-${company}-${user}.csv"`,
+        });
+        res.end(csvLines.join('\n'));
+        return;
+      }
+
+      // Default: JSON format
+      sendJson(res, 200, exportData);
       return;
     }
 

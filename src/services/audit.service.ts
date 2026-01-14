@@ -1,12 +1,17 @@
 /**
  * CEDA-43: Audit Service
+ * CEDA-65: Enhanced with 90-day retention and GDPR compliance logging
  *
  * Logs audit events for adversarial hardening and compliance.
  * Stores events in Qdrant collection for persistence and search.
+ * Implements immutable append-only audit trail with 90-day retention.
  */
 
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+
+// CEDA-65: Retention period in days
+const AUDIT_RETENTION_DAYS = 90;
 
 export type AuditAction =
   | 'pattern_created'
@@ -16,7 +21,15 @@ export type AuditAction =
   | 'decay_job_executed'
   | 'scheduled_decay_job'
   | 'document_created'
-  | 'document_deleted';
+  | 'document_deleted'
+  // CEDA-65: GDPR compliance actions
+  | 'data_exported'
+  | 'data_deleted'
+  | 'reflection_captured'
+  | 'reflection_dry_run'
+  | 'sanitization_blocked'
+  | 'sanitization_redacted'
+  | 'api_call';
 
 export interface AuditEvent {
   id: string;
@@ -346,5 +359,137 @@ export class AuditService {
    */
   clearEvents(): void {
     this.events.clear();
+  }
+
+  /**
+   * CEDA-65: Get retention period in days
+   */
+  getRetentionDays(): number {
+    return AUDIT_RETENTION_DAYS;
+  }
+
+  /**
+   * CEDA-65: Clean up events older than retention period
+   * This should be called periodically (e.g., daily cron job)
+   * @returns Number of events cleaned up
+   */
+  async cleanupExpiredEvents(): Promise<number> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - AUDIT_RETENTION_DAYS);
+
+    let cleanedCount = 0;
+
+    // Clean up in-memory events
+    for (const [id, event] of this.events.entries()) {
+      if (event.timestamp < cutoffDate) {
+        this.events.delete(id);
+        cleanedCount++;
+      }
+    }
+
+    console.log(`[AuditService] Cleaned up ${cleanedCount} expired events (older than ${AUDIT_RETENTION_DAYS} days)`);
+
+    return cleanedCount;
+  }
+
+  /**
+   * CEDA-65: Log API call for audit trail
+   * Convenience method for logging API calls
+   */
+  async logApiCall(
+    endpoint: string,
+    method: string,
+    company: string,
+    user: string,
+    ip: string,
+    details?: Record<string, unknown>,
+  ): Promise<AuditEvent> {
+    return this.log(
+      'api_call',
+      endpoint,
+      company,
+      user,
+      {
+        method,
+        endpoint,
+        ...details,
+      },
+      ip,
+    );
+  }
+
+  /**
+   * CEDA-65: Log GDPR data export
+   */
+  async logDataExport(
+    company: string,
+    user: string,
+    format: string,
+    recordCount: number,
+    ip: string,
+  ): Promise<AuditEvent> {
+    return this.log(
+      'data_exported',
+      `export-${company}-${user}`,
+      company,
+      user,
+      {
+        format,
+        recordCount,
+        gdprArticle: 'Article 20 - Right to Data Portability',
+      },
+      ip,
+    );
+  }
+
+  /**
+   * CEDA-65: Log GDPR data deletion
+   */
+  async logDataDeletion(
+    company: string,
+    user: string,
+    scope: 'pattern' | 'session' | 'all',
+    targetId: string | undefined,
+    deletedCount: number,
+    ip: string,
+  ): Promise<AuditEvent> {
+    return this.log(
+      'data_deleted',
+      targetId || `delete-${company}-${user}`,
+      company,
+      user,
+      {
+        scope,
+        targetId,
+        deletedCount,
+        gdprArticle: 'Article 17 - Right to Erasure',
+      },
+      ip,
+    );
+  }
+
+  /**
+   * CEDA-65: Log sanitization event
+   */
+  async logSanitization(
+    company: string,
+    user: string,
+    blocked: boolean,
+    detectedTypes: string[],
+    dataClass: string,
+    ip: string,
+  ): Promise<AuditEvent> {
+    return this.log(
+      blocked ? 'sanitization_blocked' : 'sanitization_redacted',
+      `sanitization-${company}-${user}`,
+      company,
+      user,
+      {
+        blocked,
+        detectedTypes,
+        dataClass,
+      },
+      ip,
+    );
   }
 }
