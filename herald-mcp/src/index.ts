@@ -1234,12 +1234,13 @@ Herald will:
         };
 
         // Cloud-first: try to POST to CEDA, buffer locally on failure
+        // Map Herald's vault terminology to CEDA's context terminology
         try {
           const result = await callCedaAPI("/api/herald/insight", "POST", {
             insight,
-            targetVault,
+            toContext: targetVault,
             topic,
-            sourceVault: HERALD_VAULT,
+            fromContext: HERALD_VAULT,
           });
 
           // Check if API returned an error
