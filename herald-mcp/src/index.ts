@@ -39,7 +39,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.14.0";
+const VERSION = "1.15.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -794,33 +794,39 @@ const tools: Tool[] = [
   // Session Mining - Pattern/Antipattern Learning
   {
     name: "herald_reflect",
-    description: `Reflect on a session moment for pattern learning. CEDA analyzes the exchange through AI roleplay, extracts signal→outcome mappings.
+    description: `Capture a pattern or antipattern from the session.
 
-WHEN TO CALL:
-- After friction: debugging spirals, multiple iterations, corrections
-- After flow: clean execution, good instincts, smooth outcomes
+TRIGGER WORDS: "capture", "log this", "that was smooth/rough", "reflect"
 
-IMPORTANT: Always ask user permission first!
-Example: "That was rough. Want me to capture this for pattern learning?"
+BEFORE CALLING - ASK USER:
+"What specifically worked (or didn't work) here?"
+User's answer goes in the 'insight' parameter.
 
-HOW TO USE:
-1. Summarize what happened (the exchange, context, what worked/didn't)
-2. Specify feeling: "stuck" for friction, "success" for flow
-3. CEDA extracts patterns and records for future sessions`,
+DO NOT GUESS. The user knows what they valued. Ask them.
+
+Example flow:
+1. User: "That was smooth, capture it"
+2. You: "What specifically worked here?"
+3. User: "The ASCII visualization approach"
+4. You call herald_reflect with insight: "ASCII visualization approach"`,
     inputSchema: {
       type: "object",
       properties: {
         session: {
           type: "string",
-          description: "Summary of the session moment - what happened, what worked or didn't, relevant context"
+          description: "Brief context of what happened"
         },
         feeling: {
           type: "string",
           enum: ["stuck", "success"],
           description: "stuck = friction/antipattern, success = flow/pattern"
         },
+        insight: {
+          type: "string",
+          description: "What specifically worked or didn't - MUST ASK USER, do not guess"
+        },
       },
-      required: ["session", "feeling"],
+      required: ["session", "feeling", "insight"],
     },
   },
 ];
@@ -1274,12 +1280,14 @@ Herald will:
       case "herald_reflect": {
         const session = args?.session as string;
         const feeling = args?.feeling as "stuck" | "success";
+        const insight = args?.insight as string;
 
-        // Call CEDA's reflect endpoint for AI roleplay analysis
+        // Call CEDA's reflect endpoint with user's insight
         try {
           const result = await callCedaAPI("/api/herald/reflect", "POST", {
             session,
             feeling,
+            insight,  // User-provided insight - the actual pattern
             company: HERALD_COMPANY,
             project: HERALD_PROJECT,
             user: HERALD_USER,
@@ -1299,7 +1307,7 @@ Herald will:
 
             // Buffer as insight for later sync
             bufferInsight({
-              insight: `[REFLECT:${feeling}] ${session}`,
+              insight: `[REFLECT:${feeling}] ${insight} | Context: ${session}`,
               topic: feeling === "stuck" ? "antipattern" : "pattern",
               company: HERALD_COMPANY,
               project: HERALD_PROJECT,
@@ -1314,6 +1322,7 @@ Herald will:
                   mode: "local",
                   message: "Reflection buffered locally (cloud unavailable)",
                   feeling,
+                  insight,
                   hint: "CEDA will process this when synced. Use herald_sync to flush buffer.",
                   buffered: true,
                 }, null, 2)
@@ -1329,9 +1338,10 @@ Herald will:
                 success: true,
                 mode: "cloud",
                 feeling,
+                insight,
                 message: feeling === "stuck"
-                  ? "Friction analyzed. Signal→antipattern mapping extracted."
-                  : "Success captured. Signal→pattern mapping reinforced.",
+                  ? `Antipattern captured: "${insight}"`
+                  : `Pattern captured: "${insight}"`,
                 ...result,
               }, null, 2)
             }],
@@ -1339,7 +1349,7 @@ Herald will:
         } catch (error) {
           // Network error - buffer locally
           bufferInsight({
-            insight: `[REFLECT:${feeling}] ${session}`,
+            insight: `[REFLECT:${feeling}] ${insight} | Context: ${session}`,
             topic: feeling === "stuck" ? "antipattern" : "pattern",
             company: HERALD_COMPANY,
             project: HERALD_PROJECT,
@@ -1354,6 +1364,7 @@ Herald will:
                 mode: "local",
                 message: "Reflection buffered locally (cloud unreachable)",
                 feeling,
+                insight,
                 hint: "Use herald_sync when cloud recovers.",
                 buffered: true,
               }, null, 2)

@@ -1257,6 +1257,7 @@ async function handleRequest(
       const body = await parseBody<{
         session: string;
         feeling: 'stuck' | 'success';
+        insight?: string;  // User-provided insight - what specifically worked/failed
         company?: string;
         project?: string;
         user?: string;
@@ -1272,28 +1273,36 @@ async function handleRequest(
       const timestamp = new Date().toISOString();
 
       // Store as insight for pattern learning
+      // If user provided insight, use that (clean signal). Otherwise fall back to session context.
+      const patternText = body.insight
+        ? `${body.insight} | Context: ${body.session}`
+        : body.session;
+
       const insights = heraldStorage.loadInsights();
       const reflectionInsight: HeraldInsight = {
         id: reflectionId,
         fromContext: body.vault || body.user || 'herald',
         toContext: 'ceda-reflect',
         topic: body.feeling === 'stuck' ? 'antipattern' : 'pattern',
-        insight: `[REFLECT:${body.feeling}] ${body.session}`,
+        insight: `[REFLECT:${body.feeling}] ${patternText}`,
         timestamp,
       };
       insights.push(reflectionInsight);
       heraldStorage.saveInsights(insights);
 
-      // Basic signal extraction (enhance with AI roleplay later)
-      // For now, store the reflection and return acknowledgment
       const response = {
         reflectionId,
         feeling: body.feeling,
+        insight: body.insight,
         recorded: true,
         timestamp,
-        message: body.feeling === 'stuck'
-          ? 'Friction recorded. Signal→antipattern mapping queued for analysis.'
-          : 'Success recorded. Signal→pattern mapping queued for reinforcement.',
+        message: body.insight
+          ? (body.feeling === 'stuck'
+              ? `Antipattern captured: "${body.insight}"`
+              : `Pattern captured: "${body.insight}"`)
+          : (body.feeling === 'stuck'
+              ? 'Friction recorded. Signal→antipattern mapping queued for analysis.'
+              : 'Success recorded. Signal→pattern mapping queued for reinforcement.'),
         context: {
           company: body.company || 'default',
           project: body.project || 'default',
