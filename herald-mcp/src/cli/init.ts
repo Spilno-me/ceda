@@ -180,7 +180,7 @@ To overwrite:
   }
   
   console.log(`
-✓ Herald v1.16.0 configured
+✓ Herald configured
 
   Company:  ${company}
   Project:  ${project}
@@ -189,8 +189,8 @@ To overwrite:
 Next: Start Claude Code in this directory.
       Say "herald health" to verify.
 
-Pattern capture:
+Capture patterns:
       Say "Herald reflect - that was smooth"
-      Claude will ask what worked, then capture it.
+      Claude asks what worked → you answer → saved.
 `);
 }
