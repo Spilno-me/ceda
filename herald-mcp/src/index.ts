@@ -39,7 +39,19 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.12.0";
+const VERSION = "1.14.0";
+
+// Self-routing description - teaches Claude when to call Herald
+const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
+
+WHEN TO OFFER REFLECTION:
+When you notice FRICTION (multiple iterations, debugging spirals, corrections, confusion)
+or FLOW (clean first-pass execution, good instincts, smooth outcomes),
+offer: "That was [rough/smooth]. Want me to capture this for pattern learning?"
+
+IMPORTANT: Always ask user permission before calling herald_reflect.
+
+Herald learns signal→outcome mappings to help future sessions.`;
 
 // Auto-sync buffer on startup (future: HERALD_AUTO_SYNC=false to disable)
 const AUTO_SYNC_ON_STARTUP = process.env.HERALD_AUTO_SYNC !== "false";
@@ -79,12 +91,19 @@ function bufferInsight(payload: Omit<BufferedInsight, "bufferedAt">): void {
   if (existsSync(bufferFile)) {
     try {
       buffer = JSON.parse(readFileSync(bufferFile, "utf-8"));
-    } catch {
+    } catch (error) {
+      console.error(`[Herald] Buffer parse error in bufferInsight: ${error}`);
+      console.error(`[Herald] Starting with fresh buffer`);
       buffer = [];
     }
   }
   buffer.push({ ...payload, bufferedAt: new Date().toISOString() });
-  writeFileSync(bufferFile, JSON.stringify(buffer, null, 2));
+  try {
+    writeFileSync(bufferFile, JSON.stringify(buffer, null, 2));
+  } catch (error) {
+    console.error(`[Herald] Failed to write buffer: ${error}`);
+    console.error(`[Herald] Insight may be lost - check disk space and permissions`);
+  }
 }
 
 function getBufferedInsights(): BufferedInsight[] {
@@ -92,7 +111,14 @@ function getBufferedInsights(): BufferedInsight[] {
   if (existsSync(bufferFile)) {
     try {
       return JSON.parse(readFileSync(bufferFile, "utf-8"));
-    } catch {
+    } catch (error) {
+      console.error(`[Herald] Buffer corrupted: ${error}`);
+      console.error(`[Herald] Clearing corrupted buffer - insights may be lost`);
+      try {
+        unlinkSync(bufferFile);
+      } catch {
+        // Ignore cleanup errors
+      }
       return [];
     }
   }
@@ -111,7 +137,12 @@ function saveFailedInsights(failed: BufferedInsight[]): void {
     clearBuffer();
   } else {
     ensureHeraldDir();
-    writeFileSync(getBufferFile(), JSON.stringify(failed, null, 2));
+    try {
+      writeFileSync(getBufferFile(), JSON.stringify(failed, null, 2));
+    } catch (error) {
+      console.error(`[Herald] Failed to save failed insights: ${error}`);
+      console.error(`[Herald] ${failed.length} insight(s) may be lost`);
+    }
   }
 }
 
@@ -582,7 +613,7 @@ async function runCLI(args: string[]): Promise<void> {
 // ============================================
 
 const server = new Server(
-  { name: "herald", version: VERSION },
+  { name: "herald", version: VERSION, description: HERALD_DESCRIPTION },
   { capabilities: { tools: {} } }
 );
 
@@ -758,6 +789,38 @@ const tools: Tool[] = [
         session_id: { type: "string", description: "Session ID to archive" },
       },
       required: ["session_id"],
+    },
+  },
+  // Session Mining - Pattern/Antipattern Learning
+  {
+    name: "herald_reflect",
+    description: `Reflect on a session moment for pattern learning. CEDA analyzes the exchange through AI roleplay, extracts signal→outcome mappings.
+
+WHEN TO CALL:
+- After friction: debugging spirals, multiple iterations, corrections
+- After flow: clean execution, good instincts, smooth outcomes
+
+IMPORTANT: Always ask user permission first!
+Example: "That was rough. Want me to capture this for pattern learning?"
+
+HOW TO USE:
+1. Summarize what happened (the exchange, context, what worked/didn't)
+2. Specify feeling: "stuck" for friction, "success" for flow
+3. CEDA extracts patterns and records for future sessions`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: {
+          type: "string",
+          description: "Summary of the session moment - what happened, what worked or didn't, relevant context"
+        },
+        feeling: {
+          type: "string",
+          enum: ["stuck", "success"],
+          description: "stuck = friction/antipattern, success = flow/pattern"
+        },
+      },
+      required: ["session", "feeling"],
     },
   },
 ];
@@ -1206,6 +1269,97 @@ Herald will:
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
+      }
+
+      case "herald_reflect": {
+        const session = args?.session as string;
+        const feeling = args?.feeling as "stuck" | "success";
+
+        // Call CEDA's reflect endpoint for AI roleplay analysis
+        try {
+          const result = await callCedaAPI("/api/herald/reflect", "POST", {
+            session,
+            feeling,
+            company: HERALD_COMPANY,
+            project: HERALD_PROJECT,
+            user: HERALD_USER,
+            vault: HERALD_VAULT || undefined,
+          });
+
+          if (result.error) {
+            // If cloud fails, store locally for later processing
+            const localRecord = {
+              session,
+              feeling,
+              company: HERALD_COMPANY,
+              project: HERALD_PROJECT,
+              user: HERALD_USER,
+              timestamp: new Date().toISOString(),
+            };
+
+            // Buffer as insight for later sync
+            bufferInsight({
+              insight: `[REFLECT:${feeling}] ${session}`,
+              topic: feeling === "stuck" ? "antipattern" : "pattern",
+              company: HERALD_COMPANY,
+              project: HERALD_PROJECT,
+              user: HERALD_USER,
+            });
+
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: true,
+                  mode: "local",
+                  message: "Reflection buffered locally (cloud unavailable)",
+                  feeling,
+                  hint: "CEDA will process this when synced. Use herald_sync to flush buffer.",
+                  buffered: true,
+                }, null, 2)
+              }],
+            };
+          }
+
+          // Cloud processed successfully
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                mode: "cloud",
+                feeling,
+                message: feeling === "stuck"
+                  ? "Friction analyzed. Signal→antipattern mapping extracted."
+                  : "Success captured. Signal→pattern mapping reinforced.",
+                ...result,
+              }, null, 2)
+            }],
+          };
+        } catch (error) {
+          // Network error - buffer locally
+          bufferInsight({
+            insight: `[REFLECT:${feeling}] ${session}`,
+            topic: feeling === "stuck" ? "antipattern" : "pattern",
+            company: HERALD_COMPANY,
+            project: HERALD_PROJECT,
+            user: HERALD_USER,
+          });
+
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                mode: "local",
+                message: "Reflection buffered locally (cloud unreachable)",
+                feeling,
+                hint: "Use herald_sync when cloud recovers.",
+                buffered: true,
+              }, null, 2)
+            }],
+          };
+        }
       }
 
       default:

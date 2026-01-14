@@ -1252,6 +1252,65 @@ async function handleRequest(
       return;
     }
 
+    // Reflect on session - extract patterns through analysis
+    if (url === '/api/herald/reflect' && method === 'POST') {
+      const body = await parseBody<{
+        session: string;
+        feeling: 'stuck' | 'success';
+        company?: string;
+        project?: string;
+        user?: string;
+        vault?: string;
+      }>(req);
+
+      if (!body.session || !body.feeling) {
+        sendJson(res, 400, { error: 'Missing required fields: session, feeling' });
+        return;
+      }
+
+      const reflectionId = randomUUID();
+      const timestamp = new Date().toISOString();
+
+      // Store as insight for pattern learning
+      const insights = heraldStorage.loadInsights();
+      const reflectionInsight: HeraldInsight = {
+        id: reflectionId,
+        fromContext: body.vault || body.user || 'herald',
+        toContext: 'ceda-reflect',
+        topic: body.feeling === 'stuck' ? 'antipattern' : 'pattern',
+        insight: `[REFLECT:${body.feeling}] ${body.session}`,
+        timestamp,
+      };
+      insights.push(reflectionInsight);
+      heraldStorage.saveInsights(insights);
+
+      // Basic signal extraction (enhance with AI roleplay later)
+      // For now, store the reflection and return acknowledgment
+      const response = {
+        reflectionId,
+        feeling: body.feeling,
+        recorded: true,
+        timestamp,
+        message: body.feeling === 'stuck'
+          ? 'Friction recorded. Signal→antipattern mapping queued for analysis.'
+          : 'Success recorded. Signal→pattern mapping queued for reinforcement.',
+        context: {
+          company: body.company || 'default',
+          project: body.project || 'default',
+          user: body.user || 'default',
+        },
+        // TODO: Add AI roleplay analysis to extract:
+        // - signals: what triggered this outcome
+        // - patterns: reusable learnings
+        // - recommendations: what to do differently
+      };
+
+      console.log(`[Herald] Reflection recorded: ${body.feeling} from ${body.vault || body.user || 'unknown'}`);
+
+      sendJson(res, 200, response);
+      return;
+    }
+
     // Query insights - get accumulated insights
     if (url?.startsWith('/api/herald/insights') && method === 'GET') {
       const urlObj = new URL(url, `http://localhost:${PORT}`);
@@ -3740,6 +3799,7 @@ async function handleRequest(
       'GET  /api/herald/contexts',
       'POST /api/herald/insight',
       'GET  /api/herald/insights',
+      'POST /api/herald/reflect (Session reflection for pattern learning)',
           'POST /observe',
           'POST /detect',
           'POST /learn',
