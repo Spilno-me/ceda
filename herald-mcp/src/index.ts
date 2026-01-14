@@ -39,7 +39,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.16.2";
+const VERSION = "1.18.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -56,9 +56,10 @@ Herald learns signal→outcome mappings to help future sessions.`;
 // Auto-sync buffer on startup (future: HERALD_AUTO_SYNC=false to disable)
 const AUTO_SYNC_ON_STARTUP = process.env.HERALD_AUTO_SYNC !== "false";
 
-// Claude for Herald's voice - REQUIRES user's own API key
+// AI API keys for Herald's voice and AI-native simulation
 // SECURITY: Never bundle API keys in npm packages
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
 // Session persistence - context-isolated paths
 function getHeraldDir(): string {
@@ -234,6 +235,107 @@ async function callClaude(systemPrompt: string, messages: Message[]): Promise<st
 
   const data = await response.json() as { content: Array<{ text?: string }> };
   return data.content[0]?.text || "No response from Claude";
+}
+
+// ============================================
+// AI-NATIVE SIMULATION - AI-to-AI reflection
+// ============================================
+
+interface AIClient {
+  provider: "anthropic" | "openai";
+  key: string;
+}
+
+interface ExtractedPattern {
+  signal: string;
+  outcome: "pattern" | "antipattern";
+  reinforcement: string;
+  warning: string;
+}
+
+function getAIClient(): AIClient | null {
+  if (ANTHROPIC_API_KEY) {
+    return { provider: "anthropic", key: ANTHROPIC_API_KEY };
+  }
+  if (OPENAI_API_KEY) {
+    return { provider: "openai", key: OPENAI_API_KEY };
+  }
+  return null;
+}
+
+function buildReflectionPrompt(session: string, feeling: string, insight: string): string {
+  return `You are a pattern extraction AI analyzing a development session.
+
+Session context: ${session}
+User feeling: ${feeling}
+User insight: ${insight}
+
+Your task: Extract the signal→outcome mapping.
+
+SIGNAL: The specific action, decision, or behavior that LED to the outcome.
+        Not what happened, but what CAUSED it. Be specific and actionable.
+
+OUTCOME: "${feeling === "stuck" ? "antipattern" : "pattern"}" (based on user feeling)
+
+REINFORCEMENT: If this is a good pattern - what should an AI assistant say to encourage
+               this behavior when detected in future sessions? Keep it brief, supportive.
+
+WARNING: If this is an antipattern - what should an AI assistant say to prevent this?
+         Keep it brief, helpful, not lecturing.
+
+Respond ONLY with valid JSON (no markdown, no explanation):
+{"signal":"...","outcome":"pattern|antipattern","reinforcement":"...","warning":"..."}`;
+}
+
+async function callAIForReflection(client: AIClient, prompt: string): Promise<ExtractedPattern> {
+  if (client.provider === "anthropic") {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": client.key,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-3-haiku-20240307",  // Fast, cheap for reflection
+        max_tokens: 500,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Anthropic API error: ${response.status}`);
+    }
+
+    const data = await response.json() as { content: Array<{ text?: string }> };
+    const text = data.content[0]?.text || "{}";
+    return JSON.parse(text) as ExtractedPattern;
+  }
+
+  if (client.provider === "openai") {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${client.key}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",  // Fast, cheap for reflection
+        messages: [{ role: "user", content: prompt }],
+        response_format: { type: "json_object" },
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI API error: ${response.status}`);
+    }
+
+    const data = await response.json() as { choices: Array<{ message: { content: string } }> };
+    const text = data.choices[0]?.message?.content || "{}";
+    return JSON.parse(text) as ExtractedPattern;
+  }
+
+  throw new Error(`Unknown AI provider: ${client.provider}`);
 }
 
 async function translateAndExecute(userInput: string, conversationHistory: Message[]): Promise<string> {
@@ -493,7 +595,7 @@ async function runCLI(args: string[]): Promise<void> {
 
   switch (command) {
     case "init": {
-      runInit(args.slice(1));
+      await runInit(args.slice(1));
       break;
     }
 
@@ -824,6 +926,74 @@ Example flow:
         insight: {
           type: "string",
           description: "What specifically worked or didn't - MUST ASK USER, do not guess"
+        },
+      },
+      required: ["session", "feeling", "insight"],
+    },
+  },
+  // Query learned patterns - Claude reads this to avoid repeating mistakes
+  {
+    name: "herald_patterns",
+    description: `Query learned patterns and antipatterns for current context.
+
+CALL THIS AT SESSION START to learn from past sessions.
+
+Returns:
+- patterns: Things that worked (reinforce these)
+- antipatterns: Things that failed (avoid these)
+- meta: Which capture method works better
+
+Use this to:
+1. Avoid repeating past mistakes
+2. Apply proven approaches
+3. Learn from other sessions in this project`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        context: {
+          type: "string",
+          description: "Optional context to filter patterns (e.g., 'deployment', 'debugging')"
+        },
+      },
+    },
+  },
+  // AI-Native Simulation - Deep pattern extraction via AI-to-AI roleplay
+  {
+    name: "herald_simulate",
+    description: `AI-native pattern extraction via AI-to-AI reflection.
+
+Use when you need DEEP analysis - not just capturing, but understanding WHY.
+
+WHEN TO USE herald_simulate vs herald_reflect:
+- herald_reflect: Quick capture, obvious pattern, user knows signal
+- herald_simulate: Complex situation, need AI to discover deeper signal
+
+Requires: ANTHROPIC_API_KEY or OPENAI_API_KEY in env.
+
+BEFORE CALLING - ASK USER:
+"What specifically worked (or didn't)?"
+
+This tool:
+1. Calls another AI to roleplay as a reflection partner
+2. AI extracts: signal (what caused it), outcome, reinforcement/warning text
+3. Sends enriched data to CEDA with method="simulation"
+
+CEDA learns which method works better for which contexts (meta-learning).`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: {
+          type: "string",
+          description: "Context of what happened in the session"
+        },
+        feeling: {
+          type: "string",
+          enum: ["stuck", "success"],
+          description: "stuck = friction/antipattern, success = flow/pattern"
+        },
+        insight: {
+          type: "string",
+          description: "User's answer to 'what worked/didn't' - MUST ASK USER"
         },
       },
       required: ["session", "feeling", "insight"],
@@ -1288,6 +1458,7 @@ Herald will:
             session,
             feeling,
             insight,  // User-provided insight - the actual pattern
+            method: "direct",  // Track capture method for meta-learning
             company: HERALD_COMPANY,
             project: HERALD_PROJECT,
             user: HERALD_USER,
@@ -1373,6 +1544,183 @@ Herald will:
         }
       }
 
+      case "herald_patterns": {
+        // Query learned patterns for current context
+        try {
+          const reflectionsResult = await callCedaAPI(
+            `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=20`
+          );
+
+          const metaResult = await callCedaAPI("/api/herald/meta-patterns");
+
+          // Format for Claude consumption
+          const patterns = (reflectionsResult.patterns as Array<{insight: string; signal?: string; reinforcement?: string}>) || [];
+          const antipatterns = (reflectionsResult.antipatterns as Array<{insight: string; signal?: string; warning?: string}>) || [];
+          const metaPatterns = (metaResult.metaPatterns as Array<{recommendedMethod: string; confidence: number}>) || [];
+
+          // Build readable summary
+          let summary = `## Learned Patterns for ${HERALD_COMPANY}/${HERALD_PROJECT}\n\n`;
+
+          if (antipatterns.length > 0) {
+            summary += `### ⚠️ Antipatterns (avoid these)\n`;
+            antipatterns.slice(0, 5).forEach((ap, i) => {
+              summary += `${i + 1}. ${ap.insight}`;
+              if (ap.warning) summary += `\n   → ${ap.warning}`;
+              summary += `\n`;
+            });
+            summary += `\n`;
+          }
+
+          if (patterns.length > 0) {
+            summary += `### ✓ Patterns (do these)\n`;
+            patterns.slice(0, 5).forEach((p, i) => {
+              summary += `${i + 1}. ${p.insight}`;
+              if (p.reinforcement) summary += `\n   → ${p.reinforcement}`;
+              summary += `\n`;
+            });
+            summary += `\n`;
+          }
+
+          if (metaPatterns.length > 0) {
+            const meta = metaPatterns[0];
+            summary += `### Meta-learning\n`;
+            summary += `Recommended capture method: ${meta.recommendedMethod} (${(meta.confidence * 100).toFixed(0)}% confidence)\n`;
+          }
+
+          if (patterns.length === 0 && antipatterns.length === 0) {
+            summary = `No patterns learned yet for ${HERALD_COMPANY}/${HERALD_PROJECT}.\n\nCapture patterns with "herald reflect" or "herald simulate" when you notice friction or flow.`;
+          }
+
+          return {
+            content: [{
+              type: "text",
+              text: summary,
+            }],
+          };
+
+        } catch (error) {
+          return {
+            content: [{
+              type: "text",
+              text: `Failed to query patterns: ${error}\n\nCEDA may be unavailable.`,
+            }],
+          };
+        }
+      }
+
+      case "herald_simulate": {
+        const session = args?.session as string;
+        const feeling = args?.feeling as "stuck" | "success";
+        const insight = args?.insight as string;
+
+        // Check for AI API key
+        const aiClient = getAIClient();
+        if (!aiClient) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: "No AI key configured",
+                hint: "Add ANTHROPIC_API_KEY or OPENAI_API_KEY to env in .claude/settings.local.json",
+                fallback: "Use herald_reflect for direct capture instead",
+              }, null, 2)
+            }],
+          };
+        }
+
+        try {
+          // Build prompt and call AI for reflection
+          const prompt = buildReflectionPrompt(session, feeling, insight);
+          const extracted = await callAIForReflection(aiClient, prompt);
+
+          // Send enriched data to CEDA
+          const result = await callCedaAPI("/api/herald/reflect", "POST", {
+            session,
+            feeling,
+            insight,
+            method: "simulation",  // Track capture method
+            // AI-extracted fields
+            signal: extracted.signal,
+            outcome: extracted.outcome,
+            reinforcement: extracted.reinforcement,
+            warning: extracted.warning,
+            company: HERALD_COMPANY,
+            project: HERALD_PROJECT,
+            user: HERALD_USER,
+            vault: HERALD_VAULT || undefined,
+          });
+
+          if (result.error) {
+            // Cloud failed but we have AI extraction - buffer with enriched data
+            bufferInsight({
+              insight: `[SIMULATE:${feeling}] Signal: ${extracted.signal} | Insight: ${insight} | ${extracted.outcome === "pattern" ? `Reinforce: ${extracted.reinforcement}` : `Warn: ${extracted.warning}`}`,
+              topic: extracted.outcome,
+              company: HERALD_COMPANY,
+              project: HERALD_PROJECT,
+              user: HERALD_USER,
+            });
+
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: true,
+                  mode: "local",
+                  method: "simulation",
+                  message: "AI reflection complete, buffered locally (cloud unavailable)",
+                  extracted: {
+                    signal: extracted.signal,
+                    outcome: extracted.outcome,
+                    reinforcement: extracted.reinforcement,
+                    warning: extracted.warning,
+                  },
+                  hint: "Use herald_sync to flush to CEDA when cloud recovers",
+                }, null, 2)
+              }],
+            };
+          }
+
+          // Success - AI reflection sent to CEDA
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                mode: "cloud",
+                method: "simulation",
+                provider: aiClient.provider,
+                message: extracted.outcome === "pattern"
+                  ? `Pattern extracted via AI reflection`
+                  : `Antipattern extracted via AI reflection`,
+                extracted: {
+                  signal: extracted.signal,
+                  outcome: extracted.outcome,
+                  reinforcement: extracted.reinforcement,
+                  warning: extracted.warning,
+                },
+                insight,
+                ...result,
+              }, null, 2)
+            }],
+          };
+
+        } catch (error) {
+          // AI call failed
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: `AI reflection failed: ${error}`,
+                provider: aiClient.provider,
+                hint: "Check API key validity. Use herald_reflect for direct capture as fallback.",
+              }, null, 2)
+            }],
+          };
+        }
+      }
+
       default:
         return {
           content: [{ type: "text", text: `Unknown tool: ${name}` }],
@@ -1431,6 +1779,8 @@ async function runMCP(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Herald MCP server running on stdio");
+  console.error(`Context: ${HERALD_COMPANY}/${HERALD_PROJECT}`);
+  console.error("Tip: Call herald_patterns() to load learned patterns from past sessions");
 
   // Auto-sync buffered insights on startup
   await autoSyncBuffer();

@@ -66,10 +66,49 @@ interface HeraldInsight {
   timestamp: string;
 }
 
+// Meta-learning: Reflection with method tracking
+interface HeraldReflection {
+  id: string;
+  session: string;
+  feeling: 'stuck' | 'success';
+  insight: string;
+  method: 'direct' | 'simulation';
+  // AI-extracted fields (from simulation)
+  signal?: string;
+  outcome?: 'pattern' | 'antipattern';
+  reinforcement?: string;
+  warning?: string;
+  // Context
+  company: string;
+  project: string;
+  user: string;
+  // Tracking
+  applications: PatternApplication[];
+  timestamp: string;
+}
+
+interface PatternApplication {
+  sessionId: string;
+  timestamp: string;
+  helped: boolean;
+}
+
+interface MetaPattern {
+  id: string;
+  contextSignal: string;
+  recommendedMethod: 'direct' | 'simulation';
+  confidence: number;
+  evidenceCount: number;
+  evidenceIds: string[];
+  lastUpdated: string;
+}
+
 // Simple file-based Herald storage
 const heraldStorage = {
   getContextsFile: () => path.join(HERALD_DATA_PATH, 'contexts.json'),
   getInsightsFile: () => path.join(HERALD_DATA_PATH, 'insights.json'),
+  getReflectionsFile: () => path.join(HERALD_DATA_PATH, 'reflections.json'),
+  getMetaPatternsFile: () => path.join(HERALD_DATA_PATH, 'meta-patterns.json'),
 
   loadContexts: (): HeraldContext[] => {
     const file = heraldStorage.getContextsFile();
@@ -93,6 +132,32 @@ const heraldStorage = {
 
   saveInsights: (insights: HeraldInsight[]) => {
     fs.writeFileSync(heraldStorage.getInsightsFile(), JSON.stringify(insights, null, 2));
+  },
+
+  // Meta-learning: Reflections with method tracking
+  loadReflections: (): HeraldReflection[] => {
+    const file = heraldStorage.getReflectionsFile();
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf-8'));
+    }
+    return [];
+  },
+
+  saveReflections: (reflections: HeraldReflection[]) => {
+    fs.writeFileSync(heraldStorage.getReflectionsFile(), JSON.stringify(reflections, null, 2));
+  },
+
+  // Meta-learning: Meta-patterns (learned weights)
+  loadMetaPatterns: (): MetaPattern[] => {
+    const file = heraldStorage.getMetaPatternsFile();
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf-8'));
+    }
+    return [];
+  },
+
+  saveMetaPatterns: (metaPatterns: MetaPattern[]) => {
+    fs.writeFileSync(heraldStorage.getMetaPatternsFile(), JSON.stringify(metaPatterns, null, 2));
   },
 };
 
@@ -1258,6 +1323,13 @@ async function handleRequest(
         session: string;
         feeling: 'stuck' | 'success';
         insight?: string;  // User-provided insight - what specifically worked/failed
+        method?: 'direct' | 'simulation';  // Capture method for meta-learning
+        // AI-extracted fields (from simulation)
+        signal?: string;
+        outcome?: 'pattern' | 'antipattern';
+        reinforcement?: string;
+        warning?: string;
+        // Context
         company?: string;
         project?: string;
         user?: string;
@@ -1271,9 +1343,9 @@ async function handleRequest(
 
       const reflectionId = randomUUID();
       const timestamp = new Date().toISOString();
+      const captureMethod = body.method || 'direct';
 
-      // Store as insight for pattern learning
-      // If user provided insight, use that (clean signal). Otherwise fall back to session context.
+      // Store as insight for pattern learning (legacy format)
       const patternText = body.insight
         ? `${body.insight} | Context: ${body.session}`
         : body.session;
@@ -1290,10 +1362,35 @@ async function handleRequest(
       insights.push(reflectionInsight);
       heraldStorage.saveInsights(insights);
 
+      // Store reflection with method tracking (meta-learning)
+      const reflections = heraldStorage.loadReflections();
+      const reflection: HeraldReflection = {
+        id: reflectionId,
+        session: body.session,
+        feeling: body.feeling,
+        insight: body.insight || body.session,
+        method: captureMethod,
+        // AI-extracted fields
+        signal: body.signal,
+        outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
+        reinforcement: body.reinforcement,
+        warning: body.warning,
+        // Context
+        company: body.company || 'default',
+        project: body.project || 'default',
+        user: body.user || 'default',
+        // Tracking
+        applications: [],
+        timestamp,
+      };
+      reflections.push(reflection);
+      heraldStorage.saveReflections(reflections);
+
       const response = {
         reflectionId,
         feeling: body.feeling,
         insight: body.insight,
+        method: captureMethod,
         recorded: true,
         timestamp,
         message: body.insight
@@ -1308,13 +1405,16 @@ async function handleRequest(
           project: body.project || 'default',
           user: body.user || 'default',
         },
-        // TODO: Add AI roleplay analysis to extract:
-        // - signals: what triggered this outcome
-        // - patterns: reusable learnings
-        // - recommendations: what to do differently
+        // AI-extracted (if simulation)
+        extracted: body.signal ? {
+          signal: body.signal,
+          outcome: body.outcome,
+          reinforcement: body.reinforcement,
+          warning: body.warning,
+        } : undefined,
       };
 
-      console.log(`[Herald] Reflection recorded: ${body.feeling} from ${body.vault || body.user || 'unknown'}`);
+      console.log(`[Herald] Reflection recorded: ${body.feeling} via ${captureMethod} from ${body.vault || body.user || 'unknown'}`);
 
       sendJson(res, 200, response);
       return;
@@ -1352,6 +1452,184 @@ async function handleRequest(
       sendJson(res, 200, {
         insights,
         count: insights.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // GET /api/herald/reflections - Query learned patterns/antipatterns for context
+    // This is what Claude queries to learn from past sessions
+    if (url?.startsWith('/api/herald/reflections') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const company = urlObj.searchParams.get('company');
+      const project = urlObj.searchParams.get('project');
+      const feeling = urlObj.searchParams.get('feeling'); // 'stuck' or 'success'
+      const limit = parseInt(urlObj.searchParams.get('limit') || '20', 10);
+
+      let reflections = heraldStorage.loadReflections();
+
+      // Filter by company
+      if (company) {
+        reflections = reflections.filter(r => r.company === company);
+      }
+
+      // Filter by project
+      if (project) {
+        reflections = reflections.filter(r => r.project === project);
+      }
+
+      // Filter by feeling (pattern vs antipattern)
+      if (feeling) {
+        reflections = reflections.filter(r => r.feeling === feeling);
+      }
+
+      // Sort by timestamp descending, most recent first
+      reflections = reflections
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, limit);
+
+      // Format for Claude consumption
+      const patterns = reflections.filter(r => r.feeling === 'success').map(r => ({
+        id: r.id,
+        insight: r.insight,
+        signal: r.signal,
+        reinforcement: r.reinforcement,
+        method: r.method,
+        applications: r.applications.length,
+        timestamp: r.timestamp,
+      }));
+
+      const antipatterns = reflections.filter(r => r.feeling === 'stuck').map(r => ({
+        id: r.id,
+        insight: r.insight,
+        signal: r.signal,
+        warning: r.warning,
+        method: r.method,
+        applications: r.applications.length,
+        timestamp: r.timestamp,
+      }));
+
+      sendJson(res, 200, {
+        patterns,
+        antipatterns,
+        total: reflections.length,
+        context: { company, project },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/herald/pattern-applied - Track when a pattern was applied and if it helped
+    if (url === '/api/herald/pattern-applied' && method === 'POST') {
+      const body = await parseBody<{
+        reflectionId: string;
+        sessionId: string;
+        helped: boolean;
+      }>(req);
+
+      if (!body.reflectionId || !body.sessionId || body.helped === undefined) {
+        sendJson(res, 400, { error: 'Missing required fields: reflectionId, sessionId, helped' });
+        return;
+      }
+
+      const reflections = heraldStorage.loadReflections();
+      const reflection = reflections.find(r => r.id === body.reflectionId);
+
+      if (!reflection) {
+        sendJson(res, 404, { error: 'Reflection not found' });
+        return;
+      }
+
+      // Add application record
+      reflection.applications.push({
+        sessionId: body.sessionId,
+        timestamp: new Date().toISOString(),
+        helped: body.helped,
+      });
+
+      heraldStorage.saveReflections(reflections);
+
+      console.log(`[Herald] Pattern application recorded: ${body.reflectionId} helped=${body.helped}`);
+
+      sendJson(res, 200, {
+        recorded: true,
+        reflectionId: body.reflectionId,
+        totalApplications: reflection.applications.length,
+        helpRate: reflection.applications.filter(a => a.helped).length / reflection.applications.length,
+      });
+      return;
+    }
+
+    // GET /api/herald/meta-patterns - Get learned meta-patterns (which method works better)
+    if (url?.startsWith('/api/herald/meta-patterns') && method === 'GET') {
+      const metaPatterns = heraldStorage.loadMetaPatterns();
+
+      sendJson(res, 200, {
+        metaPatterns,
+        count: metaPatterns.length,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/herald/meta-reflect - Trigger meta-reflection to learn which method works better
+    if (url === '/api/herald/meta-reflect' && method === 'POST') {
+      const reflections = heraldStorage.loadReflections();
+
+      // Group by method
+      const direct = reflections.filter(r => r.method === 'direct');
+      const simulation = reflections.filter(r => r.method === 'simulation');
+
+      // Calculate help rates
+      const calculateHelpRate = (refs: HeraldReflection[]) => {
+        const withApplications = refs.filter(r => r.applications.length > 0);
+        if (withApplications.length === 0) return 0;
+        const helped = withApplications.filter(r => r.applications.some(a => a.helped));
+        return helped.length / withApplications.length;
+      };
+
+      const directHelpRate = calculateHelpRate(direct);
+      const simHelpRate = calculateHelpRate(simulation);
+
+      // Determine recommended method
+      const recommendedMethod = simHelpRate > directHelpRate ? 'simulation' : 'direct';
+      const confidence = Math.abs(simHelpRate - directHelpRate);
+
+      // Store meta-pattern if significant difference
+      if (confidence > 0.1) {
+        const metaPatterns = heraldStorage.loadMetaPatterns();
+        const existingIndex = metaPatterns.findIndex(m => m.contextSignal === 'general');
+
+        const metaPattern: MetaPattern = {
+          id: existingIndex >= 0 ? metaPatterns[existingIndex].id : randomUUID(),
+          contextSignal: 'general',
+          recommendedMethod,
+          confidence,
+          evidenceCount: reflections.length,
+          evidenceIds: reflections.map(r => r.id),
+          lastUpdated: new Date().toISOString(),
+        };
+
+        if (existingIndex >= 0) {
+          metaPatterns[existingIndex] = metaPattern;
+        } else {
+          metaPatterns.push(metaPattern);
+        }
+
+        heraldStorage.saveMetaPatterns(metaPatterns);
+      }
+
+      sendJson(res, 200, {
+        analyzed: true,
+        stats: {
+          direct: { count: direct.length, helpRate: directHelpRate },
+          simulation: { count: simulation.length, helpRate: simHelpRate },
+        },
+        recommendation: {
+          method: recommendedMethod,
+          confidence,
+          reason: `${recommendedMethod} has ${(confidence * 100).toFixed(0)}% better help rate`,
+        },
         timestamp: new Date().toISOString(),
       });
       return;

@@ -10,7 +10,7 @@
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join, basename } from "path";
-import { updateClaudeMdContent, type HeraldContext } from "./templates/claude-md.js";
+import { updateClaudeMdContent, fetchLearnedPatterns, type HeraldContext } from "./templates/claude-md.js";
 
 function buildHeraldConfig(company: string, project: string) {
   return {
@@ -86,9 +86,9 @@ export function parseInitArgs(args: string[]): InitOptions {
   return options;
 }
 
-export function runInit(args: string[] = []): void {
+export async function runInit(args: string[] = []): Promise<void> {
   const options = parseInitArgs(args);
-  
+
   if (options.help) {
     printInitHelp();
     return;
@@ -168,10 +168,22 @@ To overwrite:
     if (existsSync(claudeMdPath)) {
       existingClaudeMd = readFileSync(claudeMdPath, "utf-8");
     }
-    
-    const updatedClaudeMd = updateClaudeMdContent(existingClaudeMd, context, projectName);
+
+    // Fetch learned patterns from CEDA
+    const cedaUrl = "https://getceda.com";
+    console.log("Fetching learned patterns from CEDA...");
+    const learnedPatterns = await fetchLearnedPatterns(cedaUrl, company, project);
+
+    if (learnedPatterns) {
+      const totalPatterns = learnedPatterns.patterns.length + learnedPatterns.antipatterns.length;
+      if (totalPatterns > 0) {
+        console.log(`✓ Found ${totalPatterns} patterns from past sessions`);
+      }
+    }
+
+    const updatedClaudeMd = updateClaudeMdContent(existingClaudeMd, context, projectName, learnedPatterns || undefined);
     writeFileSync(claudeMdPath, updatedClaudeMd, "utf-8");
-    
+
     if (existingClaudeMd) {
       console.log("Updated CLAUDE.md with Herald integration");
     } else {
