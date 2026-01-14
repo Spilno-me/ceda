@@ -12,45 +12,47 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join, basename } from "path";
 import { updateClaudeMdContent, type HeraldContext } from "./templates/claude-md.js";
 
-const HERALD_MCP_CONFIG = {
-  mcpServers: {
-    herald: {
-      command: "npx",
-      args: ["@spilno/herald-mcp"],
-      env: {
-        HERALD_API_URL: "https://getceda.com"
+function buildHeraldConfig(company: string, project: string) {
+  return {
+    mcpServers: {
+      herald: {
+        command: "npx",
+        args: ["@spilno/herald-mcp@latest"],
+        env: {
+          CEDA_URL: "https://getceda.com",
+          HERALD_COMPANY: company,
+          HERALD_PROJECT: project
+        }
       }
     }
-  }
-};
+  };
+}
 
 function printInitHelp(): void {
   console.log(`
-Herald MCP Init - Configure Claude Desktop for Herald
+Herald MCP Init - One command setup for CEDA pattern learning
 
 Usage:
-  npx @spilno/herald-mcp init [options]
+  npx @spilno/herald-mcp@latest init [options]
 
 Options:
   --help, -h          Show this help message
-  --force, -f         Overwrite existing settings.json
+  --force, -f         Overwrite existing config
   --company, -c       Company context (e.g., goprint)
-  --project, -p       Project context (e.g., mobidruk)
-  --user, -u          User context (default: plumber)
+  --project, -p       Project context (e.g., kiosk-web)
   --no-claude-md      Skip CLAUDE.md modification
 
 What it does:
-  1. Creates .claude/settings.json with Herald MCP configuration
-  2. Creates/updates CLAUDE.md with Herald integration instructions
-
-After running init:
-  1. Open Claude Desktop
-  2. Herald will be available as an MCP server
-  3. Claude will know to use Herald for module design
+  1. Creates .claude/settings.local.json with Herald @latest
+  2. Configures CEDA cloud backend (getceda.com)
+  3. Sets company/project context for pattern learning
+  4. Updates CLAUDE.md with Herald instructions
 
 Example:
   cd my-project
-  npx @spilno/herald-mcp init --company goprint --project mobidruk
+  npx @spilno/herald-mcp@latest init --company goprint --project kiosk
+
+Then start Claude Code and say "herald health" to verify.
 `);
 }
 
@@ -97,21 +99,36 @@ export function runInit(args: string[] = []): void {
   const cwd = process.cwd();
   const projectName = basename(cwd);
   const claudeDir = join(cwd, ".claude");
-  const settingsPath = join(claudeDir, "settings.json");
+  const settingsPath = join(claudeDir, "settings.local.json");
   const claudeMdPath = join(cwd, "CLAUDE.md");
-  
+
+  // Use provided values or derive from project name
+  const company = options.company || projectName.split("-")[0] || "default";
+  const project = options.project || projectName;
+
   const context: HeraldContext = {
-    company: options.company || "default",
-    project: options.project || projectName,
-    user: options.user || "plumber",
+    company,
+    project,
+    user: options.user || "default",
   };
-  
+
+  // Check for old herald configs and warn
+  const oldSettingsPath = join(claudeDir, "settings.json");
+  if (existsSync(oldSettingsPath)) {
+    try {
+      const oldConfig = JSON.parse(readFileSync(oldSettingsPath, "utf-8"));
+      if (oldConfig.mcpServers?.herald) {
+        console.log("⚠️  Found old Herald config in settings.json - will use settings.local.json instead");
+      }
+    } catch { /* ignore */ }
+  }
+
   if (existsSync(settingsPath) && !options.force) {
     console.log(`
-.claude/settings.json already exists.
+.claude/settings.local.json already exists.
 
 To view current config:
-  cat .claude/settings.json
+  cat .claude/settings.local.json
 
 To overwrite:
   npx @spilno/herald-mcp init --force
@@ -124,28 +141,29 @@ To overwrite:
     console.log("Created .claude directory");
   }
   
-  let finalConfig = HERALD_MCP_CONFIG;
-  
+  const heraldConfig = buildHeraldConfig(company, project);
+  let finalConfig = heraldConfig;
+
   if (existsSync(settingsPath)) {
     try {
       const existingContent = readFileSync(settingsPath, "utf-8");
       const existingConfig = JSON.parse(existingContent);
-      
+
       finalConfig = {
         ...existingConfig,
         mcpServers: {
           ...existingConfig.mcpServers,
-          ...HERALD_MCP_CONFIG.mcpServers
+          ...heraldConfig.mcpServers
         }
       };
-      console.log("Merging with existing settings.json");
+      console.log("Merging with existing settings.local.json");
     } catch {
-      console.log("Overwriting invalid settings.json");
+      console.log("Overwriting invalid settings.local.json");
     }
   }
-  
+
   writeFileSync(settingsPath, JSON.stringify(finalConfig, null, 2) + "\n", "utf-8");
-  console.log("Created .mcp.json with Herald config");
+  console.log("✓ Created .claude/settings.local.json");
   
   if (!options.noClaudeMd) {
     let existingClaudeMd: string | null = null;
@@ -163,18 +181,18 @@ To overwrite:
     }
   }
   
-  console.log(`Context: ${context.company}/${context.project}/${context.user}`);
-  
   console.log(`
-Herald is ready. Claude Code will now:
-  - Check patterns before building
-  - Use predictions as starting points
-  - Observe outcomes for learning
+✓ Herald v1.16.0 configured
 
-Environment variables (optional):
-  HERALD_API_URL      CEDA server URL (default: https://getceda.com)
-  HERALD_COMPANY      Company context for multi-tenancy
-  HERALD_PROJECT      Project context for multi-tenancy
-  HERALD_USER         User context for multi-tenancy
+  Company:  ${company}
+  Project:  ${project}
+  Backend:  https://getceda.com
+
+Next: Start Claude Code in this directory.
+      Say "herald health" to verify.
+
+Pattern capture:
+      Say "Herald reflect - that was smooth"
+      Claude will ask what worked, then capture it.
 `);
 }
