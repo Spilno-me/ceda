@@ -39,7 +39,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.19.0";
+const VERSION = "1.20.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -949,7 +949,11 @@ Example flow:
 1. User: "That was smooth, capture it"
 2. You: "What specifically worked here?"
 3. User: "The ASCII visualization approach"
-4. You call herald_reflect with insight: "ASCII visualization approach"`,
+4. You call herald_reflect with insight: "ASCII visualization approach"
+
+DRY RUN MODE (CEDA-65):
+Set dry_run=true to preview what would be captured without storing.
+Shows sanitization results and data classification.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -965,6 +969,10 @@ Example flow:
         insight: {
           type: "string",
           description: "What specifically worked or didn't - MUST ASK USER, do not guess"
+        },
+        dry_run: {
+          type: "boolean",
+          description: "If true, preview what would be captured without storing (CEDA-65)"
         },
       },
       required: ["session", "feeling", "insight"],
@@ -1118,6 +1126,65 @@ Example: A debugging pattern that worked well could be shared with siblings.`,
         },
       },
       required: ["insight", "scope"],
+    },
+  },
+  // CEDA-65: GDPR Compliance Tools
+  {
+    name: "herald_forget",
+    description: `GDPR Article 17 - Right to Erasure ("Right to be Forgotten").
+
+Delete learned patterns and reflections from CEDA storage.
+
+Use this when:
+- User requests deletion of their data
+- Compliance requires data removal
+- Cleaning up test/invalid patterns
+
+Parameters:
+- pattern_id: Delete a specific pattern by ID
+- session_id: Delete all patterns from a session
+- all: Delete ALL patterns for current context (company/project/user)
+
+WARNING: This action is irreversible. Data will be permanently deleted.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern_id: {
+          type: "string",
+          description: "Specific pattern ID to delete"
+        },
+        session_id: {
+          type: "string",
+          description: "Delete all patterns from this session"
+        },
+        all: {
+          type: "boolean",
+          description: "Delete ALL patterns for current context (use with caution)"
+        },
+      },
+    },
+  },
+  {
+    name: "herald_export",
+    description: `GDPR Article 20 - Right to Data Portability.
+
+Export all learned patterns and reflections in a portable format.
+
+Use this when:
+- User requests a copy of their data
+- Migrating data between systems
+- Compliance audit requires data export
+
+Returns all patterns for the current context (company/project/user) in the specified format.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        format: {
+          type: "string",
+          enum: ["json", "csv"],
+          description: "Export format: json (default) or csv"
+        },
+      },
     },
   },
 ];
@@ -1573,6 +1640,47 @@ Herald will:
         const session = args?.session as string;
         const feeling = args?.feeling as "stuck" | "success";
         const insight = args?.insight as string;
+        const dryRun = args?.dry_run as boolean | undefined;
+
+        // CEDA-65: Dry-run mode - preview what would be captured without storing
+        if (dryRun) {
+          try {
+            const result = await callCedaAPI("/api/herald/reflect/dry-run", "POST", {
+              session,
+              feeling,
+              insight,
+              company: HERALD_COMPANY,
+              project: HERALD_PROJECT,
+              user: HERALD_USER,
+            });
+
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: true,
+                  mode: "dry-run",
+                  message: "Preview of what would be captured (no data stored)",
+                  feeling,
+                  insight,
+                  ...result,
+                }, null, 2)
+              }],
+            };
+          } catch (error) {
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: false,
+                  mode: "dry-run",
+                  error: `Dry-run failed: ${error}`,
+                  hint: "CEDA may be unavailable. Try again later.",
+                }, null, 2)
+              }],
+            };
+          }
+        }
 
         // CEDA-64: Track reflection locally for session summary
         addSessionReflection({
@@ -2008,6 +2116,131 @@ Herald will:
               text: JSON.stringify({
                 success: false,
                 error: `Failed to share insight: ${error}`,
+                hint: "CEDA may be unavailable. Try again later.",
+              }, null, 2)
+            }],
+          };
+        }
+      }
+
+      // CEDA-65: GDPR Compliance Tools - Handlers
+      case "herald_forget": {
+        const patternId = args?.pattern_id as string | undefined;
+        const sessionId = args?.session_id as string | undefined;
+        const deleteAll = args?.all as boolean | undefined;
+
+        if (!patternId && !sessionId && !deleteAll) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: "At least one parameter required: pattern_id, session_id, or all",
+                hint: "Specify what data to delete",
+              }, null, 2)
+            }],
+            isError: true,
+          };
+        }
+
+        try {
+          const result = await callCedaAPI("/api/herald/forget", "DELETE", {
+            patternId,
+            sessionId,
+            all: deleteAll,
+            company: HERALD_COMPANY,
+            project: HERALD_PROJECT,
+            user: HERALD_USER,
+          });
+
+          if (result.error) {
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  hint: "Data deletion failed. Check parameters and try again.",
+                }, null, 2)
+              }],
+            };
+          }
+
+          let message = "Data deleted successfully (GDPR Art. 17)";
+          if (patternId) {
+            message = `Pattern ${patternId} deleted`;
+          } else if (sessionId) {
+            message = `All patterns from session ${sessionId} deleted`;
+          } else if (deleteAll) {
+            message = `All patterns for ${HERALD_COMPANY}/${HERALD_PROJECT}/${HERALD_USER} deleted`;
+          }
+
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                message,
+                gdprArticle: "Article 17 - Right to Erasure",
+                ...result,
+              }, null, 2)
+            }],
+          };
+        } catch (error) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: `Failed to delete data: ${error}`,
+                hint: "CEDA may be unavailable. Try again later.",
+              }, null, 2)
+            }],
+          };
+        }
+      }
+
+      case "herald_export": {
+        const format = (args?.format as string) || "json";
+
+        try {
+          const result = await callCedaAPI(
+            `/api/herald/export?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&format=${format}`
+          );
+
+          if (result.error) {
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  hint: "Data export failed. Try again later.",
+                }, null, 2)
+              }],
+            };
+          }
+
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                message: `Data exported in ${format.toUpperCase()} format (GDPR Art. 20)`,
+                gdprArticle: "Article 20 - Right to Data Portability",
+                format,
+                context: `${HERALD_COMPANY}/${HERALD_PROJECT}/${HERALD_USER}`,
+                ...result,
+              }, null, 2)
+            }],
+          };
+        } catch (error) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: `Failed to export data: ${error}`,
                 hint: "CEDA may be unavailable. Try again later.",
               }, null, 2)
             }],
