@@ -1,13 +1,24 @@
 # @spilno/herald-mcp
 
-Herald MCP - AI-native interface to [CEDA](https://getceda.com) (Cognitive Event-Driven Architecture).
+> AI-native interface to [CEDA](https://getceda.com) — pattern memory for AI agents.
 
-**Dual-mode**: Natural chat for humans, MCP for AI agents.
+Herald bridges AI agents and CEDA's cognitive pattern memory. Your AI remembers what worked.
+
+## Why Herald?
+
+AI agents start fresh each session. Herald gives them memory:
+
+| Without Herald | With Herald |
+|----------------|-------------|
+| AI forgets past sessions | Patterns persist across sessions |
+| Same mistakes repeated | Antipatterns prevent failures |
+| Generic responses | Context-aware predictions |
+| No learning curve | Knowledge compounds |
 
 ## Quick Start
 
 ```bash
-# Initialize Herald MCP config for Claude Desktop
+# One command setup for Claude Desktop
 npx @spilno/herald-mcp init
 
 # Or install globally
@@ -15,17 +26,53 @@ npm install -g @spilno/herald-mcp
 herald-mcp init
 ```
 
-That's it. Herald is now configured for Claude Desktop.
+Done. Herald is now available to Claude.
 
-## Init Command (New in v1.4.0)
+## Core Tools
 
-The `init` command creates `.claude/settings.json` with Herald MCP configuration:
+| Tool | Purpose |
+|------|---------|
+| `herald_predict` | Generate structure from natural language |
+| `herald_refine` | Refine predictions with feedback |
+| `herald_patterns` | Query what worked before |
+| `herald_reflect` | Capture patterns and antipatterns |
+| `herald_feedback` | Reinforce helpful patterns |
 
-```bash
-npx @spilno/herald-mcp init
+### Pattern Memory
+
+```
+AI: herald_patterns()
+→ Returns: patterns that worked, antipatterns to avoid
+
+AI: herald_predict("create safety assessment module")
+→ Returns: structured prediction based on accumulated patterns
+
+User: "That worked well"
+AI: herald_reflect(feeling="success", insight="field grouping approach")
+→ Pattern captured, weight increased
 ```
 
-This creates:
+## Session Flow
+
+```bash
+# Start a session
+herald-mcp predict "create incident report module"
+
+# Refine iteratively
+herald-mcp refine "add witness section"
+herald-mcp refine "require photos for severity > 3"
+
+# Accept when satisfied
+herald-mcp observe yes
+
+# Resume anytime
+herald-mcp resume
+```
+
+## Configuration
+
+### Claude Desktop / Claude Code
+
 ```json
 {
   "mcpServers": {
@@ -40,140 +87,110 @@ This creates:
 }
 ```
 
-Options:
-- `--help, -h` - Show help
-- `--force, -f` - Overwrite existing settings.json
+### Environment Variables
 
-## Chat Mode (Natural Conversation)
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `HERALD_API_URL` | Yes | CEDA server (default: https://getceda.com) |
+| `HERALD_COMPANY` | No | Multi-tenant company context |
+| `HERALD_PROJECT` | No | Project context |
+| `HERALD_USER` | No | User context |
+
+## Multi-Tenant Isolation
+
+Patterns are isolated by context:
+
+```
+Company A patterns → Only visible to Company A
+Project X patterns → Only visible to Project X users
+```
+
+Set context via environment or headers:
+```bash
+export HERALD_COMPANY=acme
+export HERALD_PROJECT=safety-modules
+```
+
+## Herald Context Sync
+
+Herald instances share insights across contexts:
+
+| Tool | Purpose |
+|------|---------|
+| `herald_context_status` | Check status of Herald instances |
+| `herald_share_insight` | Share pattern to other contexts |
+| `herald_query_insights` | Query shared insights |
+| `herald_sync` | Flush local buffer to cloud |
+
+## Chat Mode
+
+For humans who prefer conversation:
 
 ```bash
-export HERALD_API_URL=https://getceda.com
 herald-mcp chat
 ```
 
 ```
-You: I need a safety assessment module for construction sites
-Herald: I've designed a Safety Assessment module with 4 sections...
+You: I need a permit-to-work module
+Herald: I've designed a Permit-to-Work module with 5 sections...
 
-You: Add OSHA compliance fields
-Herald: Done. Added compliance checklist to Risk Evaluation...
+You: Add gas testing checklist
+Herald: Added gas testing to Pre-Work Safety section...
 
-You: Looks good, let's use it
-Herald: Great! Module accepted and saved.
+You: Perfect
+Herald: Module accepted and saved.
 ```
 
-## Command Mode (Structured)
+## Command Reference
 
 ```bash
-herald-mcp predict "create safety assessment"
-herald-mcp refine "add OSHA compliance"
-herald-mcp resume
-herald-mcp observe yes
-herald-mcp new
-herald-mcp health
-herald-mcp stats
+herald-mcp init          # Setup for Claude Desktop
+herald-mcp chat          # Interactive conversation mode
+herald-mcp predict <signal>  # Generate prediction
+herald-mcp refine <signal>   # Refine current prediction
+herald-mcp resume        # Resume last session
+herald-mcp observe <yes|no>  # Accept or reject prediction
+herald-mcp new           # Start fresh session
+herald-mcp health        # Check CEDA connection
+herald-mcp stats         # Show loaded patterns
 ```
-
-## Session Persistence
-
-Sessions saved to `~/.herald/session` - resume anytime:
-
-```bash
-# Start today
-herald-mcp predict "create incident report module"
-
-# Continue tomorrow
-herald-mcp resume
-herald-mcp refine "add witness statements section"
-```
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `HERALD_API_URL` | Yes | CEDA server URL |
-| `HERALD_API_TOKEN` | No | Bearer token for auth |
-| `HERALD_COMPANY` | No | Multi-tenant company context |
-| `HERALD_PROJECT` | No | Multi-tenant project context |
-| `HERALD_VAULT` | No | Offspring vault ID (spilno, goprint, disrupt) |
-| `HERALD_OFFSPRING_CLOUD` | No | Set to "true" for cloud mode |
-| `AEGIS_OFFSPRING_PATH` | No | Local path to offspring status files |
-
-## Herald Context Sync (v1.3.0+)
-
-Herald instances can communicate across contexts, sharing insights and synchronizing status:
-
-### Tools
-
-| Tool | Purpose |
-|------|---------|
-| `herald_context_status` | Read status from Herald contexts across domains |
-| `herald_share_insight` | Share a pattern insight with another context |
-| `herald_query_insights` | Query accumulated insights on a topic |
-
-### Local Mode (Default)
-
-```bash
-# Context files in local directory
-export AEGIS_OFFSPRING_PATH=~/Documents/aegis_ceda/_offspring
-export HERALD_VAULT=spilno  # Which context this Herald serves
-
-herald-mcp  # MCP mode uses local files
-```
-
-### Cloud Mode
-
-```bash
-# Use CEDA API for context synchronization
-export HERALD_API_URL=https://getceda.com
-export HERALD_OFFSPRING_CLOUD=true
-export HERALD_VAULT=spilno
-
-herald-mcp  # MCP mode calls CEDA API
-```
-
-### Herald-to-Herald Protocol
-
-```
-POST /api/herald/heartbeat    # Herald reports its context status
-GET  /api/herald/contexts     # Herald discovers sibling contexts
-POST /api/herald/insight      # Herald shares an insight
-GET  /api/herald/insights     # Herald queries shared insights
-```
-
-## MCP Mode (for AI Agents)
-
-When piped, Herald speaks JSON-RPC for Claude, Devin, and other AI agents.
-
-### Claude Code (~/.claude.json)
-
-```json
-{
-  "mcpServers": {
-    "herald": {
-      "command": "npx",
-      "args": ["@spilno/herald-mcp"],
-      "env": {
-        "HERALD_API_URL": "https://getceda.com"
-      }
-    }
-  }
-}
-```
-
-### Devin MCP Marketplace
-
-- **Server Name**: Herald-CEDA
-- **Command**: `npx @spilno/herald-mcp`
-- **Environment**: `HERALD_API_URL=https://getceda.com`
 
 ## Architecture
 
 ```
-Human ←→ Herald (Claude voice) ←→ CEDA (cognition)
-Agent ←→ Herald (JSON-RPC)     ←→ CEDA
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   AI Agent  │────▶│   Herald    │────▶│    CEDA     │
+│ (Claude/    │     │   (MCP)     │     │  (Pattern   │
+│  Devin/etc) │◀────│             │◀────│   Memory)   │
+└─────────────┘     └─────────────┘     └─────────────┘
+                           │
+                    ┌──────┴──────┐
+                    │ Patterns    │
+                    │ Antipatterns│
+                    │ Feedback    │
+                    └─────────────┘
 ```
+
+## What is CEDA?
+
+CEDA (Cognitive Event-Driven Architecture) is pattern memory for AI:
+
+- **Patterns**: Approaches that worked (weighted by effectiveness)
+- **Antipatterns**: Approaches that failed (avoided in predictions)
+- **Feedback loop**: Patterns strengthen or decay based on outcomes
+
+Unlike RAG (retrieves content), CEDA retrieves **what worked**.
+
+## Links
+
+- **CEDA**: https://getceda.com
+- **Documentation**: https://getceda.com/docs
+- **GitHub**: https://github.com/Spilno-me/ceda
 
 ## License
 
 MIT
+
+---
+
+*Herald v1.20.0 — Pattern memory for AI agents*
