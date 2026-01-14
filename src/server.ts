@@ -1635,6 +1635,156 @@ async function handleRequest(
       return;
     }
 
+    // === CEDA-64: Herald Command Extensions ===
+
+    // POST /api/herald/feedback - Provide feedback on whether a pattern helped
+    if (url === '/api/herald/feedback' && method === 'POST') {
+      const body = await parseBody<{
+        patternId?: string;
+        patternText?: string;
+        outcome: 'helped' | 'didnt_help';
+        helped?: boolean;
+        company?: string;
+        project?: string;
+        user?: string;
+      }>(req);
+
+      if (!body.patternId && !body.patternText) {
+        sendJson(res, 400, { error: 'Missing required field: patternId or patternText' });
+        return;
+      }
+
+      if (!body.outcome) {
+        sendJson(res, 400, { error: 'Missing required field: outcome' });
+        return;
+      }
+
+      const reflections = heraldStorage.loadReflections();
+      let reflection: HeraldReflection | undefined;
+
+      // Find by ID first, then by text match
+      if (body.patternId) {
+        reflection = reflections.find(r => r.id === body.patternId);
+      } else if (body.patternText) {
+        reflection = reflections.find(r => 
+          r.insight.toLowerCase().includes(body.patternText!.toLowerCase()) ||
+          r.signal?.toLowerCase().includes(body.patternText!.toLowerCase())
+        );
+      }
+
+      if (!reflection) {
+        sendJson(res, 404, { 
+          error: 'Pattern not found',
+          hint: 'Use pattern_id from herald_patterns output or provide matching pattern_text'
+        });
+        return;
+      }
+
+      // Record the feedback as an application
+      const helped = body.outcome === 'helped' || body.helped === true;
+      reflection.applications.push({
+        sessionId: `feedback-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        helped,
+      });
+
+      heraldStorage.saveReflections(reflections);
+
+      const helpRate = reflection.applications.filter(a => a.helped).length / reflection.applications.length;
+
+      console.log(`[Herald] Pattern feedback recorded: ${reflection.id} outcome=${body.outcome} helped=${helped}`);
+
+      sendJson(res, 200, {
+        recorded: true,
+        patternId: reflection.id,
+        outcome: body.outcome,
+        totalApplications: reflection.applications.length,
+        helpRate,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // POST /api/herald/share - Share insight with scoped targeting
+    if (url === '/api/herald/share' && method === 'POST') {
+      const body = await parseBody<{
+        insight: string;
+        scope: 'parent' | 'siblings' | 'all';
+        topic?: string;
+        sourceCompany?: string;
+        sourceProject?: string;
+        sourceUser?: string;
+        sourceVault?: string;
+      }>(req);
+
+      if (!body.insight) {
+        sendJson(res, 400, { error: 'Missing required field: insight' });
+        return;
+      }
+
+      if (!body.scope || !['parent', 'siblings', 'all'].includes(body.scope)) {
+        sendJson(res, 400, { error: 'Missing or invalid scope. Must be: parent, siblings, or all' });
+        return;
+      }
+
+      const insights = heraldStorage.loadInsights();
+      const sharedInsights: HeraldInsight[] = [];
+      const sourceContext = body.sourceVault || body.sourceUser || 'herald';
+      const timestamp = new Date().toISOString();
+
+      // Determine target contexts based on scope
+      let targetContexts: string[] = [];
+      
+      switch (body.scope) {
+        case 'parent':
+          // Share with parent company level
+          if (body.sourceProject && body.sourceCompany) {
+            targetContexts = [`${body.sourceCompany}:parent`];
+          } else if (body.sourceCompany) {
+            targetContexts = ['global:parent'];
+          }
+          break;
+        case 'siblings':
+          // Share with sibling projects in same company
+          if (body.sourceCompany) {
+            targetContexts = [`${body.sourceCompany}:siblings`];
+          }
+          break;
+        case 'all':
+          // Share globally
+          targetContexts = ['all'];
+          break;
+      }
+
+      // Create insight records for each target
+      for (const target of targetContexts) {
+        const newInsight: HeraldInsight = {
+          id: randomUUID(),
+          fromContext: sourceContext,
+          toContext: target,
+          topic: body.topic,
+          insight: body.insight,
+          timestamp,
+        };
+        insights.push(newInsight);
+        sharedInsights.push(newInsight);
+      }
+
+      heraldStorage.saveInsights(insights);
+
+      console.log(`[Herald] Insight shared with scope=${body.scope} from ${sourceContext} to ${targetContexts.join(', ')}`);
+
+      sendJson(res, 200, {
+        shared: true,
+        scope: body.scope,
+        targetContexts,
+        insightIds: sharedInsights.map(i => i.id),
+        topic: body.topic || 'general',
+        timestamp,
+      });
+      return;
+    }
+
     // === CEDA-44: Pattern Quality Score Endpoints ===
 
     // GET /api/patterns/low-quality - Get patterns below quality threshold

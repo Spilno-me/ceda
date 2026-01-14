@@ -39,7 +39,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.18.0";
+const VERSION = "1.19.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -83,6 +83,45 @@ interface BufferedInsight {
   project: string;
   user: string;
   bufferedAt: string;
+}
+
+// CEDA-64: Session reflection tracking (in-memory, clears on restart)
+interface SessionReflection {
+  id: string;
+  session: string;
+  feeling: "stuck" | "success";
+  insight: string;
+  method: "direct" | "simulation";
+  timestamp: string;
+}
+
+// In-memory session reflections array (clears on restart)
+const sessionReflections: SessionReflection[] = [];
+
+function addSessionReflection(reflection: Omit<SessionReflection, "id" | "timestamp">): SessionReflection {
+  const newReflection: SessionReflection = {
+    ...reflection,
+    id: `sr-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    timestamp: new Date().toISOString(),
+  };
+  sessionReflections.push(newReflection);
+  return newReflection;
+}
+
+function getSessionReflectionsSummary(): {
+  count: number;
+  patterns: number;
+  antipatterns: number;
+  reflections: SessionReflection[];
+} {
+  const patterns = sessionReflections.filter(r => r.feeling === "success").length;
+  const antipatterns = sessionReflections.filter(r => r.feeling === "stuck").length;
+  return {
+    count: sessionReflections.length,
+    patterns,
+    antipatterns,
+    reflections: sessionReflections,
+  };
 }
 
 function bufferInsight(payload: Omit<BufferedInsight, "bufferedAt">): void {
@@ -999,6 +1038,88 @@ CEDA learns which method works better for which contexts (meta-learning).`,
       required: ["session", "feeling", "insight"],
     },
   },
+  // CEDA-64: Herald Command Extensions
+  {
+    name: "herald_session_reflections",
+    description: `Get summary of reflections captured during this MCP session.
+
+Returns count of patterns and antipatterns captured since Herald started.
+This is LOCAL tracking - clears when Herald restarts.
+
+Use this to:
+1. Review what's been captured in the current session
+2. Verify reflections were recorded
+3. Get a quick summary before ending a session`,
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "herald_pattern_feedback",
+    description: `Provide feedback on whether a learned pattern/antipattern helped.
+
+Call this after applying a pattern from herald_patterns to track effectiveness.
+This feeds the meta-learning loop - CEDA learns which patterns actually help.
+
+Parameters:
+- pattern_id: ID of the pattern/reflection (from herald_patterns output)
+- pattern_text: Alternative to ID - the pattern text to match
+- outcome: "helped" or "didnt_help"
+
+Example: After applying an antipattern warning and it prevented a mistake,
+call with outcome="helped" to reinforce that pattern.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern_id: {
+          type: "string",
+          description: "ID of the pattern/reflection to provide feedback on"
+        },
+        pattern_text: {
+          type: "string",
+          description: "Alternative: pattern text to match (if ID not available)"
+        },
+        outcome: {
+          type: "string",
+          enum: ["helped", "didnt_help"],
+          description: "Whether applying this pattern helped or not"
+        },
+      },
+      required: ["outcome"],
+    },
+  },
+  {
+    name: "herald_share_scoped",
+    description: `Share an insight with other Herald contexts using scope control.
+
+Scopes:
+- "parent": Share with parent project/company (escalate learning)
+- "siblings": Share with sibling projects in same company
+- "all": Share globally across all contexts
+
+Use this to propagate valuable patterns beyond the current context.
+Example: A debugging pattern that worked well could be shared with siblings.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        insight: {
+          type: "string",
+          description: "The insight/pattern to share"
+        },
+        scope: {
+          type: "string",
+          enum: ["parent", "siblings", "all"],
+          description: "Who to share with: parent, siblings, or all"
+        },
+        topic: {
+          type: "string",
+          description: "Optional topic category for the insight"
+        },
+      },
+      required: ["insight", "scope"],
+    },
+  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -1453,6 +1574,14 @@ Herald will:
         const feeling = args?.feeling as "stuck" | "success";
         const insight = args?.insight as string;
 
+        // CEDA-64: Track reflection locally for session summary
+        addSessionReflection({
+          session,
+          feeling,
+          insight,
+          method: "direct",
+        });
+
         // Call CEDA's reflect endpoint with user's insight
         try {
           const result = await callCedaAPI("/api/herald/reflect", "POST", {
@@ -1614,6 +1743,14 @@ Herald will:
         const feeling = args?.feeling as "stuck" | "success";
         const insight = args?.insight as string;
 
+        // CEDA-64: Track reflection locally for session summary
+        addSessionReflection({
+          session,
+          feeling,
+          insight,
+          method: "simulation",
+        });
+
         // Check for AI API key
         const aiClient = getAIClient();
         if (!aiClient) {
@@ -1716,6 +1853,162 @@ Herald will:
                 error: `AI reflection failed: ${error}`,
                 provider: aiClient.provider,
                 hint: "Check API key validity. Use herald_reflect for direct capture as fallback.",
+              }, null, 2)
+            }],
+          };
+        }
+      }
+
+      // CEDA-64: Herald Command Extensions - Handlers
+      case "herald_session_reflections": {
+        const summary = getSessionReflectionsSummary();
+        
+        let message = `## Session Reflections Summary\n\n`;
+        message += `**Total captured:** ${summary.count}\n`;
+        message += `- Patterns (success): ${summary.patterns}\n`;
+        message += `- Antipatterns (stuck): ${summary.antipatterns}\n\n`;
+        
+        if (summary.reflections.length > 0) {
+          message += `### Captured This Session:\n`;
+          summary.reflections.forEach((r, i) => {
+            const icon = r.feeling === "success" ? "+" : "-";
+            message += `${i + 1}. [${icon}] ${r.insight} (${r.method}, ${r.timestamp})\n`;
+          });
+        } else {
+          message += `No reflections captured yet. Use herald_reflect or herald_simulate to capture patterns.`;
+        }
+        
+        return {
+          content: [{
+            type: "text",
+            text: message,
+          }],
+        };
+      }
+
+      case "herald_pattern_feedback": {
+        const patternId = args?.pattern_id as string | undefined;
+        const patternText = args?.pattern_text as string | undefined;
+        const outcome = args?.outcome as "helped" | "didnt_help";
+
+        if (!patternId && !patternText) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: "Either pattern_id or pattern_text is required",
+              }, null, 2)
+            }],
+            isError: true,
+          };
+        }
+
+        try {
+          const result = await callCedaAPI("/api/herald/feedback", "POST", {
+            patternId,
+            patternText,
+            outcome,
+            helped: outcome === "helped",
+            company: HERALD_COMPANY,
+            project: HERALD_PROJECT,
+            user: HERALD_USER,
+          });
+
+          if (result.error) {
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  hint: "Pattern feedback could not be recorded. The pattern may not exist.",
+                }, null, 2)
+              }],
+            };
+          }
+
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                message: outcome === "helped"
+                  ? "Feedback recorded: pattern helped! This reinforces the pattern."
+                  : "Feedback recorded: pattern didn't help. This will be factored into future recommendations.",
+                ...result,
+              }, null, 2)
+            }],
+          };
+        } catch (error) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: `Failed to record feedback: ${error}`,
+                hint: "CEDA may be unavailable. Try again later.",
+              }, null, 2)
+            }],
+          };
+        }
+      }
+
+      case "herald_share_scoped": {
+        const insight = args?.insight as string;
+        const scope = args?.scope as "parent" | "siblings" | "all";
+        const topic = args?.topic as string | undefined;
+
+        try {
+          const result = await callCedaAPI("/api/herald/share", "POST", {
+            insight,
+            scope,
+            topic,
+            sourceCompany: HERALD_COMPANY,
+            sourceProject: HERALD_PROJECT,
+            sourceUser: HERALD_USER,
+            sourceVault: HERALD_VAULT || undefined,
+          });
+
+          if (result.error) {
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: false,
+                  error: result.error,
+                  hint: "Insight could not be shared. Check scope and try again.",
+                }, null, 2)
+              }],
+            };
+          }
+
+          const scopeDescription = {
+            parent: "parent project/company",
+            siblings: "sibling projects",
+            all: "all contexts globally",
+          };
+
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                message: `Insight shared with ${scopeDescription[scope]}`,
+                scope,
+                topic: topic || "general",
+                ...result,
+              }, null, 2)
+            }],
+          };
+        } catch (error) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: `Failed to share insight: ${error}`,
+                hint: "CEDA may be unavailable. Try again later.",
               }, null, 2)
             }],
           };
