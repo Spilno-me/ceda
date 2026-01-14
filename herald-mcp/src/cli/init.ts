@@ -33,23 +33,21 @@ function printInitHelp(): void {
 Herald MCP Init - One command setup for CEDA pattern learning
 
 Usage:
-  npx @spilno/herald-mcp@latest init [options]
+  cd your-project
+  npx @spilno/herald-mcp@latest init
 
-Options:
-  --help, -h          Show this help message
+That's it. Company and project default to folder name.
+
+Options (optional):
+  --company, -c       Override company (default: folder name)
+  --project, -p       Override project (default: folder name)
   --force, -f         Overwrite existing config
-  --company, -c       Company context (e.g., goprint)
-  --project, -p       Project context (e.g., kiosk-web)
   --no-claude-md      Skip CLAUDE.md modification
+  --help, -h          Show this help
 
-What it does:
-  1. Creates .claude/settings.local.json with Herald @latest
-  2. Configures CEDA cloud backend (getceda.com)
-  3. Sets company/project context for pattern learning
-  4. Updates CLAUDE.md with Herald instructions
-
-Example:
-  cd my-project
+Examples:
+  npx @spilno/herald-mcp@latest init
+  npx @spilno/herald-mcp@latest init --company goprint
   npx @spilno/herald-mcp@latest init --company goprint --project kiosk
 
 Then start Claude Code and say "herald health" to verify.
@@ -102,8 +100,8 @@ export function runInit(args: string[] = []): void {
   const settingsPath = join(claudeDir, "settings.local.json");
   const claudeMdPath = join(cwd, "CLAUDE.md");
 
-  // Use provided values or derive from project name
-  const company = options.company || projectName.split("-")[0] || "default";
+  // Zero-config: derive from folder name, flags override
+  const company = options.company || projectName;
   const project = options.project || projectName;
 
   const context: HeraldContext = {
