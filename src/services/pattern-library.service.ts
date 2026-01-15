@@ -12,6 +12,7 @@ import {
   PatternConfidence,
 } from '../interfaces';
 import { TenantEmbeddingContext } from './tenant-embedding.service';
+import { upstashRedis, PatternAdaptiveState } from './upstash-redis.service';
 
 /**
  * User-first pattern query context
@@ -367,24 +368,26 @@ export class PatternLibraryService {
 
   /**
    * CEDA-32: Calculate current confidence for a pattern with decay applied
+   * CEDA-67: Uses Redis for adaptive state persistence when available
+   *
    * Patterns decay without grounding, boost with successful executions
-   * 
+   *
    * Formula: max(0.1, base - decay + grounded)
    * - decay = daysSinceGrounding * decayRate
    * - grounded = min(groundingCount * 0.05, 0.3) (max 30% boost)
-   * 
+   *
    * @param pattern - The pattern to calculate confidence for
    * @returns Current confidence score (0.1 - 1.0)
    */
   currentConfidence(pattern: Pattern): number {
     const confidence = pattern.confidence;
-    
+
     if (!confidence) {
       return 1.0;
     }
 
     const { base, lastGrounded, groundingCount, decayRate } = confidence;
-    
+
     let daysSinceGrounding = 0;
     if (lastGrounded) {
       const now = new Date();
@@ -395,8 +398,26 @@ export class PatternLibraryService {
 
     const decay = daysSinceGrounding * decayRate;
     const groundedBoost = Math.min(groundingCount * 0.05, 0.3);
-    
+
     return Math.max(0.1, base - decay + groundedBoost);
+  }
+
+  /**
+   * CEDA-67: Get pattern confidence with Redis-backed adaptive state
+   * Merges in-memory pattern confidence with persistent adaptive state
+   */
+  async getCurrentConfidenceAsync(pattern: Pattern): Promise<number> {
+    // Try Redis first for adaptive state
+    if (upstashRedis.isEnabled()) {
+      const adaptiveState = await upstashRedis.getPatternState(pattern.id);
+      if (adaptiveState) {
+        // Use Redis weight * decay factor as confidence
+        return Math.max(0.1, adaptiveState.weight * adaptiveState.decayFactor);
+      }
+    }
+
+    // Fallback to in-memory confidence calculation
+    return this.currentConfidence(pattern);
   }
 
   /**
@@ -414,6 +435,8 @@ export class PatternLibraryService {
 
   /**
    * CEDA-32: Update pattern grounding data after successful execution
+   * CEDA-67: Also persists to Redis for cross-instance state
+   *
    * @param patternId - The pattern ID to update
    * @param success - Whether the execution was successful
    * @returns Updated pattern or null if not found
@@ -437,10 +460,58 @@ export class PatternLibraryService {
         },
       };
       this.registerPattern(updatedPattern);
+
+      // CEDA-67: Persist to Redis if available (fire and forget)
+      if (upstashRedis.isEnabled()) {
+        this.persistGroundingToRedis(pattern, success).catch((err) => {
+          console.warn('[PatternLibraryService] Failed to persist grounding to Redis:', err);
+        });
+      }
+
       return updatedPattern;
     }
 
     return pattern;
+  }
+
+  /**
+   * CEDA-67: Persist grounding event to Redis adaptive state
+   * Updates weight (effectiveness score) based on success/failure
+   */
+  private async persistGroundingToRedis(pattern: Pattern, success: boolean): Promise<void> {
+    const patternId = pattern.id;
+
+    // Increment feedback count
+    await upstashRedis.incrementFeedback(patternId, 1);
+
+    // Adjust weight based on outcome
+    const currentState = await upstashRedis.getPatternState(patternId);
+    const currentWeight = currentState?.weight ?? 0.5;
+
+    // Adaptive weight: success increases, failure decreases
+    const weightDelta = success ? 0.05 : -0.1;
+    const newWeight = Math.max(0.1, Math.min(1.0, currentWeight + weightDelta));
+
+    await upstashRedis.updateWeight(patternId, newWeight);
+
+    // Initialize or update full state if not exists
+    if (!currentState) {
+      const initialState: PatternAdaptiveState = {
+        patternId,
+        weight: newWeight,
+        feedbackCount: 1,
+        lastUsed: new Date().toISOString(),
+        decayFactor: 1.0,
+        level: 'user',
+        graduationStatus: 'active',
+        company: pattern.company || 'unknown',
+        project: pattern.project || 'default',
+        user: pattern.user_id || 'default',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await upstashRedis.setPatternState(initialState);
+    }
   }
 
   /**

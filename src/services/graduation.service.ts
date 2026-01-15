@@ -1,8 +1,11 @@
 /**
  * CEDA-36: Graduation Service
+ * CEDA-67: Redis-backed graduation state persistence
  *
  * Manages pattern graduation from observations to shared patterns.
  * Patterns evolve through levels based on usage and acceptance criteria.
+ *
+ * Graduation status is persisted to Redis for cross-instance consistency.
  */
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -21,6 +24,7 @@ import {
 } from '../interfaces';
 import { PatternLibraryService } from './pattern-library.service';
 import { ObservationService } from './observation.service';
+import { upstashRedis, PatternAdaptiveState } from './upstash-redis.service';
 
 /**
  * GraduationService - Pattern graduation management
@@ -80,6 +84,7 @@ export class GraduationService {
 
   /**
    * Graduate a pattern to a new level
+   * CEDA-67: Also persists graduation status to Redis
    */
   async graduate(patternId: string, toLevel: PatternLevel): Promise<Pattern | null> {
     const pattern = this.patternLibrary.getPattern(patternId);
@@ -119,9 +124,34 @@ export class GraduationService {
     this.patternLibrary.registerPattern(updatedPattern);
     this.pendingApprovals.delete(patternId);
 
+    // CEDA-67: Persist graduation status to Redis
+    if (upstashRedis.isEnabled()) {
+      const levelName = this.levelToStateName(toLevel);
+      await upstashRedis.updateGraduation(patternId, 'graduated', levelName).catch((err) => {
+        this.logger.warn(`Failed to persist graduation to Redis: ${err}`);
+      });
+    }
+
     this.logger.log(`Graduated pattern ${patternId} from level ${currentLevel} to ${toLevel}`);
 
     return updatedPattern;
+  }
+
+  /**
+   * CEDA-67: Map PatternLevel to Redis adaptive state level name
+   */
+  private levelToStateName(level: PatternLevel): PatternAdaptiveState['level'] {
+    switch (level) {
+      case PatternLevel.OBSERVATION:
+      case PatternLevel.LOCAL:
+        return 'user';
+      case PatternLevel.COMPANY:
+        return 'project'; // company patterns map to project scope in Redis
+      case PatternLevel.SHARED:
+        return 'global';
+      default:
+        return 'user';
+    }
   }
 
   /**

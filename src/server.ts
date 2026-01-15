@@ -612,11 +612,11 @@ function getClientIp(req: http.IncomingMessage): string {
  * CEDA-43: Check rate limit and send 429 response if exceeded
  * Returns true if request should be blocked
  */
-function checkRateLimitAndRespond(
+async function checkRateLimitAndRespond(
   company: string,
   res: http.ServerResponse,
-): boolean {
-  const result = rateLimiterService.checkRateLimit(company);
+): Promise<boolean> {
+  const result = await rateLimiterService.checkRateLimit(company);
   if (!result.allowed) {
     res.writeHead(429, {
       'Content-Type': 'application/json',
@@ -805,7 +805,7 @@ async function handleRequest(
       }
 
       // CEDA-43: Rate limiting check
-      if (checkRateLimitAndRespond(body.company, res)) {
+      if (await checkRateLimitAndRespond(body.company, res)) {
         return;
       }
 
@@ -2697,7 +2697,7 @@ async function handleRequest(
       }
 
       // CEDA-43: Rate limiting check
-      if (checkRateLimitAndRespond(body.company, res)) {
+      if (await checkRateLimitAndRespond(body.company, res)) {
         return;
       }
 
@@ -3114,7 +3114,7 @@ async function handleRequest(
       }
 
       // CEDA-43: Rate limiting check
-      if (checkRateLimitAndRespond(body.company, res)) {
+      if (await checkRateLimitAndRespond(body.company, res)) {
         return;
       }
 
@@ -4206,7 +4206,7 @@ async function handleRequest(
         return;
       }
 
-      if (checkRateLimitAndRespond(body.company, res)) {
+      if (await checkRateLimitAndRespond(body.company, res)) {
         return;
       }
 
@@ -4562,7 +4562,7 @@ async function handleRequest(
         return;
       }
 
-      if (checkRateLimitAndRespond(body.company, res)) {
+      if (await checkRateLimitAndRespond(body.company, res)) {
         return;
       }
 
@@ -4608,7 +4608,7 @@ async function handleRequest(
         return;
       }
 
-      if (checkRateLimitAndRespond(body.company, res)) {
+      if (await checkRateLimitAndRespond(body.company, res)) {
         return;
       }
 

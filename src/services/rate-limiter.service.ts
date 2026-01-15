@@ -1,11 +1,16 @@
 /**
  * CEDA-43: Rate Limiter Service
+ * CEDA-67: Redis-backed for horizontal scaling
  *
  * Implements sliding window rate limiting for adversarial hardening.
  * Limits requests per company to prevent abuse.
+ *
+ * Uses Upstash Redis when available for shared state across instances.
+ * Falls back to in-memory for development/standalone mode.
  */
 
 import { Injectable } from '@nestjs/common';
+import { upstashRedis } from './upstash-redis.service';
 
 interface RateLimitWindow {
   timestamps: number[];
@@ -21,11 +26,18 @@ interface RateLimitResult {
 export class RateLimiterService {
   private readonly windowMs: number;
   private readonly maxRequests: number;
+  // In-memory fallback when Redis is not available
   private readonly windows: Map<string, RateLimitWindow> = new Map();
 
   constructor(maxRequests: number = 100, windowMs: number = 60000) {
     this.maxRequests = maxRequests;
     this.windowMs = windowMs;
+
+    if (upstashRedis.isEnabled()) {
+      console.log('[RateLimiter] Using Upstash Redis for distributed rate limiting');
+    } else {
+      console.log('[RateLimiter] Using in-memory rate limiting (single instance)');
+    }
   }
 
   /**
@@ -34,7 +46,20 @@ export class RateLimiterService {
    * @param company - Company identifier for rate limiting
    * @returns RateLimitResult with allowed status and retry info
    */
-  checkRateLimit(company: string): RateLimitResult {
+  async checkRateLimit(company: string): Promise<RateLimitResult> {
+    // Try Redis first for distributed rate limiting
+    if (upstashRedis.isEnabled()) {
+      return upstashRedis.checkRateLimit(company, this.maxRequests, this.windowMs);
+    }
+
+    // Fallback to in-memory for standalone mode
+    return this.checkRateLimitInMemory(company);
+  }
+
+  /**
+   * In-memory rate limiting (fallback when Redis unavailable)
+   */
+  private checkRateLimitInMemory(company: string): RateLimitResult {
     const now = Date.now();
     const windowStart = now - this.windowMs;
 
