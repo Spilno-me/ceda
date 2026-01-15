@@ -40,10 +40,21 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.20.0";
+const VERSION = "1.21.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
+
+AUTHORIZATION GATES (CRITICAL):
+Before multi-file operations (>3 files), module scaffolding, or bulk changes:
+1. Present synthesis/plan to user
+2. Ask: "Proceed? [Y/continue/adjust]"
+3. WAIT for explicit approval before writing
+
+Autonomous (no gate): reading, searching, planning, single-file edits, commits.
+Gated: multi-file creation, module scaffolding, bulk operations.
+
+Why: User steering > execution speed. Long uninterrupted runs block collaboration.
 
 WHEN TO OFFER REFLECTION:
 When you notice FRICTION (multiple iterations, debugging spirals, corrections, confusion)
@@ -776,6 +787,50 @@ const tools: Tool[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "herald_gate",
+    description: `Request authorization before large operations.
+
+WHEN TO USE:
+Call this BEFORE multi-file operations (>3 files), module scaffolding, or bulk changes.
+
+This tool:
+1. Formats a clear authorization request for the user
+2. Returns a gate_id for tracking
+3. Records the operation scope for audit
+
+After calling this tool, WAIT for explicit user approval before proceeding.
+User may respond: Y/yes/proceed (approved), adjust (modify scope), or N/no (denied).
+
+Example flow:
+1. You complete synthesis/planning
+2. Call herald_gate with operation summary
+3. Tool returns formatted request
+4. STOP and wait for user response
+5. Only proceed if user approves`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        operation: {
+          type: "string",
+          description: "What operation needs authorization (e.g., 'Create bh-incidents module')"
+        },
+        scope: {
+          type: "string",
+          description: "Scope summary (e.g., '31 files, 6 dictionaries, 4 forms')"
+        },
+        template: {
+          type: "string",
+          description: "Template/pattern being followed (e.g., 'bh-inspections')"
+        },
+        rationale: {
+          type: "string",
+          description: "Brief rationale for the operation"
+        },
+      },
+      required: ["operation", "scope"],
+    },
+  },
+  {
     name: "herald_predict",
     description: "Generate non-deterministic structure prediction from signal. Returns sessionId for multi-turn conversations.",
     inputSchema: {
@@ -1319,6 +1374,46 @@ Herald will:
         const result = await callCedaAPI("/api/stats");
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      }
+
+      case "herald_gate": {
+        const operation = args?.operation as string;
+        const scope = args?.scope as string;
+        const template = args?.template as string | undefined;
+        const rationale = args?.rationale as string | undefined;
+
+        // Generate gate ID for tracking
+        const gateId = `gate-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+        // Format the authorization request
+        let gateRequest = `\n## Authorization Required\n\n`;
+        gateRequest += `**Operation:** ${operation}\n`;
+        gateRequest += `**Scope:** ${scope}\n`;
+        if (template) {
+          gateRequest += `**Template:** Following \`${template}\` patterns\n`;
+        }
+        if (rationale) {
+          gateRequest += `**Rationale:** ${rationale}\n`;
+        }
+        gateRequest += `\n---\n`;
+        gateRequest += `**Proceed?** [Y/yes/proceed] [adjust] [N/no]\n`;
+        gateRequest += `\n_Gate ID: ${gateId}_\n`;
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              gate_id: gateId,
+              status: "awaiting_authorization",
+              message: gateRequest,
+              operation,
+              scope,
+              template: template || null,
+              instruction: "STOP HERE. Wait for user response before proceeding with any file operations.",
+            }, null, 2)
+          }],
         };
       }
 

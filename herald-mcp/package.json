@@ -1,6 +1,6 @@
 {
   "name": "@spilno/herald-mcp",
-  "version": "1.20.0",
+  "version": "1.21.0",
   "description": "Herald MCP - AI-native interface to CEDA (Cognitive Event-Driven Architecture)",
   "main": "dist/index.js",
   "type": "module",
@@ -28,7 +28,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Spilno-me/ceda.git",
+    "url": "git+https://github.com/Spilno-me/ceda.git",
     "directory": "herald-mcp"
   },
   "homepage": "https://getceda.com",
