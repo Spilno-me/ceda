@@ -19,6 +19,7 @@ import { join } from "path";
 import * as readline from "readline";
 
 import { runInit } from "./cli/init.js";
+import { sanitize, previewSanitization, sanitizeReflection, DataClassification } from "./sanitization.js";
 
 // Configuration - all sensitive values from environment only
 // CEDA_URL is primary, HERALD_API_URL for backwards compat, default to cloud
@@ -945,15 +946,28 @@ User's answer goes in the 'insight' parameter.
 
 DO NOT GUESS. The user knows what they valued. Ask them.
 
+ABSTRACTION GUIDANCE:
+Capture the PATTERN, not the SPECIFICS. Good patterns are reusable.
+- BAD: "Fixed bug in /Users/john/project/auth.ts line 47"
+- GOOD: "Early return pattern for auth validation reduces nesting"
+- BAD: "API key sk-proj-xxx was in wrong env file"
+- GOOD: "Secrets in .env.local not .env prevents accidental commits"
+
 Example flow:
 1. User: "That was smooth, capture it"
-2. You: "What specifically worked here?"
+2. You: "What specifically worked here? (Describe the pattern, not specific files/values)"
 3. User: "The ASCII visualization approach"
 4. You call herald_reflect with insight: "ASCII visualization approach"
 
-DRY RUN MODE (CEDA-65):
-Set dry_run=true to preview what would be captured without storing.
-Shows sanitization results and data classification.`,
+PRIVACY (CEDA-65):
+- Client-side sanitization runs BEFORE any data leaves your machine
+- API keys, tokens, passwords, file paths with usernames are auto-redacted
+- Private keys and AWS credentials are BLOCKED entirely
+- Use dry_run=true to preview exactly what would be transmitted
+
+DRY RUN MODE:
+Set dry_run=true to preview sanitization without storing.
+Shows what would be redacted and final transmitted text.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -1642,45 +1656,65 @@ Herald will:
         const insight = args?.insight as string;
         const dryRun = args?.dry_run as boolean | undefined;
 
-        // CEDA-65: Dry-run mode - preview what would be captured without storing
-        if (dryRun) {
-          try {
-            const result = await callCedaAPI("/api/herald/reflect/dry-run", "POST", {
-              session,
-              feeling,
-              insight,
-              company: HERALD_COMPANY,
-              project: HERALD_PROJECT,
-              user: HERALD_USER,
-            });
+        // CEDA-65: Client-side sanitization preview (no network required)
+        const sessionPreview = previewSanitization(session);
+        const insightPreview = previewSanitization(insight);
 
-            return {
-              content: [{
-                type: "text",
-                text: JSON.stringify({
-                  success: true,
-                  mode: "dry-run",
-                  message: "Preview of what would be captured (no data stored)",
-                  feeling,
-                  insight,
-                  ...result,
-                }, null, 2)
-              }],
-            };
-          } catch (error) {
-            return {
-              content: [{
-                type: "text",
-                text: JSON.stringify({
-                  success: false,
-                  mode: "dry-run",
-                  error: `Dry-run failed: ${error}`,
-                  hint: "CEDA may be unavailable. Try again later.",
-                }, null, 2)
-              }],
-            };
-          }
+        // Check if content would be blocked
+        if (sessionPreview.wouldBlock || insightPreview.wouldBlock) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                mode: "blocked",
+                error: "Content contains restricted data that cannot be transmitted",
+                blockReason: sessionPreview.blockReason || insightPreview.blockReason,
+                detectedTypes: [...sessionPreview.detectedTypes, ...insightPreview.detectedTypes],
+                hint: "Remove private keys, AWS credentials, or other restricted data before capturing.",
+              }, null, 2)
+            }],
+            isError: true,
+          };
         }
+
+        // Dry-run mode - show sanitization preview without storing
+        if (dryRun) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                mode: "dry-run",
+                message: "Preview of what would be captured (no data stored or transmitted)",
+                feeling,
+                sanitization: {
+                  session: {
+                    original: session,
+                    sanitized: sessionPreview.sanitized,
+                    wouldSanitize: sessionPreview.wouldSanitize,
+                    detectedTypes: sessionPreview.detectedTypes,
+                    classification: sessionPreview.classification,
+                  },
+                  insight: {
+                    original: insight,
+                    sanitized: insightPreview.sanitized,
+                    wouldSanitize: insightPreview.wouldSanitize,
+                    detectedTypes: insightPreview.detectedTypes,
+                    classification: insightPreview.classification,
+                  },
+                },
+                hint: insightPreview.wouldSanitize || sessionPreview.wouldSanitize
+                  ? "Some content will be redacted. Consider using more abstract descriptions."
+                  : "Content looks clean. Safe to capture.",
+              }, null, 2)
+            }],
+          };
+        }
+
+        // Sanitize before transmission
+        const sanitizedSession = sessionPreview.sanitized;
+        const sanitizedInsight = insightPreview.sanitized;
 
         // CEDA-64: Track reflection locally for session summary
         addSessionReflection({
@@ -1690,12 +1724,12 @@ Herald will:
           method: "direct",
         });
 
-        // Call CEDA's reflect endpoint with user's insight
+        // Call CEDA's reflect endpoint with SANITIZED insight
         try {
           const result = await callCedaAPI("/api/herald/reflect", "POST", {
-            session,
+            session: sanitizedSession,
             feeling,
-            insight,  // User-provided insight - the actual pattern
+            insight: sanitizedInsight,  // Sanitized - no PII/secrets transmitted
             method: "direct",  // Track capture method for meta-learning
             company: HERALD_COMPANY,
             project: HERALD_PROJECT,
@@ -1704,19 +1738,9 @@ Herald will:
           });
 
           if (result.error) {
-            // If cloud fails, store locally for later processing
-            const localRecord = {
-              session,
-              feeling,
-              company: HERALD_COMPANY,
-              project: HERALD_PROJECT,
-              user: HERALD_USER,
-              timestamp: new Date().toISOString(),
-            };
-
-            // Buffer as insight for later sync
+            // If cloud fails, store locally for later processing (also sanitized)
             bufferInsight({
-              insight: `[REFLECT:${feeling}] ${insight} | Context: ${session}`,
+              insight: `[REFLECT:${feeling}] ${sanitizedInsight} | Context: ${sanitizedSession}`,
               topic: feeling === "stuck" ? "antipattern" : "pattern",
               company: HERALD_COMPANY,
               project: HERALD_PROJECT,
@@ -1756,9 +1780,9 @@ Herald will:
             }],
           };
         } catch (error) {
-          // Network error - buffer locally
+          // Network error - buffer locally (sanitized)
           bufferInsight({
-            insight: `[REFLECT:${feeling}] ${insight} | Context: ${session}`,
+            insight: `[REFLECT:${feeling}] ${sanitizedInsight} | Context: ${sanitizedSession}`,
             topic: feeling === "stuck" ? "antipattern" : "pattern",
             company: HERALD_COMPANY,
             project: HERALD_PROJECT,
@@ -1773,9 +1797,10 @@ Herald will:
                 mode: "local",
                 message: "Reflection buffered locally (cloud unreachable)",
                 feeling,
-                insight,
+                insight: sanitizedInsight,
                 hint: "Use herald_sync when cloud recovers.",
                 buffered: true,
+                sanitized: sessionPreview.wouldSanitize || insightPreview.wouldSanitize,
               }, null, 2)
             }],
           };
@@ -1851,6 +1876,30 @@ Herald will:
         const feeling = args?.feeling as "stuck" | "success";
         const insight = args?.insight as string;
 
+        // CEDA-65: Client-side sanitization
+        const simSessionPreview = previewSanitization(session);
+        const simInsightPreview = previewSanitization(insight);
+
+        // Block restricted content
+        if (simSessionPreview.wouldBlock || simInsightPreview.wouldBlock) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                mode: "blocked",
+                error: "Content contains restricted data that cannot be transmitted",
+                blockReason: simSessionPreview.blockReason || simInsightPreview.blockReason,
+                hint: "Remove private keys, AWS credentials, or other restricted data before capturing.",
+              }, null, 2)
+            }],
+            isError: true,
+          };
+        }
+
+        const simSanitizedSession = simSessionPreview.sanitized;
+        const simSanitizedInsight = simInsightPreview.sanitized;
+
         // CEDA-64: Track reflection locally for session summary
         addSessionReflection({
           session,
@@ -1876,21 +1925,26 @@ Herald will:
         }
 
         try {
-          // Build prompt and call AI for reflection
-          const prompt = buildReflectionPrompt(session, feeling, insight);
+          // Build prompt and call AI for reflection (use sanitized input)
+          const prompt = buildReflectionPrompt(simSanitizedSession, feeling, simSanitizedInsight);
           const extracted = await callAIForReflection(aiClient, prompt);
 
-          // Send enriched data to CEDA
+          // Sanitize AI-extracted fields too
+          const sanitizedSignal = sanitize(extracted.signal || "").sanitizedText;
+          const sanitizedReinforcement = extracted.reinforcement ? sanitize(extracted.reinforcement).sanitizedText : undefined;
+          const sanitizedWarning = extracted.warning ? sanitize(extracted.warning).sanitizedText : undefined;
+
+          // Send enriched data to CEDA (all sanitized)
           const result = await callCedaAPI("/api/herald/reflect", "POST", {
-            session,
+            session: simSanitizedSession,
             feeling,
-            insight,
+            insight: simSanitizedInsight,
             method: "simulation",  // Track capture method
-            // AI-extracted fields
-            signal: extracted.signal,
+            // AI-extracted fields (sanitized)
+            signal: sanitizedSignal,
             outcome: extracted.outcome,
-            reinforcement: extracted.reinforcement,
-            warning: extracted.warning,
+            reinforcement: sanitizedReinforcement,
+            warning: sanitizedWarning,
             company: HERALD_COMPANY,
             project: HERALD_PROJECT,
             user: HERALD_USER,
@@ -1898,9 +1952,9 @@ Herald will:
           });
 
           if (result.error) {
-            // Cloud failed but we have AI extraction - buffer with enriched data
+            // Cloud failed but we have AI extraction - buffer with enriched data (sanitized)
             bufferInsight({
-              insight: `[SIMULATE:${feeling}] Signal: ${extracted.signal} | Insight: ${insight} | ${extracted.outcome === "pattern" ? `Reinforce: ${extracted.reinforcement}` : `Warn: ${extracted.warning}`}`,
+              insight: `[SIMULATE:${feeling}] Signal: ${sanitizedSignal} | Insight: ${simSanitizedInsight} | ${extracted.outcome === "pattern" ? `Reinforce: ${sanitizedReinforcement}` : `Warn: ${sanitizedWarning}`}`,
               topic: extracted.outcome,
               company: HERALD_COMPANY,
               project: HERALD_PROJECT,
