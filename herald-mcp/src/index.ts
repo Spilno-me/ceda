@@ -40,7 +40,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.21.0";
+const VERSION = "1.22.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -1532,12 +1532,13 @@ Herald will:
 
         // Cloud-first: try to POST to CEDA, buffer locally on failure
         // Map Herald's vault terminology to CEDA's context terminology
+        // Default toContext to "all" for guest mode / when no target specified
         try {
           const result = await callCedaAPI("/api/herald/insight", "POST", {
             insight,
-            toContext: targetVault,
+            toContext: targetVault || "all",  // Required by CEDA, default to broadcast
             topic,
-            fromContext: HERALD_VAULT,
+            fromContext: HERALD_VAULT || `${HERALD_COMPANY}/${HERALD_PROJECT}`,
           });
 
           // Check if API returned an error
@@ -1627,8 +1628,8 @@ Herald will:
             const result = await callCedaAPI("/api/herald/insight", "POST", {
               insight: item.insight,
               topic: item.topic,
-              targetVault: item.targetVault,
-              sourceVault: item.sourceVault,
+              toContext: item.targetVault || "all",  // CEDA expects toContext, default to "all"
+              fromContext: item.sourceVault,         // CEDA expects fromContext
             });
 
             if (result.error) {
@@ -2427,8 +2428,8 @@ async function autoSyncBuffer(): Promise<void> {
       const result = await callCedaAPI("/api/herald/insight", "POST", {
         insight: item.insight,
         topic: item.topic,
-        targetVault: item.targetVault,
-        sourceVault: item.sourceVault,
+        toContext: item.targetVault || "all",  // CEDA expects toContext
+        fromContext: item.sourceVault,         // CEDA expects fromContext
       });
 
       if (result.error) {

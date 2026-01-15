@@ -96,8 +96,7 @@ export async function runInit(args: string[] = []): Promise<void> {
   
   const cwd = process.cwd();
   const projectName = basename(cwd);
-  const claudeDir = join(cwd, ".claude");
-  const settingsPath = join(claudeDir, "settings.local.json");
+  const mcpJsonPath = join(cwd, ".mcp.json");  // Correct location for project MCP servers
   const claudeMdPath = join(cwd, "CLAUDE.md");
 
   // Zero-config: derive from folder name, flags override
@@ -110,41 +109,38 @@ export async function runInit(args: string[] = []): Promise<void> {
     user: options.user || "default",
   };
 
-  // Check for old herald configs and warn
-  const oldSettingsPath = join(claudeDir, "settings.json");
+  // Check for old herald configs and warn about migration
+  const oldClaudeDir = join(cwd, ".claude");
+  const oldSettingsPath = join(oldClaudeDir, "settings.local.json");
   if (existsSync(oldSettingsPath)) {
     try {
       const oldConfig = JSON.parse(readFileSync(oldSettingsPath, "utf-8"));
       if (oldConfig.mcpServers?.herald) {
-        console.log("⚠️  Found old Herald config in settings.json - will use settings.local.json instead");
+        console.log("⚠️  Found old Herald config in .claude/settings.local.json");
+        console.log("   This location is no longer supported. Migrating to .mcp.json");
       }
     } catch { /* ignore */ }
   }
 
-  if (existsSync(settingsPath) && !options.force) {
+  if (existsSync(mcpJsonPath) && !options.force) {
     console.log(`
-.claude/settings.local.json already exists.
+.mcp.json already exists.
 
 To view current config:
-  cat .claude/settings.local.json
+  cat .mcp.json
 
 To overwrite:
   npx @spilno/herald-mcp init --force
 `);
     return;
   }
-  
-  if (!existsSync(claudeDir)) {
-    mkdirSync(claudeDir, { recursive: true });
-    console.log("Created .claude directory");
-  }
-  
+
   const heraldConfig = buildHeraldConfig(company, project);
   let finalConfig = heraldConfig;
 
-  if (existsSync(settingsPath)) {
+  if (existsSync(mcpJsonPath)) {
     try {
-      const existingContent = readFileSync(settingsPath, "utf-8");
+      const existingContent = readFileSync(mcpJsonPath, "utf-8");
       const existingConfig = JSON.parse(existingContent);
 
       finalConfig = {
@@ -154,14 +150,14 @@ To overwrite:
           ...heraldConfig.mcpServers
         }
       };
-      console.log("Merging with existing settings.local.json");
+      console.log("Merging with existing .mcp.json");
     } catch {
-      console.log("Overwriting invalid settings.local.json");
+      console.log("Overwriting invalid .mcp.json");
     }
   }
 
-  writeFileSync(settingsPath, JSON.stringify(finalConfig, null, 2) + "\n", "utf-8");
-  console.log("✓ Created .claude/settings.local.json");
+  writeFileSync(mcpJsonPath, JSON.stringify(finalConfig, null, 2) + "\n", "utf-8");
+  console.log("✓ Created .mcp.json");
   
   if (!options.noClaudeMd) {
     let existingClaudeMd: string | null = null;
