@@ -397,6 +397,206 @@ function sendJson(res: http.ServerResponse, status: number, data: unknown): void
 }
 
 /**
+ * API Endpoints - single source of truth for /docs and 404 responses
+ */
+const API_ENDPOINTS = [
+  { method: 'GET', path: '/health', description: 'Health check' },
+  { method: 'GET', path: '/docs', description: 'API documentation (this page)' },
+  { method: 'POST', path: '/api/predict', description: 'Generate structure prediction', params: 'company (required)' },
+  { method: 'POST', path: '/api/refine', description: 'Refine existing prediction' },
+  { method: 'GET', path: '/api/session/:id', description: 'Get session by ID' },
+  { method: 'PUT', path: '/api/session/:id', description: 'Update session', ticket: 'CEDA-34' },
+  { method: 'DELETE', path: '/api/session/:id', description: 'Delete session', ticket: 'CEDA-34' },
+  { method: 'GET', path: '/api/sessions', description: 'List sessions with filters', params: 'company, limit', ticket: 'CEDA-45' },
+  { method: 'POST', path: '/api/sessions/cleanup', description: 'Trigger session cleanup/expiration', ticket: 'CEDA-45' },
+  { method: 'POST', path: '/api/feedback', description: 'Submit feedback on prediction' },
+  { method: 'GET', path: '/api/stats', description: 'Get system statistics' },
+  { method: 'GET', path: '/api/patterns', description: 'Get patterns', params: 'user, company, project' },
+  { method: 'GET', path: '/api/patterns/:id', description: 'Get pattern by ID', params: 'user' },
+  { method: 'GET', path: '/api/patterns/:id/confidence', description: 'Get pattern confidence with decay', ticket: 'CEDA-32' },
+  { method: 'GET', path: '/api/patterns/:id/graduation', description: 'Get graduation status', ticket: 'CEDA-36' },
+  { method: 'POST', path: '/api/patterns/:id/check-graduation', description: 'Trigger graduation check', ticket: 'CEDA-36' },
+  { method: 'POST', path: '/api/patterns/:id/approve-graduation', description: 'Admin approve graduation', ticket: 'CEDA-36' },
+  { method: 'GET', path: '/api/patterns/graduation-candidates', description: 'List graduation candidates', ticket: 'CEDA-36' },
+  { method: 'POST', path: '/api/graduation/check-all', description: 'Run daily graduation check', ticket: 'CEDA-36' },
+  { method: 'GET', path: '/api/graduation/pending', description: 'Get pending approvals', ticket: 'CEDA-36' },
+  { method: 'POST', path: '/api/patterns', description: 'Create pattern with company scope', ticket: 'CEDA-30' },
+  { method: 'PUT', path: '/api/patterns/:id', description: 'Update pattern', ticket: 'CEDA-30' },
+  { method: 'DELETE', path: '/api/patterns/:id', description: 'Delete pattern', params: 'company, user', ticket: 'CEDA-30' },
+  { method: 'POST', path: '/api/ground', description: 'Receive execution feedback for grounding loop', ticket: 'CEDA-32' },
+  { method: 'POST', path: '/api/observe', description: 'Capture pattern observation', ticket: 'CEDA-35' },
+  { method: 'GET', path: '/api/observations/similar', description: 'Find similar observations', params: 'input, company', ticket: 'CEDA-35' },
+  { method: 'GET', path: '/api/observations/pattern/:id/stats', description: 'Pattern observation statistics', ticket: 'CEDA-35' },
+  { method: 'GET', path: '/api/observations/:id', description: 'Get observation by ID', ticket: 'CEDA-35' },
+  { method: 'GET', path: '/api/abstractions/suggest', description: 'Suggest abstractions for pattern', params: 'patternId', ticket: 'CEDA-37' },
+  { method: 'GET', path: '/api/insights/cross-domain', description: 'Get cross-domain insights', ticket: 'CEDA-37' },
+  { method: 'POST', path: '/api/abstractions/:id/apply', description: 'Apply abstraction to domain', ticket: 'CEDA-37' },
+  { method: 'GET', path: '/api/abstractions/:id/instances', description: 'Get abstraction instances', ticket: 'CEDA-37' },
+  { method: 'GET', path: '/api/abstractions/:id', description: 'Get abstraction by ID', ticket: 'CEDA-37' },
+  { method: 'GET', path: '/api/abstractions', description: 'List all abstractions', ticket: 'CEDA-37' },
+  { method: 'POST', path: '/api/abstractions/extract', description: 'Extract abstraction from patterns', ticket: 'CEDA-37' },
+  { method: 'POST', path: '/api/insights/generate', description: 'Generate cross-domain insights', ticket: 'CEDA-37' },
+  { method: 'POST', path: '/api/insights/:id/approve', description: 'Approve insight', ticket: 'CEDA-37' },
+  { method: 'GET', path: '/api/abstractions/audit', description: 'Get audit log', ticket: 'CEDA-37' },
+  { method: 'GET', path: '/api/abstractions/safety', description: 'Get safety settings', ticket: 'CEDA-37' },
+  { method: 'PUT', path: '/api/abstractions/safety', description: 'Update safety settings', ticket: 'CEDA-37' },
+  { method: 'POST', path: '/api/clustering/check', description: 'Trigger clustering for company', ticket: 'CEDA-41' },
+  { method: 'GET', path: '/api/clustering/orphans', description: 'Get orphan observations', ticket: 'CEDA-41' },
+  { method: 'GET', path: '/api/clustering/config', description: 'Get clustering configuration', ticket: 'CEDA-41' },
+  { method: 'POST', path: '/api/linking/wrap/:type/:id', description: 'Wrap pattern/observation as linkable node', ticket: 'CEDA-48' },
+  { method: 'POST', path: '/api/linking/link', description: 'Create link between entities', ticket: 'CEDA-48' },
+  { method: 'GET', path: '/api/patterns/:id/network', description: 'Get pattern network graph', ticket: 'CEDA-48' },
+  { method: 'GET', path: '/api/patterns/:id/related', description: 'Get related patterns', ticket: 'CEDA-48' },
+  { method: 'GET', path: '/api/linking/stats', description: 'Get linking service statistics', ticket: 'CEDA-48' },
+  { method: 'GET', path: '/api/analytics', description: 'Full analytics dashboard', params: 'company, period (day|week|month)', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics/metrics', description: 'Core metrics', params: 'company, period', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics/trends', description: 'Trend data', params: 'company, period', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics/patterns', description: 'Top patterns', params: 'company, period', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics/users', description: 'Active users', params: 'company, period', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics/system', description: 'System-wide analytics (admin only)', ticket: 'CEDA-50' },
+  { method: 'POST', path: '/api/herald/heartbeat', description: 'Herald context heartbeat' },
+  { method: 'GET', path: '/api/herald/contexts', description: 'Get Herald contexts' },
+  { method: 'POST', path: '/api/herald/insight', description: 'Share insight' },
+  { method: 'GET', path: '/api/herald/insights', description: 'Get insights' },
+  { method: 'POST', path: '/api/herald/reflect', description: 'Session reflection for pattern learning' },
+  { method: 'POST', path: '/api/herald/reflect/dry-run', description: 'Preview reflection without storing', ticket: 'CEDA-65' },
+  { method: 'DELETE', path: '/api/herald/forget', description: 'GDPR Article 17 - Right to erasure' },
+  { method: 'GET', path: '/api/herald/export', description: 'GDPR Article 20 - Data portability' },
+  { method: 'GET', path: '/api/anomalies', description: 'List anomalies with filtering', ticket: 'CEDA-52' },
+  { method: 'POST', path: '/api/anomalies/sweep', description: 'Trigger detection sweep', ticket: 'CEDA-52' },
+  { method: 'POST', path: '/api/anomalies/:id/acknowledge', description: 'Acknowledge an anomaly', ticket: 'CEDA-52' },
+  { method: 'POST', path: '/api/anomalies/:id/resolve', description: 'Resolve an anomaly', ticket: 'CEDA-52' },
+] as const;
+
+/**
+ * Render API documentation as HTML
+ */
+function renderDocsHtml(): string {
+  const groupedEndpoints: Record<string, typeof API_ENDPOINTS[number][]> = {};
+
+  for (const endpoint of API_ENDPOINTS) {
+    const category = endpoint.path.startsWith('/api/herald') ? 'Herald' :
+                     endpoint.path.startsWith('/api/patterns') ? 'Patterns' :
+                     endpoint.path.startsWith('/api/session') ? 'Sessions' :
+                     endpoint.path.startsWith('/api/observation') ? 'Observations' :
+                     endpoint.path.startsWith('/api/abstraction') ? 'Abstractions' :
+                     endpoint.path.startsWith('/api/insight') ? 'Insights' :
+                     endpoint.path.startsWith('/api/clustering') ? 'Clustering' :
+                     endpoint.path.startsWith('/api/linking') ? 'Linking' :
+                     endpoint.path.startsWith('/api/analytics') ? 'Analytics' :
+                     endpoint.path.startsWith('/api/graduation') ? 'Graduation' :
+                     endpoint.path.startsWith('/api/anomal') ? 'Anomalies' :
+                     endpoint.path.startsWith('/api/') ? 'Core API' :
+                     'System';
+
+    if (!groupedEndpoints[category]) {
+      groupedEndpoints[category] = [];
+    }
+    groupedEndpoints[category].push(endpoint);
+  }
+
+  const categoryOrder = ['System', 'Core API', 'Sessions', 'Patterns', 'Graduation', 'Observations',
+                         'Abstractions', 'Insights', 'Clustering', 'Linking', 'Analytics', 'Herald', 'Anomalies'];
+
+  let endpointRows = '';
+  for (const category of categoryOrder) {
+    const endpoints = groupedEndpoints[category];
+    if (!endpoints) continue;
+
+    endpointRows += `
+      <tr class="category-row">
+        <td colspan="5">${category}</td>
+      </tr>`;
+
+    for (const ep of endpoints) {
+      const methodClass = ep.method.toLowerCase();
+      const epAny = ep as { method: string; path: string; description: string; params?: string; ticket?: string };
+      endpointRows += `
+      <tr>
+        <td><span class="method ${methodClass}">${ep.method}</span></td>
+        <td class="path"><code>${ep.path}</code></td>
+        <td>${ep.description}</td>
+        <td class="params">${epAny.params || '-'}</td>
+        <td class="ticket">${epAny.ticket ? `<a href="https://github.com/Spilno-me/ceda/issues?q=${epAny.ticket}">${epAny.ticket}</a>` : '-'}</td>
+      </tr>`;
+    }
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CEDA API Documentation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; padding: 2rem; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #fff; }
+    .tagline { color: #888; margin-bottom: 2rem; }
+    .format-toggle { margin-bottom: 1.5rem; }
+    .format-toggle a { color: #4a9eff; text-decoration: none; margin-right: 1rem; }
+    .format-toggle a:hover { text-decoration: underline; }
+    table { width: 100%; border-collapse: collapse; background: #1a1a1a; border-radius: 8px; overflow: hidden; }
+    th { background: #2a2a2a; padding: 0.75rem 1rem; text-align: left; font-weight: 600; color: #fff; }
+    td { padding: 0.5rem 1rem; border-top: 1px solid #2a2a2a; }
+    .category-row { background: #1f1f1f; }
+    .category-row td { font-weight: 600; color: #4a9eff; padding: 0.75rem 1rem; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    code { background: #2a2a2a; padding: 0.15rem 0.4rem; border-radius: 3px; font-family: 'SF Mono', Monaco, monospace; font-size: 0.85rem; }
+    .path code { background: none; padding: 0; }
+    .method { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.75rem; font-weight: 600; min-width: 60px; text-align: center; }
+    .get { background: #1e3a5f; color: #61afef; }
+    .post { background: #2d4a3e; color: #98c379; }
+    .put { background: #4a3f2a; color: #e5c07b; }
+    .delete { background: #4a2a2a; color: #e06c75; }
+    .params { color: #888; font-size: 0.85rem; }
+    .ticket { font-size: 0.85rem; }
+    .ticket a { color: #888; text-decoration: none; }
+    .ticket a:hover { color: #4a9eff; }
+    .footer { text-align: center; color: #666; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #2a2a2a; }
+    .footer a { color: #4a9eff; text-decoration: none; }
+    @media (max-width: 768px) {
+      .params, .ticket { display: none; }
+      th:nth-child(4), th:nth-child(5) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>CEDA API</h1>
+    <p class="tagline">Cognitive Event-Driven Architecture - ${API_ENDPOINTS.length} endpoints</p>
+
+    <div class="format-toggle">
+      <a href="/docs?format=json">JSON format</a>
+      <a href="/">Back to home</a>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 80px">Method</th>
+          <th style="width: 300px">Path</th>
+          <th>Description</th>
+          <th style="width: 150px">Params</th>
+          <th style="width: 80px">Ticket</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${endpointRows}
+      </tbody>
+    </table>
+
+    <p class="footer">
+      <a href="https://github.com/Spilno-me/ceda">GitHub</a> ·
+      <a href="https://www.npmjs.com/package/@spilno/herald-mcp">Herald MCP</a> ·
+      Built by Spilno
+    </p>
+  </div>
+</body>
+</html>`;
+}
+
+/**
  * CEDA-43: Extract client IP from request headers
  */
 function getClientIp(req: http.IncomingMessage): string {
@@ -559,6 +759,30 @@ async function handleRequest(
         version: '1.0.0',
         ...health,
       });
+      return;
+    }
+
+    // API Documentation - dual format (HTML/JSON) via content negotiation
+    if ((url === '/docs' || url?.startsWith('/docs?')) && method === 'GET') {
+      const urlObj = new URL(url, `http://${req.headers.host || 'localhost'}`);
+      const formatParam = urlObj.searchParams.get('format');
+      const acceptHeader = req.headers.accept || '';
+
+      // Return JSON if: ?format=json OR Accept: application/json (and not text/html)
+      const wantsJson = formatParam === 'json' ||
+        (acceptHeader.includes('application/json') && !acceptHeader.includes('text/html'));
+
+      if (wantsJson) {
+        sendJson(res, 200, {
+          service: 'ceda',
+          version: '1.0.0',
+          endpoints: API_ENDPOINTS,
+          total: API_ENDPOINTS.length,
+        });
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(renderDocsHtml());
+      }
       return;
     }
 
@@ -4471,75 +4695,13 @@ async function handleRequest(
       return;
     }
 
-    // 404
-    sendJson(res, 404, { error: 'Not found', availableEndpoints: [
-      'GET  /health',
-      'POST /api/predict (requires company)',
-      'POST /api/refine',
-      'GET  /api/session/:id',
-      'PUT  /api/session/:id (CEDA-34: update session for stateless Herald)',
-      'DELETE /api/session/:id (CEDA-34: delete session)',
-      'GET  /api/sessions?company=X&limit=N (CEDA-45: list sessions with filters)',
-      'POST /api/sessions/cleanup (CEDA-45: trigger session cleanup/expiration)',
-      'POST /api/feedback',
-      'GET  /api/stats',
-      'GET  /api/patterns?user=X',
-      'GET  /api/patterns?user=X&company=Y&project=Z',
-      'GET  /api/patterns/:id?user=X',
-      'GET  /api/patterns/:id/confidence (CEDA-32: get pattern confidence with decay)',
-      'GET  /api/patterns/:id/graduation (CEDA-36: get graduation status)',
-      'POST /api/patterns/:id/check-graduation (CEDA-36: trigger graduation check)',
-      'POST /api/patterns/:id/approve-graduation (CEDA-36: admin approve graduation)',
-      'GET  /api/patterns/graduation-candidates (CEDA-36: list graduation candidates)',
-      'POST /api/graduation/check-all (CEDA-36: run daily graduation check)',
-      'GET  /api/graduation/pending (CEDA-36: get pending approvals)',
-      'POST /api/patterns (CEDA-30: create pattern with company scope)',
-      'PUT  /api/patterns/:id (CEDA-30: update pattern with company scope)',
-      'DELETE /api/patterns/:id?company=X&user=Y (CEDA-30: delete pattern)',
-      'POST /api/ground (CEDA-32: receive execution feedback for grounding loop)',
-      'POST /api/observe (CEDA-35: capture pattern observation)',
-      'GET  /api/observations/similar?input=X&company=Y (CEDA-35: find similar observations)',
-      'GET  /api/observations/pattern/:id/stats (CEDA-35: pattern observation statistics)',
-      'GET  /api/observations/:id (CEDA-35: get observation by ID)',
-      'GET  /api/abstractions/suggest?patternId=X (CEDA-37: suggest abstractions for pattern)',
-      'GET  /api/insights/cross-domain (CEDA-37: get cross-domain insights)',
-      'POST /api/abstractions/:id/apply (CEDA-37: apply abstraction to domain)',
-      'GET  /api/abstractions/:id/instances (CEDA-37: get abstraction instances)',
-      'GET  /api/abstractions/:id (CEDA-37: get abstraction by ID)',
-      'GET  /api/abstractions (CEDA-37: list all abstractions)',
-      'POST /api/abstractions/extract (CEDA-37: extract abstraction from patterns)',
-      'POST /api/insights/generate (CEDA-37: generate cross-domain insights)',
-      'POST /api/insights/:id/approve (CEDA-37: approve insight)',
-      'GET  /api/abstractions/audit (CEDA-37: get audit log)',
-      'GET  /api/abstractions/safety (CEDA-37: get safety settings)',
-      'PUT  /api/abstractions/safety (CEDA-37: update safety settings)',
-      'POST /api/clustering/check (CEDA-41: trigger clustering for company)',
-      'GET  /api/clustering/orphans (CEDA-41: get orphan observations)',
-      'GET  /api/clustering/config (CEDA-41: get clustering configuration)',
-      'POST /api/linking/wrap/:type/:id (CEDA-48: wrap pattern/observation as linkable node)',
-      'POST /api/linking/link (CEDA-48: create link between entities)',
-      'GET  /api/patterns/:id/network (CEDA-48: get pattern network graph)',
-      'GET  /api/patterns/:id/related (CEDA-48: get related patterns)',
-      'GET  /api/linking/stats (CEDA-48: get linking service statistics)',
-      'GET  /api/analytics?company=X&period=day|week|month (CEDA-50: full analytics dashboard)',
-      'GET  /api/analytics/metrics?company=X&period=day|week|month (CEDA-50: core metrics)',
-      'GET  /api/analytics/trends?company=X&period=day|week|month (CEDA-50: trend data)',
-      'GET  /api/analytics/patterns?company=X&period=day|week|month (CEDA-50: top patterns)',
-      'GET  /api/analytics/users?company=X&period=day|week|month (CEDA-50: active users)',
-      'GET  /api/analytics/system (CEDA-50: system-wide analytics, admin only)',
-      'POST /api/herald/heartbeat',
-      'GET  /api/herald/contexts',
-      'POST /api/herald/insight',
-      'GET  /api/herald/insights',
-      'POST /api/herald/reflect (Session reflection for pattern learning)',
-          'POST /observe',
-          'POST /detect',
-          'POST /learn',
-          'GET  /api/anomalies (CEDA-52: list anomalies with optional filtering)',
-          'POST /api/anomalies/sweep (CEDA-52: trigger detection sweep)',
-          'POST /api/anomalies/:id/acknowledge (CEDA-52: acknowledge an anomaly)',
-          'POST /api/anomalies/:id/resolve (CEDA-52: resolve an anomaly)',
-        ]});
+    // 404 - reference API_ENDPOINTS constant
+    sendJson(res, 404, {
+      error: 'Not found',
+      message: 'See /docs for available endpoints',
+      docsUrl: '/docs',
+      availableEndpoints: API_ENDPOINTS.map(ep => `${ep.method.padEnd(6)} ${ep.path}`),
+    });
   } catch (error) {
     console.error('[CEDA] Error:', error);
     sendJson(res, 500, {
