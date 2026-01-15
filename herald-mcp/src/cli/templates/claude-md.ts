@@ -12,8 +12,8 @@ export interface HeraldContext {
 }
 
 export interface LearnedPatterns {
-  patterns: Array<{ insight: string; reinforcement?: string }>;
-  antipatterns: Array<{ insight: string; warning?: string }>;
+  patterns: Array<{ insight: string; reinforcement?: string; scope?: string }>;
+  antipatterns: Array<{ insight: string; warning?: string; scope?: string }>;
 }
 
 export const HERALD_SECTION_MARKER = "## Herald Integration";
@@ -44,11 +44,13 @@ export function renderHeraldSection(context: HeraldContext, learnedPatterns?: Le
 
   if (learnedPatterns && (learnedPatterns.antipatterns.length > 0 || learnedPatterns.patterns.length > 0)) {
     learnedSection = "### Learned from Past Sessions\n\n";
+    learnedSection += `*Inheritance: ${context.user}→${context.project}→${context.company}*\n\n`;
 
     if (learnedPatterns.antipatterns.length > 0) {
       learnedSection += "**Antipatterns (AVOID THESE):**\n";
       learnedPatterns.antipatterns.slice(0, 5).forEach((ap, i) => {
-        learnedSection += `${i + 1}. ${ap.insight}`;
+        const scopeTag = ap.scope ? ` [${ap.scope}]` : "";
+        learnedSection += `${i + 1}. ${ap.insight}${scopeTag}`;
         if (ap.warning) learnedSection += ` → ${ap.warning}`;
         learnedSection += "\n";
       });
@@ -58,7 +60,8 @@ export function renderHeraldSection(context: HeraldContext, learnedPatterns?: Le
     if (learnedPatterns.patterns.length > 0) {
       learnedSection += "**Patterns (DO THESE):**\n";
       learnedPatterns.patterns.slice(0, 5).forEach((p, i) => {
-        learnedSection += `${i + 1}. ${p.insight}`;
+        const scopeTag = p.scope ? ` [${p.scope}]` : "";
+        learnedSection += `${i + 1}. ${p.insight}${scopeTag}`;
         if (p.reinforcement) learnedSection += ` → ${p.reinforcement}`;
         learnedSection += "\n";
       });
@@ -75,26 +78,55 @@ export function renderHeraldSection(context: HeraldContext, learnedPatterns?: Le
 export async function fetchLearnedPatterns(
   cedaUrl: string,
   company: string,
-  project: string
+  project: string,
+  user: string = "default"
 ): Promise<LearnedPatterns | null> {
   try {
-    const response = await fetch(
-      `${cedaUrl}/api/herald/reflections?company=${company}&project=${project}&limit=10`
-    );
+    // Cascade: user → project → company (more specific wins)
+    const queries = [
+      `${cedaUrl}/api/herald/reflections?company=${company}&project=${project}&user=${user}&limit=10`,
+      `${cedaUrl}/api/herald/reflections?company=${company}&project=${project}&limit=10`,
+      `${cedaUrl}/api/herald/reflections?company=${company}&limit=10`,
+    ];
 
-    if (!response.ok) {
-      return null;
+    const seenInsights = new Set<string>();
+    const patterns: Array<{ insight: string; reinforcement?: string; scope?: string }> = [];
+    const antipatterns: Array<{ insight: string; warning?: string; scope?: string }> = [];
+    const scopes = ["user", "project", "company"];
+
+    for (let i = 0; i < queries.length; i++) {
+      try {
+        const response = await fetch(queries[i]);
+        if (!response.ok) continue;
+
+        const data = await response.json() as {
+          patterns?: Array<{ insight: string; reinforcement?: string }>;
+          antipatterns?: Array<{ insight: string; warning?: string }>;
+        };
+
+        const scope = scopes[i];
+
+        for (const p of data.patterns || []) {
+          const key = p.insight.toLowerCase().trim();
+          if (!seenInsights.has(key)) {
+            seenInsights.add(key);
+            patterns.push({ ...p, scope });
+          }
+        }
+
+        for (const ap of data.antipatterns || []) {
+          const key = ap.insight.toLowerCase().trim();
+          if (!seenInsights.has(key)) {
+            seenInsights.add(key);
+            antipatterns.push({ ...ap, scope });
+          }
+        }
+      } catch {
+        // Continue to next level
+      }
     }
 
-    const data = await response.json() as {
-      patterns?: Array<{ insight: string; reinforcement?: string }>;
-      antipatterns?: Array<{ insight: string; warning?: string }>;
-    };
-
-    return {
-      patterns: data.patterns || [],
-      antipatterns: data.antipatterns || [],
-    };
+    return { patterns, antipatterns };
   } catch {
     return null;
   }

@@ -11,7 +11,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
   Tool,
+  Resource,
 } from "@modelcontextprotocol/sdk/types.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { homedir } from "os";
@@ -781,7 +784,7 @@ async function runCLI(args: string[]): Promise<void> {
 
 const server = new Server(
   { name: "herald", version: VERSION, description: HERALD_DESCRIPTION },
-  { capabilities: { tools: {} } }
+  { capabilities: { tools: {}, resources: {} } }
 );
 
 const tools: Tool[] = [
@@ -1274,6 +1277,140 @@ Returns all patterns for the current context (company/project/user) in the speci
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools };
+});
+
+// ============================================
+// MCP RESOURCES - Auto-readable by Claude Code
+// ============================================
+
+// Helper to fetch patterns with cascade (reused from herald_patterns tool)
+async function fetchPatternsWithCascade(): Promise<{patterns: string[], antipatterns: string[], context: string}> {
+  type PatternEntry = {insight: string; scope?: string};
+  const seenInsights = new Set<string>();
+  const patterns: string[] = [];
+  const antipatterns: string[] = [];
+
+  const queries = [
+    { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=10` },
+    { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=10` },
+    { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=10` },
+  ];
+
+  for (const { scope, url } of queries) {
+    try {
+      const result = await callCedaAPI(url);
+      const scopePatterns = (result.patterns as PatternEntry[]) || [];
+      const scopeAntipatterns = (result.antipatterns as PatternEntry[]) || [];
+
+      for (const p of scopePatterns) {
+        const key = p.insight.toLowerCase().trim();
+        if (!seenInsights.has(key)) {
+          seenInsights.add(key);
+          patterns.push(`${p.insight} [${scope}]`);
+        }
+      }
+      for (const ap of scopeAntipatterns) {
+        const key = ap.insight.toLowerCase().trim();
+        if (!seenInsights.has(key)) {
+          seenInsights.add(key);
+          antipatterns.push(`${ap.insight} [${scope}]`);
+        }
+      }
+    } catch {
+      // Continue if a level fails
+    }
+  }
+
+  return { patterns, antipatterns, context: `${HERALD_USER}→${HERALD_PROJECT}→${HERALD_COMPANY}` };
+}
+
+server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  const resources: Resource[] = [
+    {
+      uri: "herald://patterns",
+      name: "Herald Learned Patterns",
+      description: `Patterns and antipatterns learned from past sessions for ${HERALD_USER}→${HERALD_PROJECT}→${HERALD_COMPANY}. READ THIS AT SESSION START.`,
+      mimeType: "text/plain",
+    },
+    {
+      uri: "herald://context",
+      name: "Herald Context",
+      description: "Current Herald context configuration (company/project/user)",
+      mimeType: "application/json",
+    },
+  ];
+  return { resources };
+});
+
+server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  const { uri } = request.params;
+
+  if (uri === "herald://patterns") {
+    try {
+      const { patterns, antipatterns, context } = await fetchPatternsWithCascade();
+
+      let content = `# Herald Patterns for ${context}\n\n`;
+      content += `**READ THIS FIRST** - These are learned patterns from past sessions.\n\n`;
+
+      if (antipatterns.length > 0) {
+        content += `## ⚠️ ANTIPATTERNS - AVOID THESE\n`;
+        antipatterns.forEach((ap, i) => {
+          content += `${i + 1}. ${ap}\n`;
+        });
+        content += `\n`;
+      }
+
+      if (patterns.length > 0) {
+        content += `## ✓ PATTERNS - DO THESE\n`;
+        patterns.forEach((p, i) => {
+          content += `${i + 1}. ${p}\n`;
+        });
+        content += `\n`;
+      }
+
+      if (patterns.length === 0 && antipatterns.length === 0) {
+        content += `No patterns learned yet. Capture patterns with "herald reflect" when you notice friction or flow.\n`;
+      }
+
+      content += `\n---\n*Auto-loaded from CEDA. Call herald_pattern_feedback() when a pattern helps.*\n`;
+
+      return {
+        contents: [{
+          uri,
+          mimeType: "text/plain",
+          text: content,
+        }],
+      };
+    } catch (error) {
+      return {
+        contents: [{
+          uri,
+          mimeType: "text/plain",
+          text: `Failed to load patterns: ${error}\n\nCEDA may be unavailable.`,
+        }],
+      };
+    }
+  }
+
+  if (uri === "herald://context") {
+    const context = {
+      company: HERALD_COMPANY,
+      project: HERALD_PROJECT,
+      user: HERALD_USER,
+      vault: HERALD_VAULT || null,
+      autoDerived: CONTEXT_AUTO_DERIVED,
+      cedaUrl: CEDA_API_URL,
+    };
+    return {
+      contents: [{
+        uri,
+        mimeType: "application/json",
+        text: JSON.stringify(context, null, 2),
+      }],
+    };
+  }
+
+  throw new Error(`Unknown resource: ${uri}`);
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -1926,26 +2063,57 @@ Herald will:
       }
 
       case "herald_patterns": {
-        // Query learned patterns for current context
+        // Query learned patterns with inheritance: user → project → company
+        // More specific patterns take precedence over broader ones
         try {
-          const reflectionsResult = await callCedaAPI(
-            `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=20`
-          );
+          type PatternEntry = {insight: string; signal?: string; reinforcement?: string; warning?: string; scope?: string};
+
+          // Helper to dedupe patterns by insight text (first occurrence wins)
+          const seenInsights = new Set<string>();
+          const dedupePatterns = (items: PatternEntry[], scope: string): PatternEntry[] => {
+            return items.filter(item => {
+              const key = item.insight.toLowerCase().trim();
+              if (seenInsights.has(key)) return false;
+              seenInsights.add(key);
+              return true;
+            }).map(item => ({ ...item, scope }));
+          };
+
+          // Cascade queries: user (most specific) → project → company (broadest)
+          const queries = [
+            { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=10` },
+            { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=10` },
+            { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=10` },
+          ];
+
+          const patterns: PatternEntry[] = [];
+          const antipatterns: PatternEntry[] = [];
+
+          // Query each level, dedupe as we go (user patterns win over project, project over company)
+          for (const { scope, url } of queries) {
+            try {
+              const result = await callCedaAPI(url);
+              const scopePatterns = (result.patterns as PatternEntry[]) || [];
+              const scopeAntipatterns = (result.antipatterns as PatternEntry[]) || [];
+
+              patterns.push(...dedupePatterns(scopePatterns, scope));
+              antipatterns.push(...dedupePatterns(scopeAntipatterns, scope));
+            } catch {
+              // Continue if a level fails (e.g., user not set)
+            }
+          }
 
           const metaResult = await callCedaAPI("/api/herald/meta-patterns");
-
-          // Format for Claude consumption
-          const patterns = (reflectionsResult.patterns as Array<{insight: string; signal?: string; reinforcement?: string}>) || [];
-          const antipatterns = (reflectionsResult.antipatterns as Array<{insight: string; signal?: string; warning?: string}>) || [];
           const metaPatterns = (metaResult.metaPatterns as Array<{recommendedMethod: string; confidence: number}>) || [];
 
-          // Build readable summary
-          let summary = `## Learned Patterns for ${HERALD_COMPANY}/${HERALD_PROJECT}\n\n`;
+          // Build readable summary with scope indicators
+          let summary = `## Learned Patterns for ${HERALD_USER}→${HERALD_PROJECT}→${HERALD_COMPANY}\n\n`;
 
           if (antipatterns.length > 0) {
             summary += `### ⚠️ Antipatterns (avoid these)\n`;
             antipatterns.slice(0, 5).forEach((ap, i) => {
-              summary += `${i + 1}. ${ap.insight}`;
+              const scopeTag = ap.scope ? ` [${ap.scope}]` : "";
+              summary += `${i + 1}. ${ap.insight}${scopeTag}`;
               if (ap.warning) summary += `\n   → ${ap.warning}`;
               summary += `\n`;
             });
@@ -1955,7 +2123,8 @@ Herald will:
           if (patterns.length > 0) {
             summary += `### ✓ Patterns (do these)\n`;
             patterns.slice(0, 5).forEach((p, i) => {
-              summary += `${i + 1}. ${p.insight}`;
+              const scopeTag = p.scope ? ` [${p.scope}]` : "";
+              summary += `${i + 1}. ${p.insight}${scopeTag}`;
               if (p.reinforcement) summary += `\n   → ${p.reinforcement}`;
               summary += `\n`;
             });
@@ -1969,7 +2138,7 @@ Herald will:
           }
 
           if (patterns.length === 0 && antipatterns.length === 0) {
-            summary = `No patterns learned yet for ${HERALD_COMPANY}/${HERALD_PROJECT}.\n\nCapture patterns with "herald reflect" or "herald simulate" when you notice friction or flow.`;
+            summary = `No patterns learned yet for ${HERALD_USER}→${HERALD_PROJECT}→${HERALD_COMPANY}.\n\nCapture patterns with "herald reflect" or "herald simulate" when you notice friction or flow.`;
           }
 
           return {

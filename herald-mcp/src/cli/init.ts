@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join, basename } from "path";
 import { updateClaudeMdContent, fetchLearnedPatterns, type HeraldContext } from "./templates/claude-md.js";
+import { getHookifyRulesContent } from "./templates/hookify-rules.js";
 
 function buildHeraldConfig(company: string, project: string) {
   return {
@@ -38,17 +39,21 @@ Usage:
 
 That's it. Company and project default to folder name.
 
-Options (optional):
+Options:
+  --sync, -s          Sync patterns to CLAUDE.md (quick update, no full init)
+  --hookify           Generate hookify rules for auto pattern reminders
   --company, -c       Override company (default: folder name)
   --project, -p       Override project (default: folder name)
+  --user, -u          Override user (default: "default")
   --force, -f         Overwrite existing config
   --no-claude-md      Skip CLAUDE.md modification
   --help, -h          Show this help
 
 Examples:
   npx @spilno/herald-mcp@latest init
+  npx @spilno/herald-mcp@latest init --sync          # Just sync patterns
+  npx @spilno/herald-mcp@latest init --hookify       # Add auto-reminders
   npx @spilno/herald-mcp@latest init --company goprint
-  npx @spilno/herald-mcp@latest init --company goprint --project kiosk
 
 Then start Claude Code and say "herald health" to verify.
 `);
@@ -61,11 +66,13 @@ export interface InitOptions {
   project?: string;
   user?: string;
   noClaudeMd?: boolean;
+  sync?: boolean;  // Just sync patterns to CLAUDE.md
+  hookify?: boolean;  // Generate hookify rules
 }
 
 export function parseInitArgs(args: string[]): InitOptions {
   const options: InitOptions = {};
-  
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") {
@@ -80,10 +87,59 @@ export function parseInitArgs(args: string[]): InitOptions {
       options.user = args[++i];
     } else if (arg === "--no-claude-md") {
       options.noClaudeMd = true;
+    } else if (arg === "--sync" || arg === "-s") {
+      options.sync = true;
+    } else if (arg === "--hookify") {
+      options.hookify = true;
     }
   }
-  
+
   return options;
+}
+
+async function runSyncPatterns(cwd: string, claudeMdPath: string, options: InitOptions): Promise<void> {
+  const projectName = basename(cwd);
+  const mcpJsonPath = join(cwd, ".mcp.json");
+
+  // Try to get context from .mcp.json, fall back to folder name
+  let company = options.company || projectName;
+  let project = options.project || projectName;
+  let user = options.user || "default";
+
+  if (existsSync(mcpJsonPath)) {
+    try {
+      const mcpConfig = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+      const heraldEnv = mcpConfig.mcpServers?.herald?.env || {};
+      company = options.company || heraldEnv.HERALD_COMPANY || projectName;
+      project = options.project || heraldEnv.HERALD_PROJECT || projectName;
+      user = options.user || heraldEnv.HERALD_USER || "default";
+    } catch { /* ignore */ }
+  }
+
+  const context: HeraldContext = { company, project, user };
+  const cedaUrl = "https://getceda.com";
+
+  console.log(`Syncing patterns for ${user}→${project}→${company}...`);
+  const learnedPatterns = await fetchLearnedPatterns(cedaUrl, company, project, user);
+
+  if (!learnedPatterns) {
+    console.log("Failed to fetch patterns from CEDA");
+    return;
+  }
+
+  const totalPatterns = learnedPatterns.patterns.length + learnedPatterns.antipatterns.length;
+  console.log(`Found ${totalPatterns} patterns (${learnedPatterns.patterns.length} success, ${learnedPatterns.antipatterns.length} antipatterns)`);
+
+  let existingClaudeMd: string | null = null;
+  if (existsSync(claudeMdPath)) {
+    existingClaudeMd = readFileSync(claudeMdPath, "utf-8");
+  }
+
+  const updatedClaudeMd = updateClaudeMdContent(existingClaudeMd, context, projectName, learnedPatterns);
+  writeFileSync(claudeMdPath, updatedClaudeMd, "utf-8");
+
+  console.log(`✓ CLAUDE.md updated with ${totalPatterns} patterns`);
+  console.log(`\nPatterns are now baked into CLAUDE.md for offline access.`);
 }
 
 export async function runInit(args: string[] = []): Promise<void> {
@@ -93,11 +149,16 @@ export async function runInit(args: string[] = []): Promise<void> {
     printInitHelp();
     return;
   }
-  
+
   const cwd = process.cwd();
   const projectName = basename(cwd);
-  const mcpJsonPath = join(cwd, ".mcp.json");  // Correct location for project MCP servers
+  const mcpJsonPath = join(cwd, ".mcp.json");
   const claudeMdPath = join(cwd, "CLAUDE.md");
+
+  // Quick sync mode: just update CLAUDE.md with latest patterns
+  if (options.sync) {
+    return runSyncPatterns(cwd, claudeMdPath, options);
+  }
 
   // Zero-config: derive from folder name, flags override
   const company = options.company || projectName;
@@ -186,7 +247,24 @@ To overwrite:
       console.log("Created CLAUDE.md with Herald integration");
     }
   }
-  
+
+  // Generate hookify rules if requested
+  if (options.hookify) {
+    const claudeDir = join(cwd, ".claude");
+    if (!existsSync(claudeDir)) {
+      mkdirSync(claudeDir, { recursive: true });
+    }
+
+    const hookifyRules = getHookifyRulesContent();
+    for (const rule of hookifyRules) {
+      const rulePath = join(claudeDir, rule.filename);
+      writeFileSync(rulePath, rule.content, "utf-8");
+    }
+    console.log(`✓ Created ${hookifyRules.length} hookify rules in .claude/`);
+    console.log("  - Pattern check reminder on prompts");
+    console.log("  - Pattern capture reminder on session end");
+  }
+
   console.log(`
 ✓ Herald configured
 
