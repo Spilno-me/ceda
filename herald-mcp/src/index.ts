@@ -18,7 +18,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { homedir, userInfo } from "os";
-import { join, basename } from "path";
+import { join, basename, dirname } from "path";
+import { createHash } from "crypto";
 import * as readline from "readline";
 
 import { runInit } from "./cli/init.js";
@@ -54,13 +55,127 @@ function deriveTags(): string[] {
   }
 }
 
+// ADR-001: Git-based trust model
+// Git remote = unforgeable identity. Can't claim repo access without having it.
+
+type TrustLevel = 'HIGH' | 'LOW';
+
+interface GitInfo {
+  remote: string | null;
+  org: string | null;
+  repo: string | null;
+}
+
+function findGitRoot(startPath: string): string | null {
+  let current = startPath;
+  while (current !== '/') {
+    if (existsSync(join(current, '.git'))) {
+      return current;
+    }
+    current = dirname(current);
+  }
+  return null;
+}
+
+function getGitRemote(): GitInfo {
+  try {
+    const gitRoot = findGitRoot(process.cwd());
+    if (!gitRoot) return { remote: null, org: null, repo: null };
+
+    const configPath = join(gitRoot, '.git', 'config');
+    if (!existsSync(configPath)) return { remote: null, org: null, repo: null };
+
+    const config = readFileSync(configPath, 'utf-8');
+
+    // Parse [remote "origin"] url = ...
+    const remoteMatch = config.match(/\[remote "origin"\][^\[]*url\s*=\s*(.+)/m);
+    if (!remoteMatch) return { remote: null, org: null, repo: null };
+
+    const remoteUrl = remoteMatch[1].trim();
+
+    // Normalize: git@github.com:org/repo.git → github.com/org/repo
+    // https://github.com/org/repo.git → github.com/org/repo
+    let normalized = remoteUrl
+      .replace(/^git@/, '')
+      .replace(/^https?:\/\//, '')
+      .replace(/:/, '/')
+      .replace(/\.git$/, '');
+
+    // Extract org and repo
+    const parts = normalized.split('/');
+    const repo = parts.pop() || null;
+    const org = parts.pop() || null;
+
+    return { remote: normalized, org, repo };
+  } catch {
+    return { remote: null, org: null, repo: null };
+  }
+}
+
+function hashTag(input: string): string {
+  // Create short, deterministic hash for tag
+  // "github.com/Spilno-me/ceda" → "ceda-a7f3b2"
+  const hash = createHash('sha256').update(input).digest('hex').slice(0, 6);
+  const name = input.split('/').pop() || 'unknown';
+  return `${name}-${hash}`;
+}
+
+interface TagSet {
+  tags: string[];
+  trust: TrustLevel;
+  source: 'git' | 'stored' | 'path' | 'env';
+  propagates: boolean;
+  gitInfo?: GitInfo;
+}
+
+function deriveTagSet(): TagSet {
+  // 1. Check env vars (explicit override)
+  if (process.env.HERALD_COMPANY) {
+    return {
+      tags: [process.env.HERALD_COMPANY, process.env.HERALD_PROJECT].filter(Boolean) as string[],
+      trust: 'LOW',  // Env vars can be set by anyone
+      source: 'env',
+      propagates: false
+    };
+  }
+
+  // 2. Check Git remote (HIGH trust)
+  const gitInfo = getGitRemote();
+  if (gitInfo.remote) {
+    return {
+      tags: [
+        gitInfo.org || 'unknown',
+        gitInfo.repo || 'unknown',
+        hashTag(gitInfo.remote)  // Unique, unforgeable tag
+      ],
+      trust: 'HIGH',
+      source: 'git',
+      propagates: true,
+      gitInfo
+    };
+  }
+
+  // 3. Fallback to path (LOW trust)
+  return {
+    tags: deriveTags(),
+    trust: 'LOW',
+    source: 'path',
+    propagates: false
+  };
+}
+
 // CEDA-71: Context persistence - read/write .mcp.json
+// ADR-001: Now includes trust level from git
 interface HeraldContext {
   tags: string[];
   user: string;
+  trust?: TrustLevel;
+  source?: 'git' | 'stored' | 'path' | 'env';
+  propagates?: boolean;
   derived?: boolean;
   derivedFrom?: string;
   storedAt?: string;
+  gitRemote?: string;
 }
 
 interface McpJson {
@@ -85,7 +200,7 @@ function readMcpJson(): McpJson | null {
   }
 }
 
-function persistContext(context: { tags: string[]; user: string }): void {
+function persistContext(tagSet: TagSet, user: string): void {
   const mcpPath = getMcpJsonPath();
 
   let mcpJson: McpJson = {};
@@ -99,61 +214,83 @@ function persistContext(context: { tags: string[]; user: string }): void {
   }
 
   // Add herald context section (preserve existing mcpServers)
+  // ADR-001: Include trust level and git info
   mcpJson.herald = {
     ...mcpJson.herald,
     context: {
-      tags: context.tags,
-      user: context.user,
+      tags: tagSet.tags,
+      user,
+      trust: tagSet.trust,
+      source: tagSet.source,
+      propagates: tagSet.propagates,
       derived: true,
-      derivedFrom: 'path',
-      storedAt: new Date().toISOString()
+      derivedFrom: tagSet.source,
+      storedAt: new Date().toISOString(),
+      gitRemote: tagSet.gitInfo?.remote || undefined
     }
   };
 
   writeFileSync(mcpPath, JSON.stringify(mcpJson, null, 2));
-  console.error(`[Herald] Context stored in .mcp.json: tags=[${context.tags.join(', ')}]`);
+  console.error(`[Herald] Context stored: tags=[${tagSet.tags.join(', ')}] trust=${tagSet.trust} source=${tagSet.source}`);
 }
 
 interface LoadedContext {
   tags: string[];
   user: string;
-  source: 'env' | 'stored' | 'derived';
+  trust: TrustLevel;
+  source: 'git' | 'stored' | 'path' | 'env';
+  propagates: boolean;
+  gitRemote?: string;
 }
 
 function loadOrDeriveContext(): LoadedContext {
-  // 1. Check env vars (explicit override - highest priority)
+  const user = process.env.HERALD_USER || deriveUser();
+
+  // 1. Check env vars (explicit override - highest priority, but LOW trust)
   if (process.env.HERALD_COMPANY) {
     return {
       tags: [process.env.HERALD_COMPANY, process.env.HERALD_PROJECT].filter(Boolean) as string[],
-      user: process.env.HERALD_USER || deriveUser(),
-      source: 'env'
+      user,
+      trust: 'LOW',
+      source: 'env',
+      propagates: false
     };
   }
 
-  // 2. Check .mcp.json for stored context
+  // 2. Check .mcp.json for stored context (preserve user's config)
   const mcpJson = readMcpJson();
   if (mcpJson?.herald?.context?.tags?.length) {
+    const stored = mcpJson.herald.context;
     return {
-      tags: mcpJson.herald.context.tags,
-      user: mcpJson.herald.context.user || deriveUser(),
-      source: 'stored'
+      tags: stored.tags,
+      user: stored.user || user,
+      trust: stored.trust || 'LOW',
+      source: 'stored',
+      propagates: stored.propagates || false,
+      gitRemote: stored.gitRemote
     };
   }
 
-  // 3. Derive from path
-  const tags = deriveTags();
-  const user = deriveUser();
+  // 3. Derive fresh (ADR-001: use git if available)
+  const tagSet = deriveTagSet();
 
-  // Store for next time (if we have tags and .mcp.json exists or we can create it)
-  if (tags.length > 0) {
+  // Store for next time (only if no stored context exists)
+  if (tagSet.tags.length > 0 && !mcpJson?.herald?.context) {
     try {
-      persistContext({ tags, user });
+      persistContext(tagSet, user);
     } catch {
       // Silent fail - don't break startup if we can't write
     }
   }
 
-  return { tags, user, source: 'derived' };
+  return {
+    tags: tagSet.tags,
+    user,
+    trust: tagSet.trust,
+    source: tagSet.source,
+    propagates: tagSet.propagates,
+    gitRemote: tagSet.gitInfo?.remote || undefined
+  };
 }
 
 // Load context once at startup
@@ -162,14 +299,26 @@ const LOADED_CONTEXT = loadOrDeriveContext();
 // User is always known
 const HERALD_USER = LOADED_CONTEXT.user;
 
-// Tags from context (env > stored > derived)
+// Tags from context (env > stored > git > path)
 const HERALD_TAGS = LOADED_CONTEXT.tags;
 const HERALD_COMPANY = HERALD_TAGS[0] || "";
 const HERALD_PROJECT = HERALD_TAGS[1] || HERALD_TAGS[0] || "";
 
-// Track context source for telemetry
-const CONTEXT_SOURCE = LOADED_CONTEXT.source;
-const CONTEXT_AUTO_DERIVED = CONTEXT_SOURCE === 'derived';
+// ADR-001: Trust level determines pattern propagation
+// These are mutable - verification with CEDA may upgrade/downgrade trust
+let TRUST_LEVEL: TrustLevel = LOADED_CONTEXT.trust;
+let PROPAGATES: boolean = LOADED_CONTEXT.propagates;
+let CONTEXT_SOURCE: 'git' | 'stored' | 'path' | 'env' | 'verified' = LOADED_CONTEXT.source;
+const GIT_REMOTE = LOADED_CONTEXT.gitRemote;
+
+// Server-verified context (set after /api/auth/verify call)
+let VERIFIED_CONTEXT: {
+  verified: boolean;
+  company?: string;
+  project?: string;
+  trust?: TrustLevel;
+  tags?: string[];
+} | null = null;
 
 // Offspring vault context (for Avatar mode)
 const HERALD_VAULT = process.env.HERALD_VAULT || "";
@@ -178,7 +327,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.30.0";
+const VERSION = "1.31.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -1519,7 +1668,11 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       project: HERALD_PROJECT,
       user: HERALD_USER,
       vault: HERALD_VAULT || null,
-      autoDerived: CONTEXT_AUTO_DERIVED,
+      tags: HERALD_TAGS,
+      trust: TRUST_LEVEL,
+      source: CONTEXT_SOURCE,
+      propagates: PROPAGATES,
+      gitRemote: GIT_REMOTE,
       cedaUrl: CEDA_API_URL,
     };
     return {
@@ -1613,13 +1766,17 @@ Herald will:
           project: HERALD_PROJECT,
           user: HERALD_USER,
           vault: HERALD_VAULT || "(not set)",
-          autoDerived: CONTEXT_AUTO_DERIVED,
+          tags: HERALD_TAGS,
+          trust: TRUST_LEVEL,
+          source: CONTEXT_SOURCE,
+          propagates: PROPAGATES,
+          gitRemote: GIT_REMOTE,
         };
 
         const warnings: string[] = [];
-        if (CONTEXT_AUTO_DERIVED) {
-          warnings.push(`Context auto-derived from folder: ${HERALD_COMPANY}/${HERALD_PROJECT}`);
-          warnings.push("Run 'npx @spilno/herald-mcp init' for persistent config");
+        if (CONTEXT_SOURCE === 'path') {
+          warnings.push(`Context derived from folder path (LOW trust)`);
+          warnings.push("Add git remote for HIGH trust context");
         }
         if (!process.env.CEDA_URL && !process.env.HERALD_API_URL) {
           warnings.push("Using default CEDA_URL (getceda.com) - set CEDA_URL for custom endpoint");
@@ -2149,7 +2306,9 @@ Herald will:
                 context: {
                   company: HERALD_COMPANY,
                   project: HERALD_PROJECT,
-                  autoDerived: CONTEXT_AUTO_DERIVED,
+                  tags: HERALD_TAGS,
+                  trust: TRUST_LEVEL,
+                  propagates: PROPAGATES,
                 },
                 ...result,
               }, null, 2)
@@ -2764,6 +2923,62 @@ async function autoSyncBuffer(): Promise<void> {
   }
 }
 
+/**
+ * CEDA-82: Verify trust with CEDA server
+ * If user registered via GitHub OAuth and has access to current repo,
+ * CEDA returns verified context with HIGH trust.
+ * Otherwise, trust remains as locally detected.
+ */
+async function verifyWithCeda(): Promise<void> {
+  // Only verify if we have a git remote (potential HIGH trust)
+  if (!GIT_REMOTE) {
+    console.error(`[Herald] No git remote - skipping verification (trust: ${TRUST_LEVEL})`);
+    return;
+  }
+
+  try {
+    const result = await callCedaAPI("/api/auth/verify", "POST", {
+      gitRemote: GIT_REMOTE,
+      user: HERALD_USER,
+    });
+
+    if (result.verified === true && result.context) {
+      // Server verified - user has access to this repo
+      const ctx = result.context as Record<string, unknown>;
+      VERIFIED_CONTEXT = {
+        verified: true,
+        company: ctx.company as string,
+        project: ctx.project as string,
+        trust: ctx.trust as TrustLevel,
+        tags: ctx.tags as string[],
+      };
+
+      // Upgrade trust to server-verified
+      TRUST_LEVEL = VERIFIED_CONTEXT.trust || 'HIGH';
+      PROPAGATES = true;
+      CONTEXT_SOURCE = 'verified';
+
+      console.error(`[Herald] Verified with CEDA: ${VERIFIED_CONTEXT.company}/${VERIFIED_CONTEXT.project} (trust: HIGH)`);
+    } else {
+      // Not verified - user not registered or no access to this repo
+      // Keep local trust level (which may be HIGH from git, but unverified)
+      const reason = result.error || 'User not registered for this repository';
+      console.error(`[Herald] Not verified: ${reason} (trust: ${TRUST_LEVEL}, unverified)`);
+
+      // Optionally downgrade to LOW if strict mode
+      if (process.env.HERALD_STRICT_TRUST === 'true') {
+        TRUST_LEVEL = 'LOW';
+        PROPAGATES = false;
+        console.error(`[Herald] Strict mode: downgraded to LOW trust`);
+      }
+    }
+  } catch (error) {
+    // CEDA unreachable - keep local trust
+    console.error(`[Herald] Verification failed (CEDA unreachable): ${error}`);
+    console.error(`[Herald] Using local trust: ${TRUST_LEVEL}`);
+  }
+}
+
 async function sendStartupHeartbeat(): Promise<void> {
   // Fire-and-forget heartbeat - don't block startup
   try {
@@ -2772,7 +2987,10 @@ async function sendStartupHeartbeat(): Promise<void> {
       version: VERSION,
       user: HERALD_USER,
       tags: HERALD_TAGS,
+      trust: TRUST_LEVEL,
+      propagates: PROPAGATES,
       contextSource: CONTEXT_SOURCE,
+      gitRemote: GIT_REMOTE,
       platform: process.platform,
       nodeVersion: process.version,
     });
@@ -2784,8 +3002,17 @@ async function sendStartupHeartbeat(): Promise<void> {
 async function runMCP(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // CEDA-82: Verify trust with CEDA server before announcing
+  // This may upgrade trust if user is registered
+  await verifyWithCeda();
+
   console.error(`Herald MCP v${VERSION} running`);
-  console.error(`User: ${HERALD_USER} | Tags: [${HERALD_TAGS.join(", ")}] (${CONTEXT_SOURCE})`);
+  console.error(`User: ${HERALD_USER} | Tags: [${HERALD_TAGS.join(", ")}]`);
+  console.error(`Trust: ${TRUST_LEVEL} (${CONTEXT_SOURCE})${PROPAGATES ? " | Propagates: YES" : ""}`);
+  if (VERIFIED_CONTEXT?.verified) {
+    console.error(`Context: ${VERIFIED_CONTEXT.company}/${VERIFIED_CONTEXT.project} (server-verified)`);
+  }
 
   // Send startup heartbeat for visibility (non-blocking)
   sendStartupHeartbeat();
