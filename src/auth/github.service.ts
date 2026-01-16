@@ -124,15 +124,19 @@ export class GitHubService {
 
   /**
    * Fetch user's repositories with pagination
+   * Includes personal repos AND org repos
    */
-  async getRepositories(accessToken: string): Promise<GitHubRepo[]> {
+  async getRepositories(accessToken: string, orgs?: GitHubOrg[]): Promise<GitHubRepo[]> {
     const repos: GitHubRepo[] = [];
+    const seenIds = new Set<number>();
+
+    // 1. Fetch user's repos (includes repos user owns + has explicit access to)
     let page = 1;
     const perPage = 100;
 
     while (true) {
       const response = await fetch(
-        `${GITHUB_API_URL}/user/repos?per_page=${perPage}&page=${page}&sort=updated`,
+        `${GITHUB_API_URL}/user/repos?per_page=${perPage}&page=${page}&sort=updated&affiliation=owner,collaborator,organization_member`,
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -152,16 +156,70 @@ export class GitHubService {
         break;
       }
 
-      repos.push(...batch);
+      for (const repo of batch) {
+        if (!seenIds.has(repo.id)) {
+          seenIds.add(repo.id);
+          repos.push(repo);
+        }
+      }
       page++;
 
-      // Safety limit to prevent infinite loops
+      // Safety limit
       if (page > 50) {
-        console.warn('[GitHubService] Reached pagination limit (5000 repos)');
+        console.warn('[GitHubService] Reached pagination limit for user repos');
         break;
       }
     }
 
+    // 2. Also fetch repos from each org (in case user/repos missed some)
+    if (orgs && orgs.length > 0) {
+      for (const org of orgs) {
+        try {
+          let orgPage = 1;
+          while (true) {
+            const response = await fetch(
+              `${GITHUB_API_URL}/orgs/${org.login}/repos?per_page=${perPage}&page=${orgPage}&sort=updated`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  Accept: 'application/vnd.github.v3+json',
+                  'User-Agent': 'CEDA-OAuth',
+                },
+              }
+            );
+
+            if (!response.ok) {
+              // Skip if no access to org repos
+              console.warn(`[GitHubService] Cannot access repos for org ${org.login}: ${response.status}`);
+              break;
+            }
+
+            const batch: GitHubRepo[] = await response.json();
+
+            if (batch.length === 0) {
+              break;
+            }
+
+            for (const repo of batch) {
+              if (!seenIds.has(repo.id)) {
+                seenIds.add(repo.id);
+                repos.push(repo);
+              }
+            }
+            orgPage++;
+
+            // Limit per org
+            if (orgPage > 10) {
+              break;
+            }
+          }
+        } catch (err) {
+          console.warn(`[GitHubService] Error fetching repos for org ${org.login}:`, err);
+        }
+      }
+    }
+
+    console.log(`[GitHubService] Fetched ${repos.length} total repositories`);
     return repos;
   }
 

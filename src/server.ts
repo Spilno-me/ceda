@@ -5151,12 +5151,14 @@ async function handleRequest(
         // Exchange code for access token
         const accessToken = await githubService.exchangeCode(code);
 
-        // Fetch GitHub data in parallel
-        const [user, orgs, repos] = await Promise.all([
+        // Fetch GitHub user and orgs first
+        const [user, orgs] = await Promise.all([
           githubService.getUser(accessToken),
           githubService.getOrganizations(accessToken),
-          githubService.getRepositories(accessToken),
         ]);
+
+        // Fetch repos (including org repos) - needs orgs to be fetched first
+        const repos = await githubService.getRepositories(accessToken, orgs);
 
         // Get primary email if not public
         let email = user.email;
