@@ -5050,6 +5050,7 @@ async function handleRequest(
         const body = await parseBody<{
           defaultOrg?: string;
           defaultProject?: string;
+          selectedRepos?: string[];
           customTags?: string[];
         }>(req);
 
@@ -5059,6 +5060,7 @@ async function handleRequest(
           ...existingPrefs,
           ...(body.defaultOrg !== undefined && { defaultOrg: body.defaultOrg }),
           ...(body.defaultProject !== undefined && { defaultProject: body.defaultProject }),
+          ...(body.selectedRepos !== undefined && { selectedRepos: body.selectedRepos }),
           ...(body.customTags !== undefined && { customTags: body.customTags }),
         };
 
