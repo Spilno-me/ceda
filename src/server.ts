@@ -33,6 +33,13 @@ import { LinkingService } from './services/linking.service';
 import { AnomalyDetectionService } from './services/anomaly-detection.service';
 import { AnalyticsService } from './services/analytics.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
+import { GitHubService } from './auth/github.service';
+import { GitIdentityService } from './auth/git-identity.service';
+import { HeraldVerifyService } from './auth/herald-verify.service';
+import { AuthService } from './auth/auth.service';
+import { HeraldVerifyRequest, OAuthCallbackResponse } from './auth/github.interface';
+import { UserRecord, UserRole } from './auth/auth.interface';
+import * as crypto from 'crypto';
 import { HSE_PATTERNS, DESIGNSYSTEM_PATTERNS, SALVADOR_PATTERNS, SEED_ANTIPATTERNS, METHODOLOGY_PATTERNS } from './seed';
 import { SessionObservation, DetectRequest, LearnRequest, LearningOutcome, CaptureObservationRequest, CreateObservationDto, ObservationOutcome, StructurePrediction, PatternLevel, CreateDocumentDto, UpdateDocumentDto, LinkDocumentDto, DocumentSearchParams, GraphQueryParams, DocumentType, DocumentLinkType, WrapEntityDto, CreateLinkDto, LinkableType, LinkType } from './interfaces';
 import { randomUUID } from 'crypto';
@@ -302,6 +309,25 @@ const orchestrator = new CognitiveOrchestratorService(
 // Configure orchestrator with tenant embedding service for AI-native multi-tenancy
 orchestrator.setTenantEmbeddingService(tenantEmbeddingService);
 
+// CEDA-80: Initialize GitHub OAuth services
+const githubService = new GitHubService();
+const gitIdentityService = new GitIdentityService();
+const heraldVerifyService = new HeraldVerifyService(gitIdentityService);
+const authService = new AuthService();
+
+// OAuth state storage (in-memory for simplicity, could use Redis)
+const oauthStates = new Map<string, { createdAt: number }>();
+
+// Clean up expired OAuth states (10 min TTL)
+setInterval(() => {
+  const now = Date.now();
+  for (const [state, data] of oauthStates.entries()) {
+    if (now - data.createdAt > 10 * 60 * 1000) {
+      oauthStates.delete(state);
+    }
+  }
+}, 60 * 1000); // Check every minute
+
 async function initializeVectorStore(): Promise<void> {
   if (!embeddingService.isAvailable()) {
     console.log('[CEDA] Vector search disabled - OPENAI_API_KEY not set');
@@ -518,6 +544,9 @@ const API_ENDPOINTS = [
   { method: 'POST', path: '/api/anomalies/sweep', description: 'Trigger detection sweep', ticket: 'CEDA-52' },
   { method: 'POST', path: '/api/anomalies/:id/acknowledge', description: 'Acknowledge an anomaly', ticket: 'CEDA-52' },
   { method: 'POST', path: '/api/anomalies/:id/resolve', description: 'Resolve an anomaly', ticket: 'CEDA-52' },
+  { method: 'GET', path: '/api/auth/github', description: 'Start GitHub OAuth flow', ticket: 'CEDA-80' },
+  { method: 'GET', path: '/api/auth/github/callback', description: 'GitHub OAuth callback', ticket: 'CEDA-80' },
+  { method: 'POST', path: '/api/auth/verify', description: 'Verify Herald by git remote', ticket: 'CEDA-80' },
 ] as const;
 
 /**
@@ -4844,6 +4873,163 @@ async function handleRequest(
         linkCount: linkingService.getLinkCount(),
         timestamp: new Date().toISOString(),
       });
+      return;
+    }
+
+    // ============================================
+    // CEDA-80: GitHub OAuth Routes
+    // ============================================
+
+    // GET /api/auth/github - Start GitHub OAuth flow
+    if (url === '/api/auth/github' && method === 'GET') {
+      if (!githubService.isConfigured()) {
+        sendJson(res, 503, {
+          error: 'GitHub OAuth not configured',
+          message: 'GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set',
+        });
+        return;
+      }
+
+      // Generate state for CSRF protection
+      const state = crypto.randomBytes(16).toString('hex');
+      oauthStates.set(state, { createdAt: Date.now() });
+
+      // Redirect to GitHub authorization
+      const authUrl = githubService.getAuthorizationUrl(state);
+      res.writeHead(302, { Location: authUrl });
+      res.end();
+      return;
+    }
+
+    // GET /api/auth/github/callback - Handle GitHub OAuth callback
+    if (url?.startsWith('/api/auth/github/callback') && method === 'GET') {
+      const urlObj = new URL(url, `http://${req.headers.host || 'localhost'}`);
+      const code = urlObj.searchParams.get('code');
+      const state = urlObj.searchParams.get('state');
+      const error = urlObj.searchParams.get('error');
+
+      // Handle OAuth errors from GitHub
+      if (error) {
+        const errorDescription = urlObj.searchParams.get('error_description') || 'Unknown error';
+        sendJson(res, 400, {
+          error: 'GitHub OAuth error',
+          message: errorDescription,
+        });
+        return;
+      }
+
+      // Validate required parameters
+      if (!code || !state) {
+        sendJson(res, 400, {
+          error: 'Missing parameters',
+          message: 'code and state are required',
+        });
+        return;
+      }
+
+      // Verify state for CSRF protection
+      if (!oauthStates.has(state)) {
+        sendJson(res, 400, {
+          error: 'Invalid state',
+          message: 'OAuth state is invalid or expired',
+        });
+        return;
+      }
+      oauthStates.delete(state);
+
+      try {
+        // Exchange code for access token
+        const accessToken = await githubService.exchangeCode(code);
+
+        // Fetch GitHub data in parallel
+        const [user, orgs, repos] = await Promise.all([
+          githubService.getUser(accessToken),
+          githubService.getOrganizations(accessToken),
+          githubService.getRepositories(accessToken),
+        ]);
+
+        // Get primary email if not public
+        let email = user.email;
+        if (!email) {
+          email = await githubService.getPrimaryEmail(accessToken);
+        }
+
+        // Store git identity
+        const gitIdentity = await gitIdentityService.createOrUpdate(
+          user,
+          orgs,
+          repos,
+          accessToken,
+          email,
+        );
+
+        // Create user record for JWT generation
+        const userRecord: UserRecord = {
+          id: gitIdentity.id,
+          email: email || `${user.login}@github.local`,
+          passwordHash: '', // OAuth users don't have passwords
+          company: orgs.length > 0 ? orgs[0].login : user.login,
+          roles: [UserRole.CONTRIBUTOR],
+          createdAt: gitIdentity.createdAt,
+          lastLoginAt: new Date().toISOString(),
+          isActive: true,
+          gitIdentityId: gitIdentity.id,
+        };
+
+        // Generate JWT tokens
+        const tokens = authService.generateTokenPair(userRecord);
+
+        // Build response
+        const response: OAuthCallbackResponse = {
+          user: {
+            id: userRecord.id,
+            email: userRecord.email,
+            githubLogin: user.login,
+          },
+          tokens: {
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            expiresIn: tokens.expiresIn,
+            tokenType: 'Bearer',
+          },
+          isNewUser: gitIdentity.createdAt === gitIdentity.updatedAt,
+          organizations: orgs.map(o => o.login),
+        };
+
+        console.log(`[CEDA-80] GitHub OAuth successful for ${user.login} (${orgs.length} orgs, ${repos.length} repos)`);
+
+        sendJson(res, 200, response);
+        return;
+      } catch (err) {
+        console.error('[CEDA-80] GitHub OAuth error:', err);
+        sendJson(res, 500, {
+          error: 'OAuth failed',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
+    // POST /api/auth/verify - Verify Herald by git remote
+    if (url === '/api/auth/verify' && method === 'POST') {
+      const body = await parseBody<HeraldVerifyRequest>(req);
+
+      if (!body.gitRemote) {
+        sendJson(res, 400, {
+          error: 'Missing required field',
+          message: 'gitRemote is required',
+        });
+        return;
+      }
+
+      const result = await heraldVerifyService.verify(body);
+
+      if (result.verified) {
+        console.log(`[CEDA-80] Herald verified for ${body.gitRemote}`);
+        sendJson(res, 200, result);
+      } else {
+        sendJson(res, 401, result);
+      }
       return;
     }
 

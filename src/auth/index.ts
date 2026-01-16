@@ -17,6 +17,22 @@ export {
   CreateApiKeyResponse,
 } from './auth.interface';
 
+// GitHub OAuth Interfaces (CEDA-80)
+export {
+  GitHubUser,
+  GitHubOrg,
+  GitHubRepo,
+  GitHubTokenResponse,
+  GitOrgMembership,
+  GitRepoAccess,
+  GitIdentity,
+  HeraldVerifyRequest,
+  HeraldVerifyContext,
+  HeraldVerifyResponse,
+  OAuthCallbackResponse,
+  ParsedGitRemote,
+} from './github.interface';
+
 // Configuration
 export {
   JwtConfig,
@@ -30,6 +46,9 @@ export {
 
 // Services
 export { AuthService } from './auth.service';
+export { GitHubService } from './github.service';
+export { GitIdentityService } from './git-identity.service';
+export { HeraldVerifyService } from './herald-verify.service';
 
 // Guards
 export {

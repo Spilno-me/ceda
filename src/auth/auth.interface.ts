@@ -88,6 +88,8 @@ export interface UserRecord {
   lastLoginAt?: string;
   /** Whether the user is active */
   isActive: boolean;
+  /** Git identity ID (CEDA-80: GitHub OAuth) */
+  gitIdentityId?: string;
 }
 
 /**
