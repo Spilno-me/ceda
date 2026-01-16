@@ -909,8 +909,10 @@ async function handleRequest(
     }
 
     // CEDA-81: Serve static files (CSS, JS, HTML pages)
-    if (method === 'GET' && (url.endsWith('.html') || url.endsWith('.css') || url.endsWith('.js') || url.endsWith('.png') || url.endsWith('.jpg') || url.endsWith('.svg') || url.endsWith('.ico'))) {
-      const filePath = url.startsWith('/') ? url.substring(1) : url;
+    // Parse URL to handle query strings (e.g., /onboarding.html?token=xxx)
+    const urlPath = url.split('?')[0];
+    if (method === 'GET' && (urlPath.endsWith('.html') || urlPath.endsWith('.css') || urlPath.endsWith('.js') || urlPath.endsWith('.png') || urlPath.endsWith('.jpg') || urlPath.endsWith('.svg') || urlPath.endsWith('.ico'))) {
+      const filePath = urlPath.startsWith('/') ? urlPath.substring(1) : urlPath;
       if (serveStaticFile(filePath, res)) {
         return;
       }
