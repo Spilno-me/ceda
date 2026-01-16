@@ -945,8 +945,8 @@ code {
 }
 
 .pricing-features li::before {
-    content: "\\2713";
-    color: var(--accent);
+    content: "\2713";
+    color: var(--accent-primary);
     font-weight: bold;
 }
 
