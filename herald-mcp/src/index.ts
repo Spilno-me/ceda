@@ -23,6 +23,10 @@ import { createHash } from "crypto";
 import * as readline from "readline";
 
 import { runInit } from "./cli/init.js";
+import { runLogin } from "./cli/login.js";
+import { runLogout } from "./cli/logout.js";
+import { runConfig } from "./cli/config.js";
+import { runUpgrade } from "./cli/upgrade.js";
 import { sanitize, previewSanitization, sanitizeReflection, DataClassification } from "./sanitization.js";
 
 // Configuration - all sensitive values from environment only
@@ -911,30 +915,36 @@ Usage:
   herald-mcp <command> [options]
 
 Commands:
-  init                      Initialize Herald MCP config in .claude/settings.json
-  chat                      Natural conversation mode (Claude voice)
-  predict "<signal>"        Start new prediction (saves session)
-  refine "<text>"           Refine current session
-  resume                    Show current session state
-  observe yes|no            Record feedback & close session
-  new                       Clear session, start fresh
-  health                    Check CEDA system status
-  stats                     Get server statistics
+  Setup:
+    login                     Authenticate with GitHub (opens browser)
+    logout                    Clear stored authentication
+    init                      Initialize Herald config in project
+    config                    Output MCP JSON for any client
+
+  Account:
+    upgrade                   Open billing portal / view usage
+
+  MCP Tools (when running as server):
+    health                    Check CEDA system status
+    stats                     Get server statistics
+    patterns                  View learned patterns
+
+  Legacy CLI:
+    chat                      Natural conversation mode
+    predict "<signal>"        Start new prediction
+    refine "<text>"           Refine current session
+    observe yes|no            Record feedback & close session
+    new                       Clear session, start fresh
 
 Examples:
-  herald-mcp init                                # Setup Claude Desktop config
-  herald-mcp chat                                # Natural conversation
-  herald-mcp predict "create safety assessment"  # Command mode
-  herald-mcp refine "add OSHA compliance"
-  herald-mcp observe yes
+  npx @spilno/herald-mcp login              # Authenticate
+  npx @spilno/herald-mcp config             # Get MCP config
+  npx @spilno/herald-mcp init               # Setup in project
+  npx @spilno/herald-mcp upgrade            # Manage subscription
 
 Environment:
-  HERALD_API_URL      CEDA server URL (required for API calls)
-  HERALD_COMPANY      Company context (default: default)
-  HERALD_PROJECT      Project context (default: default)
-  HERALD_USER         User context (default: default)
-  ANTHROPIC_API_KEY   Claude API key (required for chat mode)
-  HERALD_API_TOKEN    Bearer token (optional)
+  CEDA_URL            CEDA server URL (default: https://getceda.com)
+  CEDA_TOKEN          Auth token (auto-set after login)
 
 MCP Mode:
   When piped, Herald speaks JSON-RPC for AI agents.
@@ -970,6 +980,26 @@ async function runCLI(args: string[]): Promise<void> {
   switch (command) {
     case "init": {
       await runInit(args.slice(1));
+      break;
+    }
+
+    case "login": {
+      await runLogin(args.slice(1));
+      break;
+    }
+
+    case "logout": {
+      await runLogout(args.slice(1));
+      break;
+    }
+
+    case "config": {
+      await runConfig(args.slice(1));
+      break;
+    }
+
+    case "upgrade": {
+      await runUpgrade(args.slice(1));
       break;
     }
 

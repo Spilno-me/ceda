@@ -316,7 +316,7 @@ const heraldVerifyService = new HeraldVerifyService(gitIdentityService);
 const authService = new AuthService();
 
 // OAuth state storage (in-memory for simplicity, could use Redis)
-const oauthStates = new Map<string, { createdAt: number }>();
+const oauthStates = new Map<string, { createdAt: number; cliCallback?: string }>();
 
 // Clean up expired OAuth states (10 min TTL)
 setInterval(() => {
@@ -5091,7 +5091,7 @@ async function handleRequest(
     // ============================================
 
     // GET /api/auth/github - Start GitHub OAuth flow
-    if (url === '/api/auth/github' && method === 'GET') {
+    if (url?.startsWith('/api/auth/github') && !url?.includes('/callback') && method === 'GET') {
       if (!githubService.isConfigured()) {
         sendJson(res, 503, {
           error: 'GitHub OAuth not configured',
@@ -5100,9 +5100,16 @@ async function handleRequest(
         return;
       }
 
-      // Generate state for CSRF protection
+      // Parse query params for CLI callback support
+      const urlObj = new URL(url, `http://${req.headers.host || 'localhost'}`);
+      const cliCallback = urlObj.searchParams.get('cli_callback');
+
+      // Generate state for CSRF protection (include cli_callback if present)
       const state = crypto.randomBytes(16).toString('hex');
-      oauthStates.set(state, { createdAt: Date.now() });
+      oauthStates.set(state, {
+        createdAt: Date.now(),
+        cliCallback: cliCallback || undefined,
+      });
 
       // Redirect to GitHub authorization
       const authUrl = githubService.getAuthorizationUrl(state);
@@ -5138,13 +5145,15 @@ async function handleRequest(
       }
 
       // Verify state for CSRF protection
-      if (!oauthStates.has(state)) {
+      const stateData = oauthStates.get(state);
+      if (!stateData) {
         sendJson(res, 400, {
           error: 'Invalid state',
           message: 'OAuth state is invalid or expired',
         });
         return;
       }
+      const cliCallback = stateData.cliCallback;
       oauthStates.delete(state);
 
       try {
@@ -5209,6 +5218,17 @@ async function handleRequest(
         };
 
         console.log(`[CEDA-80] GitHub OAuth successful for ${user.login} (${orgs.length} orgs, ${repos.length} repos)`);
+
+        // CLI callback: redirect to local server with token params
+        if (cliCallback) {
+          const callbackUrl = new URL(cliCallback);
+          callbackUrl.searchParams.set('token', tokens.accessToken);
+          callbackUrl.searchParams.set('login', user.login);
+          if (email) callbackUrl.searchParams.set('email', email);
+          res.writeHead(302, { Location: callbackUrl.toString() });
+          res.end();
+          return;
+        }
 
         // CEDA-81: Redirect to onboarding page with token for browser flows
         // Check if the request came from a browser (Accept header contains text/html)
