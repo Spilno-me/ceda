@@ -661,25 +661,123 @@ code {
     }
 }
 
+/* Pricing Section */
+.pricing-section {
+    text-align: center;
+}
+
+.pricing-subtitle {
+    color: var(--text-muted);
+    margin-bottom: 2rem;
+}
+
+.pricing-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+    margin-top: 2rem;
+}
+
+.pricing-card {
+    background: var(--surface);
+    border-radius: 12px;
+    padding: 2rem;
+    text-align: left;
+    position: relative;
+    border: 1px solid transparent;
+    transition: border-color 0.2s, transform 0.2s;
+}
+
+.pricing-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+}
+
+.pricing-card.featured {
+    border-color: var(--accent);
+    background: linear-gradient(180deg, rgba(124, 58, 237, 0.1) 0%, var(--surface) 100%);
+}
+
+.pricing-badge {
+    position: absolute;
+    top: -10px;
+    right: 20px;
+    background: var(--accent);
+    color: white;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.pricing-header {
+    margin-bottom: 1.5rem;
+}
+
+.pricing-header h4 {
+    font-size: 1.25rem;
+    margin: 0 0 0.5rem 0;
+}
+
+.pricing-price {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.pricing-price span {
+    font-size: 1rem;
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.pricing-features {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 1.5rem 0;
+}
+
+.pricing-features li {
+    padding: 0.5rem 0;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.pricing-features li::before {
+    content: "\\2713";
+    color: var(--accent);
+    font-weight: bold;
+}
+
+.pricing-card .btn {
+    width: 100%;
+}
+
 @media (max-width: 480px) {
     .hero h1 {
         font-size: 1.75rem;
     }
-    
+
     .hero-subtitle {
         font-size: 1rem;
     }
-    
+
     .user-info {
         flex-direction: column;
         text-align: center;
     }
-    
+
     .code-block pre {
         padding: 1rem;
     }
-    
+
     .code-block code {
         font-size: 0.75rem;
+    }
+
+    .pricing-grid {
+        grid-template-columns: 1fr;
     }
 }
