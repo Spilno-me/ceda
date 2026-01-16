@@ -1561,9 +1561,9 @@ async function fetchPatternsWithCascade(): Promise<{patterns: string[], antipatt
   const antipatterns: string[] = [];
 
   const queries = [
-    { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=10` },
-    { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=10` },
-    { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=10` },
+    { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100` },
+    { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=100` },
+    { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=100` },
   ];
 
   for (const { scope, url } of queries) {
@@ -2361,9 +2361,9 @@ Herald will:
 
           // Cascade queries: user (most specific) → project → company (broadest)
           const queries = [
-            { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=10` },
-            { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=10` },
-            { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=10` },
+            { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100` },
+            { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=100` },
+            { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=100` },
           ];
 
           const patterns: PatternEntry[] = [];
@@ -2391,7 +2391,7 @@ Herald will:
 
           if (antipatterns.length > 0) {
             summary += `### ⚠️ Antipatterns (avoid these)\n`;
-            antipatterns.slice(0, 5).forEach((ap, i) => {
+            antipatterns.forEach((ap, i) => {
               const scopeTag = ap.scope ? ` [${ap.scope}]` : "";
               summary += `${i + 1}. ${ap.insight}${scopeTag}`;
               if (ap.warning) summary += `\n   → ${ap.warning}`;
@@ -2402,7 +2402,7 @@ Herald will:
 
           if (patterns.length > 0) {
             summary += `### ✓ Patterns (do these)\n`;
-            patterns.slice(0, 5).forEach((p, i) => {
+            patterns.forEach((p, i) => {
               const scopeTag = p.scope ? ` [${p.scope}]` : "";
               summary += `${i + 1}. ${p.insight}${scopeTag}`;
               if (p.reinforcement) summary += `\n   → ${p.reinforcement}`;
