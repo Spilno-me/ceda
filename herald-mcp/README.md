@@ -18,158 +18,152 @@ AI agents start fresh each session. Herald gives them memory:
 ## Quick Start
 
 ```bash
-# One command setup for Claude Desktop
+cd your-project
 npx @spilno/herald-mcp init
-
-# Or install globally
-npm install -g @spilno/herald-mcp
-herald-mcp init
 ```
 
-Done. Herald is now available to Claude.
+**What this does:**
+1. Creates `.mcp.json` with Herald MCP configuration
+2. Fetches learned patterns from CEDA (if any exist)
+3. Creates/updates `CLAUDE.md` with patterns baked in
+
+Company and project default to your folder name. Zero config.
+
+## Init Options
+
+```bash
+npx @spilno/herald-mcp init [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--sync`, `-s` | Just sync patterns to CLAUDE.md (quick update) |
+| `--hookify` | Generate hookify rules for auto pattern reminders |
+| `--company`, `-c` | Override company (default: folder name) |
+| `--project`, `-p` | Override project (default: folder name) |
+| `--user`, `-u` | Override user (default: "default") |
+| `--force`, `-f` | Overwrite existing config |
+| `--help`, `-h` | Show help |
+
+**Examples:**
+```bash
+# Basic setup (zero config)
+npx @spilno/herald-mcp init
+
+# Sync latest patterns to CLAUDE.md
+npx @spilno/herald-mcp init --sync
+
+# Add auto-reminder hooks
+npx @spilno/herald-mcp init --hookify
+
+# Custom context
+npx @spilno/herald-mcp init --company acme --project safety
+```
+
+## Pattern Inheritance
+
+Patterns cascade from specific to broad:
+
+```
+user (your personal patterns)
+  ↓ inherits from
+project (team patterns)
+  ↓ inherits from
+company (org-wide patterns)
+```
+
+More specific patterns take precedence. If you have a pattern and your company has the same one, yours wins.
+
+## MCP Resources
+
+Herald exposes patterns as MCP resources (auto-readable by Claude Code):
+
+| Resource | Description |
+|----------|-------------|
+| `herald://patterns` | Learned patterns for current context |
+| `herald://context` | Current configuration (company/project/user) |
 
 ## Core Tools
 
 | Tool | Purpose |
 |------|---------|
+| `herald_patterns` | Query what worked before (with inheritance) |
+| `herald_reflect` | Capture patterns and antipatterns |
 | `herald_predict` | Generate structure from natural language |
 | `herald_refine` | Refine predictions with feedback |
-| `herald_patterns` | Query what worked before |
-| `herald_reflect` | Capture patterns and antipatterns |
 | `herald_feedback` | Reinforce helpful patterns |
 
-### Pattern Memory
+### Pattern Capture
+
+When something works or fails, capture it:
 
 ```
-AI: herald_patterns()
-→ Returns: patterns that worked, antipatterns to avoid
-
-AI: herald_predict("create safety assessment module")
-→ Returns: structured prediction based on accumulated patterns
-
-User: "That worked well"
-AI: herald_reflect(feeling="success", insight="field grouping approach")
-→ Pattern captured, weight increased
+User: "Herald reflect - that was smooth"
+Claude: "What specifically worked?"
+User: "The ASCII visualization approach"
+→ Pattern captured, available in future sessions
 ```
 
-## Session Flow
+```
+User: "Herald reflect - that was rough"
+Claude: "What went wrong?"
+User: "Forgot to check existing tests before refactoring"
+→ Antipattern captured, Claude will avoid this
+```
+
+## Hookify Integration
+
+Add auto-reminders with `--hookify`:
 
 ```bash
-# Start a session
-herald-mcp predict "create incident report module"
-
-# Refine iteratively
-herald-mcp refine "add witness section"
-herald-mcp refine "require photos for severity > 3"
-
-# Accept when satisfied
-herald-mcp observe yes
-
-# Resume anytime
-herald-mcp resume
+npx @spilno/herald-mcp init --hookify
 ```
+
+This creates rules in `.claude/` that:
+- **On prompt**: Remind to check patterns at session start
+- **On session end**: Remind to capture patterns before leaving
+
+Requires [hookify plugin](https://github.com/anthropics/claude-code/tree/main/plugins/hookify).
 
 ## Configuration
 
-### Claude Desktop / Claude Code
+### Files Created
 
-```json
-{
-  "mcpServers": {
-    "herald": {
-      "command": "npx",
-      "args": ["@spilno/herald-mcp"],
-      "env": {
-        "HERALD_API_URL": "https://getceda.com"
-      }
-    }
-  }
-}
-```
+| File | Purpose |
+|------|---------|
+| `.mcp.json` | MCP server configuration for Claude Code |
+| `CLAUDE.md` | Project instructions with baked patterns |
+| `.claude/hookify.*.local.md` | Auto-reminder rules (if --hookify) |
 
 ### Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `HERALD_API_URL` | Yes | CEDA server (default: https://getceda.com) |
-| `HERALD_COMPANY` | No | Multi-tenant company context |
-| `HERALD_PROJECT` | No | Project context |
-| `HERALD_USER` | No | User context |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CEDA_URL` | https://getceda.com | CEDA backend URL |
+| `HERALD_COMPANY` | folder name | Company context |
+| `HERALD_PROJECT` | folder name | Project context |
+| `HERALD_USER` | "default" | User context |
 
-## Multi-Tenant Isolation
-
-Patterns are isolated by context:
-
-```
-Company A patterns → Only visible to Company A
-Project X patterns → Only visible to Project X users
-```
-
-Set context via environment or headers:
-```bash
-export HERALD_COMPANY=acme
-export HERALD_PROJECT=safety-modules
-```
-
-## Herald Context Sync
-
-Herald instances share insights across contexts:
-
-| Tool | Purpose |
-|------|---------|
-| `herald_context_status` | Check status of Herald instances |
-| `herald_share_insight` | Share pattern to other contexts |
-| `herald_query_insights` | Query shared insights |
-| `herald_sync` | Flush local buffer to cloud |
-
-## Chat Mode
-
-For humans who prefer conversation:
-
-```bash
-herald-mcp chat
-```
-
-```
-You: I need a permit-to-work module
-Herald: I've designed a Permit-to-Work module with 5 sections...
-
-You: Add gas testing checklist
-Herald: Added gas testing to Pre-Work Safety section...
-
-You: Perfect
-Herald: Module accepted and saved.
-```
-
-## Command Reference
-
-```bash
-herald-mcp init          # Setup for Claude Desktop
-herald-mcp chat          # Interactive conversation mode
-herald-mcp predict <signal>  # Generate prediction
-herald-mcp refine <signal>   # Refine current prediction
-herald-mcp resume        # Resume last session
-herald-mcp observe <yes|no>  # Accept or reject prediction
-herald-mcp new           # Start fresh session
-herald-mcp health        # Check CEDA connection
-herald-mcp stats         # Show loaded patterns
-```
-
-## Architecture
+## How It Works
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   AI Agent  │────▶│   Herald    │────▶│    CEDA     │
-│ (Claude/    │     │   (MCP)     │     │  (Pattern   │
-│  Devin/etc) │◀────│             │◀────│   Memory)   │
+│   Claude    │────▶│   Herald    │────▶│    CEDA     │
+│   Code      │     │   (MCP)     │     │  (Pattern   │
+│             │◀────│             │◀────│   Memory)   │
 └─────────────┘     └─────────────┘     └─────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │ Patterns    │
-                    │ Antipatterns│
-                    │ Feedback    │
-                    └─────────────┘
+       │                   │
+       │            ┌──────┴──────┐
+       │            │ Patterns    │
+       └───────────▶│ Antipatterns│
+    (auto-reads     │ Inheritance │
+     resources)     └─────────────┘
 ```
+
+1. **Session Start**: Claude reads `herald://patterns` resource
+2. **During Work**: Patterns guide behavior
+3. **Session End**: Capture new patterns with `herald_reflect`
+4. **Next Session**: New patterns available automatically
 
 ## What is CEDA?
 
@@ -193,4 +187,4 @@ MIT
 
 ---
 
-*Herald v1.20.0 — Pattern memory for AI agents*
+*Herald v1.25.0 — Pattern memory for AI agents*

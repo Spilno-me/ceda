@@ -159,6 +159,55 @@ const heraldStorage = {
   saveMetaPatterns: (metaPatterns: MetaPattern[]) => {
     fs.writeFileSync(heraldStorage.getMetaPatternsFile(), JSON.stringify(metaPatterns, null, 2));
   },
+
+  // CEDA-70: Telemetry for visibility into real Herald usage
+  getTelemetryFile: () => path.join(HERALD_DATA_PATH, 'telemetry.json'),
+
+  logTelemetry: (entry: {
+    event: string;
+    user: string;
+    version: string;
+    tags: string[];
+    platform?: string;
+    nodeVersion?: string;
+    timestamp: string;
+  }) => {
+    const file = heraldStorage.getTelemetryFile();
+    let telemetry: typeof entry[] = [];
+    if (fs.existsSync(file)) {
+      try {
+        telemetry = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      } catch {
+        telemetry = [];
+      }
+    }
+    telemetry.push(entry);
+    // Keep last 1000 entries
+    if (telemetry.length > 1000) {
+      telemetry = telemetry.slice(-1000);
+    }
+    fs.writeFileSync(file, JSON.stringify(telemetry, null, 2));
+  },
+
+  loadTelemetry: (): Array<{
+    event: string;
+    user: string;
+    version: string;
+    tags: string[];
+    platform?: string;
+    nodeVersion?: string;
+    timestamp: string;
+  }> => {
+    const file = heraldStorage.getTelemetryFile();
+    if (fs.existsSync(file)) {
+      try {
+        return JSON.parse(fs.readFileSync(file, 'utf-8'));
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  },
 };
 
 // Manual DI - wire up services
@@ -462,6 +511,7 @@ const API_ENDPOINTS = [
   { method: 'POST', path: '/api/herald/reflect/dry-run', description: 'Preview reflection without storing', ticket: 'CEDA-65' },
   { method: 'DELETE', path: '/api/herald/forget', description: 'GDPR Article 17 - Right to erasure' },
   { method: 'GET', path: '/api/herald/export', description: 'GDPR Article 20 - Data portability' },
+  { method: 'GET', path: '/api/telemetry', description: 'Herald usage telemetry', params: 'period (day|week|month), limit', ticket: 'CEDA-70' },
   { method: 'GET', path: '/api/anomalies', description: 'List anomalies with filtering', ticket: 'CEDA-52' },
   { method: 'POST', path: '/api/anomalies/sweep', description: 'Trigger detection sweep', ticket: 'CEDA-52' },
   { method: 'POST', path: '/api/anomalies/:id/acknowledge', description: 'Acknowledge an anomaly', ticket: 'CEDA-52' },
@@ -1439,10 +1489,19 @@ async function handleRequest(
 
     // === HERALD CONTEXT SYNC ENDPOINTS ===
 
-    // Herald heartbeat - context reports its status
+    // Herald heartbeat - startup telemetry and context status
+    // CEDA-70: Now accepts startup events for visibility
     if (url === '/api/herald/heartbeat' && method === 'POST') {
       const body = await parseBody<{
-        context: string;
+        // New: startup telemetry
+        event?: 'startup' | 'shutdown' | 'heartbeat';
+        version?: string;
+        user?: string;
+        tags?: string[];
+        platform?: string;
+        nodeVersion?: string;
+        // Legacy: context status
+        context?: string;
         status?: string;
         sessions?: number;
         activeThreads?: string[];
@@ -1450,8 +1509,36 @@ async function handleRequest(
         pending?: string[];
       }>(req);
 
+      const timestamp = new Date().toISOString();
+
+      // CEDA-70: Handle startup telemetry (new format)
+      if (body.event === 'startup' || body.user) {
+        const telemetry = {
+          event: body.event || 'startup',
+          user: body.user || 'unknown',
+          version: body.version || 'unknown',
+          tags: body.tags || [],
+          platform: body.platform,
+          nodeVersion: body.nodeVersion,
+          timestamp,
+        };
+
+        // Store in telemetry log
+        heraldStorage.logTelemetry(telemetry);
+        console.log(`[Herald] Startup: user=${telemetry.user} version=${telemetry.version} tags=[${telemetry.tags.join(',')}]`);
+
+        sendJson(res, 200, {
+          acknowledged: true,
+          event: telemetry.event,
+          user: telemetry.user,
+          timestamp,
+        });
+        return;
+      }
+
+      // Legacy: context-based heartbeat
       if (!body.context) {
-        sendJson(res, 400, { error: 'Missing required field: context' });
+        sendJson(res, 400, { error: 'Missing required field: context or user' });
         return;
       }
 
@@ -1461,7 +1548,7 @@ async function handleRequest(
       const contextData: HeraldContext = {
         context: body.context,
         status: body.status || 'active',
-        lastHeartbeat: new Date().toISOString(),
+        lastHeartbeat: timestamp,
         sessions: body.sessions,
         activeThreads: body.activeThreads,
         blockers: body.blockers,
@@ -1480,7 +1567,7 @@ async function handleRequest(
       sendJson(res, 200, {
         acknowledged: true,
         context: body.context,
-        timestamp: contextData.lastHeartbeat,
+        timestamp,
       });
       return;
     }
@@ -1936,6 +2023,67 @@ async function handleRequest(
 
       // Default: JSON format
       sendJson(res, 200, exportData);
+      return;
+    }
+
+    // CEDA-70: Telemetry endpoint - visibility into real Herald usage
+    if (url?.startsWith('/api/telemetry') && method === 'GET') {
+      const urlObj = new URL(url, `http://localhost:${PORT}`);
+      const period = urlObj.searchParams.get('period') || 'day';  // day, week, month
+      const limit = parseInt(urlObj.searchParams.get('limit') || '100', 10);
+
+      const telemetry = heraldStorage.loadTelemetry();
+      const now = new Date();
+
+      // Calculate period cutoff
+      let cutoff: Date;
+      switch (period) {
+        case 'week':
+          cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+        case 'month':
+          cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+          break;
+        default: // day
+          cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      }
+
+      // Filter by period
+      const filtered = telemetry
+        .filter(t => new Date(t.timestamp) >= cutoff)
+        .slice(-limit);
+
+      // Aggregate stats
+      const uniqueUsers = new Set(filtered.map(t => t.user));
+      const versionCounts: Record<string, number> = {};
+      const tagCounts: Record<string, number> = {};
+      const platformCounts: Record<string, number> = {};
+
+      for (const t of filtered) {
+        versionCounts[t.version] = (versionCounts[t.version] || 0) + 1;
+        if (t.platform) {
+          platformCounts[t.platform] = (platformCounts[t.platform] || 0) + 1;
+        }
+        for (const tag of t.tags || []) {
+          tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+        }
+      }
+
+      sendJson(res, 200, {
+        period,
+        periodStart: cutoff.toISOString(),
+        periodEnd: now.toISOString(),
+        summary: {
+          totalStartups: filtered.length,
+          uniqueUsers: uniqueUsers.size,
+          users: Array.from(uniqueUsers),
+        },
+        versions: versionCounts,
+        platforms: platformCounts,
+        tags: tagCounts,
+        recent: filtered.slice(-10).reverse(),  // Last 10, newest first
+        timestamp: now.toISOString(),
+      });
       return;
     }
 

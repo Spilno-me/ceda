@@ -17,7 +17,7 @@ import {
   Resource,
 } from "@modelcontextprotocol/sdk/types.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "fs";
-import { homedir } from "os";
+import { homedir, userInfo } from "os";
 import { join, basename } from "path";
 import * as readline from "readline";
 
@@ -31,24 +31,39 @@ const CEDA_API_TOKEN = process.env.HERALD_API_TOKEN;
 const CEDA_API_USER = process.env.HERALD_API_USER;
 const CEDA_API_PASS = process.env.HERALD_API_PASS;
 
-// Multi-tenant context
-// CEDA-68: Auto-derive from cwd when env vars not set (zero-config)
-function getDefaultContext(): string {
-  // Derive from current working directory folder name
+// CEDA-70: Zero-config context - everything auto-derived, nothing required
+// User is ALWAYS known (whoami). Company/project inferred from path as tags.
+
+function deriveUser(): string {
   try {
-    return basename(process.cwd());
+    return userInfo().username;
   } catch {
-    return "default";
+    return "unknown";
   }
 }
 
-// Priority: env var > cwd-derived > "default"
-const HERALD_COMPANY = process.env.HERALD_COMPANY || getDefaultContext();
-const HERALD_PROJECT = process.env.HERALD_PROJECT || getDefaultContext();
-const HERALD_USER = process.env.HERALD_USER || "default";
+function deriveTags(): string[] {
+  // Derive tags from cwd path - last 2 meaningful segments
+  // /Users/john/projects/acme/backend → ["acme", "backend"]
+  try {
+    const cwd = process.cwd();
+    const parts = cwd.split("/").filter(p => p && !["Users", "home", "Documents", "projects", "repos", "GitHub"].includes(p));
+    return parts.slice(-2);  // Last 2 segments as tags
+  } catch {
+    return [];
+  }
+}
 
-// Track if using auto-derived context (for warnings)
-const CONTEXT_AUTO_DERIVED = !process.env.HERALD_COMPANY || !process.env.HERALD_PROJECT;
+// User is always known
+const HERALD_USER = process.env.HERALD_USER || deriveUser();
+
+// Tags derived from path - used for pattern affinity, not hard filtering
+const HERALD_TAGS = deriveTags();
+const HERALD_COMPANY = process.env.HERALD_COMPANY || HERALD_TAGS[0] || "";
+const HERALD_PROJECT = process.env.HERALD_PROJECT || HERALD_TAGS[1] || HERALD_TAGS[0] || "";
+
+// No warnings needed - zero-config is the design
+const CONTEXT_AUTO_DERIVED = !process.env.HERALD_COMPANY;
 
 // Offspring vault context (for Avatar mode)
 const HERALD_VAULT = process.env.HERALD_VAULT || "";
@@ -57,7 +72,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.23.0";
+const VERSION = "1.29.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -2643,16 +2658,30 @@ async function autoSyncBuffer(): Promise<void> {
   }
 }
 
+async function sendStartupHeartbeat(): Promise<void> {
+  // Fire-and-forget heartbeat - don't block startup
+  try {
+    await callCedaAPI("/api/herald/heartbeat", "POST", {
+      event: "startup",
+      version: VERSION,
+      user: HERALD_USER,
+      tags: HERALD_TAGS,
+      platform: process.platform,
+      nodeVersion: process.version,
+    });
+  } catch {
+    // Silent fail - don't block MCP startup
+  }
+}
+
 async function runMCP(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Herald MCP server running on stdio");
-  if (CONTEXT_AUTO_DERIVED) {
-    console.error(`Context: ${HERALD_COMPANY}/${HERALD_PROJECT} (auto-derived from folder)`);
-  } else {
-    console.error(`Context: ${HERALD_COMPANY}/${HERALD_PROJECT}`);
-  }
-  console.error("Tip: Call herald_patterns() to load learned patterns from past sessions");
+  console.error(`Herald MCP v${VERSION} running`);
+  console.error(`User: ${HERALD_USER} | Tags: [${HERALD_TAGS.join(", ")}]`);
+
+  // Send startup heartbeat for visibility (non-blocking)
+  sendStartupHeartbeat();
 
   // Auto-sync buffered insights on startup
   await autoSyncBuffer();
