@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup - CEDA</title>
+    <meta name="description" content="Set up your CEDA preferences by selecting your default organization and project.">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <a href="/" class="logo">CEDA</a>
+            <div class="nav-links">
+                <a href="#" onclick="CEDA.logout(); return false;">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="page">
+        <div class="page-content">
+            <div class="container">
+                <div class="page-header">
+                    <h1>Welcome to CEDA</h1>
+                    <p>Let's set up your default organization and project for pattern isolation.</p>
+                </div>
+
+                <div id="content">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>Loading your profile...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <div class="container">
+            <p>Built by <a href="https://spilno.me" target="_blank">Spilno</a></p>
+        </div>
+    </footer>
+
+    <script src="/app.js"></script>
+    <script>
+        let profile = null;
+        let selectedOrg = null;
+        let selectedProject = null;
+
+        async function init() {
+            // Initialize page and check auth
+            if (!CEDA.initPage(true)) return;
+
+            const content = document.getElementById('content');
+
+            try {
+                // Fetch user profile
+                profile = await CEDA.getProfile();
+                CEDA.setUser(profile);
+
+                // Check if user already has preferences
+                if (profile.preferences && profile.preferences.defaultOrg) {
+                    selectedOrg = profile.preferences.defaultOrg;
+                    selectedProject = profile.preferences.defaultProject;
+                }
+
+                renderOnboarding();
+            } catch (error) {
+                console.error('Failed to load profile:', error);
+                content.innerHTML = `
+                    <div class="error-message">
+                        Failed to load your profile. Please try logging in again.
+                    </div>
+                    <div class="actions">
+                        <button class="btn btn-primary" onclick="CEDA.logout()">Login Again</button>
+                    </div>
+                `;
+            }
+        }
+
+        function renderOnboarding() {
+            const content = document.getElementById('content');
+            const orgs = profile.gitIdentity?.organizations || [];
+            const repos = profile.gitIdentity?.repositories || [];
+
+            // Add user's personal account as an option
+            const personalOrg = {
+                login: profile.githubLogin,
+                role: 'owner',
+                isPersonal: true
+            };
+
+            const allOrgs = [personalOrg, ...orgs];
+
+            content.innerHTML = `
+                <div class="user-info">
+                    <img class="user-avatar" src="${profile.avatarUrl || `https://github.com/${profile.githubLogin}.png`}" alt="${profile.githubLogin}" onerror="this.style.display='none'">
+                    <div class="user-details">
+                        <h3>${profile.githubLogin}</h3>
+                        <p>${profile.email || 'No email'}</p>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Select Your Organization</h3>
+                    <p>Choose the organization context for your patterns. This determines pattern isolation and sharing.</p>
+                    
+                    <div class="org-grid" id="org-grid">
+                        ${allOrgs.map(org => `
+                            <div class="card card-selectable org-card ${selectedOrg === org.login ? 'selected' : ''}" 
+                                 onclick="selectOrg('${org.login}')" 
+                                 data-org="${org.login}">
+                                <div class="org-avatar">
+                                    <img src="https://github.com/${org.login}.png" alt="${org.login}" onerror="this.parentElement.textContent='${CEDA.getInitials(org.login)}'">
+                                </div>
+                                <div class="org-info">
+                                    <div class="org-name">${org.login}</div>
+                                    <div class="org-role">${org.isPersonal ? 'Personal' : org.role}</div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+
+                <div class="section" id="project-section" style="${selectedOrg ? '' : 'opacity: 0.5; pointer-events: none;'}">
+                    <h3>Select Your Project</h3>
+                    <p>Choose a default project (repository) for context. You can change this later.</p>
+                    
+                    <div class="form-group">
+                        <select class="form-select" id="project-select" onchange="selectProject(this.value)">
+                            <option value="">Select a project...</option>
+                            ${getProjectsForOrg(selectedOrg).map(repo => `
+                                <option value="${repo.fullName}" ${selectedProject === repo.fullName ? 'selected' : ''}>
+                                    ${repo.fullName}
+                                </option>
+                            `).join('')}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <button class="btn btn-secondary" onclick="skipSetup()">Skip for now</button>
+                    <button class="btn btn-primary" id="continue-btn" onclick="saveAndContinue()" ${!selectedOrg ? 'disabled' : ''}>
+                        Continue to Dashboard
+                    </button>
+                </div>
+            `;
+        }
+
+        function getProjectsForOrg(orgLogin) {
+            if (!orgLogin || !profile.gitIdentity?.repositories) return [];
+            
+            return profile.gitIdentity.repositories.filter(repo => {
+                const repoOrg = repo.fullName.split('/')[0];
+                return repoOrg.toLowerCase() === orgLogin.toLowerCase();
+            });
+        }
+
+        function selectOrg(orgLogin) {
+            selectedOrg = orgLogin;
+            selectedProject = null;
+
+            // Update UI
+            document.querySelectorAll('.org-card').forEach(card => {
+                card.classList.toggle('selected', card.dataset.org === orgLogin);
+            });
+
+            // Enable project section
+            const projectSection = document.getElementById('project-section');
+            projectSection.style.opacity = '1';
+            projectSection.style.pointerEvents = 'auto';
+
+            // Update project dropdown
+            const projectSelect = document.getElementById('project-select');
+            const projects = getProjectsForOrg(orgLogin);
+            projectSelect.innerHTML = `
+                <option value="">Select a project...</option>
+                ${projects.map(repo => `
+                    <option value="${repo.fullName}">${repo.fullName}</option>
+                `).join('')}
+            `;
+
+            // Enable continue button
+            document.getElementById('continue-btn').disabled = false;
+        }
+
+        function selectProject(projectFullName) {
+            selectedProject = projectFullName;
+        }
+
+        async function saveAndContinue() {
+            if (!selectedOrg) {
+                CEDA.showError(document.getElementById('content'), 'Please select an organization');
+                return;
+            }
+
+            const btn = document.getElementById('continue-btn');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+
+            try {
+                await CEDA.updatePreferences({
+                    defaultOrg: selectedOrg,
+                    defaultProject: selectedProject || `${selectedOrg}/default`,
+                });
+
+                // Update local user data
+                profile.preferences = {
+                    defaultOrg: selectedOrg,
+                    defaultProject: selectedProject || `${selectedOrg}/default`,
+                };
+                CEDA.setUser(profile);
+
+                // Redirect to dashboard
+                window.location.href = '/dashboard.html';
+            } catch (error) {
+                console.error('Failed to save preferences:', error);
+                CEDA.showError(document.getElementById('content'), 'Failed to save preferences. Please try again.');
+                btn.disabled = false;
+                btn.textContent = 'Continue to Dashboard';
+            }
+        }
+
+        function skipSetup() {
+            // Use personal account as default
+            const defaultOrg = profile.githubLogin;
+            const defaultProject = `${defaultOrg}/default`;
+
+            CEDA.updatePreferences({
+                defaultOrg,
+                defaultProject,
+            }).then(() => {
+                profile.preferences = { defaultOrg, defaultProject };
+                CEDA.setUser(profile);
+                window.location.href = '/dashboard.html';
+            }).catch(error => {
+                console.error('Failed to save preferences:', error);
+                // Still redirect, preferences will be set on next visit
+                window.location.href = '/dashboard.html';
+            });
+        }
+
+        // Initialize on load
+        init();
+    </script>
+</body>
+</html>
