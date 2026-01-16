@@ -168,6 +168,7 @@ const heraldStorage = {
     user: string;
     version: string;
     tags: string[];
+    contextSource?: string;
     platform?: string;
     nodeVersion?: string;
     timestamp: string;
@@ -194,6 +195,7 @@ const heraldStorage = {
     user: string;
     version: string;
     tags: string[];
+    contextSource?: string;
     platform?: string;
     nodeVersion?: string;
     timestamp: string;
@@ -1498,6 +1500,7 @@ async function handleRequest(
         version?: string;
         user?: string;
         tags?: string[];
+        contextSource?: string;
         platform?: string;
         nodeVersion?: string;
         // Legacy: context status
@@ -1518,6 +1521,7 @@ async function handleRequest(
           user: body.user || 'unknown',
           version: body.version || 'unknown',
           tags: body.tags || [],
+          contextSource: body.contextSource,
           platform: body.platform,
           nodeVersion: body.nodeVersion,
           timestamp,

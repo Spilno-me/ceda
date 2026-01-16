@@ -54,16 +54,122 @@ function deriveTags(): string[] {
   }
 }
 
+// CEDA-71: Context persistence - read/write .mcp.json
+interface HeraldContext {
+  tags: string[];
+  user: string;
+  derived?: boolean;
+  derivedFrom?: string;
+  storedAt?: string;
+}
+
+interface McpJson {
+  mcpServers?: Record<string, unknown>;
+  herald?: {
+    context?: HeraldContext;
+  };
+}
+
+function getMcpJsonPath(): string {
+  return join(process.cwd(), '.mcp.json');
+}
+
+function readMcpJson(): McpJson | null {
+  const mcpPath = getMcpJsonPath();
+  if (!existsSync(mcpPath)) return null;
+
+  try {
+    return JSON.parse(readFileSync(mcpPath, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function persistContext(context: { tags: string[]; user: string }): void {
+  const mcpPath = getMcpJsonPath();
+
+  let mcpJson: McpJson = {};
+  if (existsSync(mcpPath)) {
+    try {
+      mcpJson = JSON.parse(readFileSync(mcpPath, 'utf-8'));
+    } catch {
+      // Corrupted file, preserve structure
+      mcpJson = {};
+    }
+  }
+
+  // Add herald context section (preserve existing mcpServers)
+  mcpJson.herald = {
+    ...mcpJson.herald,
+    context: {
+      tags: context.tags,
+      user: context.user,
+      derived: true,
+      derivedFrom: 'path',
+      storedAt: new Date().toISOString()
+    }
+  };
+
+  writeFileSync(mcpPath, JSON.stringify(mcpJson, null, 2));
+  console.error(`[Herald] Context stored in .mcp.json: tags=[${context.tags.join(', ')}]`);
+}
+
+interface LoadedContext {
+  tags: string[];
+  user: string;
+  source: 'env' | 'stored' | 'derived';
+}
+
+function loadOrDeriveContext(): LoadedContext {
+  // 1. Check env vars (explicit override - highest priority)
+  if (process.env.HERALD_COMPANY) {
+    return {
+      tags: [process.env.HERALD_COMPANY, process.env.HERALD_PROJECT].filter(Boolean) as string[],
+      user: process.env.HERALD_USER || deriveUser(),
+      source: 'env'
+    };
+  }
+
+  // 2. Check .mcp.json for stored context
+  const mcpJson = readMcpJson();
+  if (mcpJson?.herald?.context?.tags?.length) {
+    return {
+      tags: mcpJson.herald.context.tags,
+      user: mcpJson.herald.context.user || deriveUser(),
+      source: 'stored'
+    };
+  }
+
+  // 3. Derive from path
+  const tags = deriveTags();
+  const user = deriveUser();
+
+  // Store for next time (if we have tags and .mcp.json exists or we can create it)
+  if (tags.length > 0) {
+    try {
+      persistContext({ tags, user });
+    } catch {
+      // Silent fail - don't break startup if we can't write
+    }
+  }
+
+  return { tags, user, source: 'derived' };
+}
+
+// Load context once at startup
+const LOADED_CONTEXT = loadOrDeriveContext();
+
 // User is always known
-const HERALD_USER = process.env.HERALD_USER || deriveUser();
+const HERALD_USER = LOADED_CONTEXT.user;
 
-// Tags derived from path - used for pattern affinity, not hard filtering
-const HERALD_TAGS = deriveTags();
-const HERALD_COMPANY = process.env.HERALD_COMPANY || HERALD_TAGS[0] || "";
-const HERALD_PROJECT = process.env.HERALD_PROJECT || HERALD_TAGS[1] || HERALD_TAGS[0] || "";
+// Tags from context (env > stored > derived)
+const HERALD_TAGS = LOADED_CONTEXT.tags;
+const HERALD_COMPANY = HERALD_TAGS[0] || "";
+const HERALD_PROJECT = HERALD_TAGS[1] || HERALD_TAGS[0] || "";
 
-// No warnings needed - zero-config is the design
-const CONTEXT_AUTO_DERIVED = !process.env.HERALD_COMPANY;
+// Track context source for telemetry
+const CONTEXT_SOURCE = LOADED_CONTEXT.source;
+const CONTEXT_AUTO_DERIVED = CONTEXT_SOURCE === 'derived';
 
 // Offspring vault context (for Avatar mode)
 const HERALD_VAULT = process.env.HERALD_VAULT || "";
@@ -72,7 +178,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.29.0";
+const VERSION = "1.30.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -2666,6 +2772,7 @@ async function sendStartupHeartbeat(): Promise<void> {
       version: VERSION,
       user: HERALD_USER,
       tags: HERALD_TAGS,
+      contextSource: CONTEXT_SOURCE,
       platform: process.platform,
       nodeVersion: process.version,
     });
@@ -2678,7 +2785,7 @@ async function runMCP(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`Herald MCP v${VERSION} running`);
-  console.error(`User: ${HERALD_USER} | Tags: [${HERALD_TAGS.join(", ")}]`);
+  console.error(`User: ${HERALD_USER} | Tags: [${HERALD_TAGS.join(", ")}] (${CONTEXT_SOURCE})`);
 
   // Send startup heartbeat for visibility (non-blocking)
   sendStartupHeartbeat();
