@@ -47,8 +47,10 @@
     <script src="/app.js"></script>
     <script>
         let profile = null;
+        let currentStep = 1;
         let selectedOrg = null;
-        let selectedProject = null;
+        let selectedRepos = [];
+        let repoSearchFilter = '';
 
         async function init() {
             // Initialize page and check auth
@@ -64,7 +66,7 @@
                 // Check if user already has preferences
                 if (profile.preferences && profile.preferences.defaultOrg) {
                     selectedOrg = profile.preferences.defaultOrg;
-                    selectedProject = profile.preferences.defaultProject;
+                    selectedRepos = profile.preferences.selectedRepos || [];
                 }
 
                 renderOnboarding();
@@ -84,7 +86,6 @@
         function renderOnboarding() {
             const content = document.getElementById('content');
             const orgs = profile.gitIdentity?.organizations || [];
-            const repos = profile.gitIdentity?.repositories || [];
 
             // Add user's personal account as an option
             const personalOrg = {
@@ -104,53 +105,88 @@
                     </div>
                 </div>
 
-                <div class="section">
-                    <h3>Select Your Organization</h3>
-                    <p>Choose the organization context for your patterns. This determines pattern isolation and sharing.</p>
-                    
-                    <div class="org-grid" id="org-grid">
-                        ${allOrgs.map(org => `
-                            <div class="card card-selectable org-card ${selectedOrg === org.login ? 'selected' : ''}" 
-                                 onclick="selectOrg('${org.login}')" 
-                                 data-org="${org.login}">
-                                <div class="org-avatar">
-                                    <img src="https://github.com/${org.login}.png" alt="${org.login}" onerror="this.parentElement.textContent='${CEDA.getInitials(org.login)}'">
-                                </div>
-                                <div class="org-info">
-                                    <div class="org-name">${org.login}</div>
-                                    <div class="org-role">${org.isPersonal ? 'Personal' : org.role}</div>
-                                </div>
-                            </div>
-                        `).join('')}
+                <!-- Step indicator -->
+                <div class="step-indicator">
+                    <div class="step-indicator-item ${currentStep >= 1 ? 'active' : ''} ${currentStep > 1 ? 'completed' : ''}" data-step="1">
+                        <span class="step-indicator-number">1</span>
+                        <span class="step-indicator-label">Organization</span>
+                    </div>
+                    <div class="step-indicator-connector ${currentStep > 1 ? 'active' : ''}"></div>
+                    <div class="step-indicator-item ${currentStep >= 2 ? 'active' : ''}" data-step="2">
+                        <span class="step-indicator-number">2</span>
+                        <span class="step-indicator-label">Repositories</span>
                     </div>
                 </div>
 
-                <div class="section" id="project-section" style="${selectedOrg ? '' : 'opacity: 0.5; pointer-events: none;'}">
-                    <h3>Select Your Project</h3>
-                    <p>Choose a default project (repository) for context. You can change this later.</p>
-                    
-                    <div class="form-group">
-                        <select class="form-select" id="project-select" onchange="selectProject(this.value)">
-                            <option value="">Select a project...</option>
-                            ${getProjectsForOrg(selectedOrg).map(repo => `
-                                <option value="${repo.fullName}" ${selectedProject === repo.fullName ? 'selected' : ''}>
-                                    ${repo.fullName}
-                                </option>
+                <!-- Step 1: Org Selection -->
+                <div class="onboarding-step ${currentStep !== 1 ? 'hidden' : ''}" id="step-org">
+                    <div class="section">
+                        <h3>Select Your Organization</h3>
+                        <p>Choose the organization you want to use with Herald.</p>
+                        
+                        <div class="org-grid" id="org-grid">
+                            ${allOrgs.map(org => `
+                                <div class="card card-selectable org-card ${selectedOrg === org.login ? 'selected' : ''}" 
+                                     onclick="selectOrg('${org.login}')" 
+                                     data-org="${org.login}">
+                                    <div class="org-avatar">
+                                        <img src="https://github.com/${org.login}.png" alt="${org.login}" onerror="this.parentElement.textContent='${CEDA.getInitials(org.login)}'">
+                                    </div>
+                                    <div class="org-info">
+                                        <div class="org-name">${org.login}</div>
+                                        <div class="org-role">${org.isPersonal ? 'Personal' : org.role}</div>
+                                    </div>
+                                </div>
                             `).join('')}
-                        </select>
+                        </div>
                     </div>
                 </div>
 
-                <div class="actions">
-                    <button class="btn btn-secondary" onclick="skipSetup()">Skip for now</button>
-                    <button class="btn btn-primary" id="continue-btn" onclick="saveAndContinue()" ${!selectedOrg ? 'disabled' : ''}>
-                        Continue to Dashboard
-                    </button>
+                <!-- Step 2: Repo Selection -->
+                <div class="onboarding-step ${currentStep !== 2 ? 'hidden' : ''}" id="step-repos">
+                    <div class="section">
+                        <h3>Select Repositories to Track</h3>
+                        <p>Choose which repositories Herald should learn patterns from.</p>
+
+                        <div class="repo-filter">
+                            <input type="text" 
+                                   class="repo-search-input" 
+                                   placeholder="Filter repositories..." 
+                                   id="repo-search"
+                                   oninput="filterRepos(this.value)">
+                        </div>
+
+                        <div class="repo-list" id="repo-list">
+                            <!-- Repo checkboxes rendered here -->
+                        </div>
+
+                        <div class="repo-actions">
+                            <button class="btn btn-secondary btn-sm" onclick="selectAllRepos()">Select All</button>
+                            <button class="btn btn-secondary btn-sm" onclick="deselectAllRepos()">Clear</button>
+                            <span class="repo-count" id="repo-count">0 selected</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Navigation -->
+                <div class="onboarding-nav">
+                    <button class="btn btn-secondary" id="btn-back" onclick="goBack()" style="${currentStep === 1 ? 'visibility: hidden;' : ''}">Back</button>
+                    <div class="nav-right">
+                        <button class="btn btn-secondary" onclick="skipSetup()">Skip for now</button>
+                        <button class="btn btn-primary" id="btn-next" onclick="goNext()" ${currentStep === 1 && !selectedOrg ? 'disabled' : ''}>
+                            ${currentStep === 2 ? 'Complete Setup' : 'Continue'}
+                        </button>
+                    </div>
                 </div>
             `;
+
+            // If we're on step 2, render the repo list
+            if (currentStep === 2) {
+                renderRepoList();
+            }
         }
 
-        function getProjectsForOrg(orgLogin) {
+        function getReposForOrg(orgLogin) {
             if (!orgLogin || !profile.gitIdentity?.repositories) return [];
             
             return profile.gitIdentity.repositories.filter(repo => {
@@ -159,58 +195,156 @@
             });
         }
 
+        function renderRepoList() {
+            const repos = getReposForOrg(selectedOrg);
+            const container = document.getElementById('repo-list');
+            
+            // Filter repos based on search
+            const filteredRepos = repos.filter(repo => {
+                if (!repoSearchFilter) return true;
+                const repoName = repo.fullName.split('/')[1].toLowerCase();
+                return repoName.includes(repoSearchFilter.toLowerCase());
+            });
+
+            if (filteredRepos.length === 0) {
+                container.innerHTML = `
+                    <div class="repo-empty">
+                        ${repos.length === 0 ? 'No repositories found for this organization.' : 'No repositories match your filter.'}
+                    </div>
+                `;
+            } else {
+                container.innerHTML = filteredRepos.map(repo => `
+                    <label class="repo-item">
+                        <input type="checkbox"
+                               value="${repo.fullName}"
+                               ${selectedRepos.includes(repo.fullName) ? 'checked' : ''}
+                               onchange="toggleRepo('${repo.fullName}')">
+                        <span class="repo-item-name">${repo.fullName.split('/')[1]}</span>
+                        <span class="repo-item-permission">${repo.permission || 'read'}</span>
+                    </label>
+                `).join('');
+            }
+
+            updateRepoCount();
+        }
+
+        function filterRepos(value) {
+            repoSearchFilter = value;
+            renderRepoList();
+        }
+
+        function toggleRepo(fullName) {
+            if (selectedRepos.includes(fullName)) {
+                selectedRepos = selectedRepos.filter(r => r !== fullName);
+            } else {
+                selectedRepos.push(fullName);
+            }
+            updateRepoCount();
+        }
+
+        function selectAllRepos() {
+            const repos = getReposForOrg(selectedOrg);
+            // Filter by search if active
+            const filteredRepos = repos.filter(repo => {
+                if (!repoSearchFilter) return true;
+                const repoName = repo.fullName.split('/')[1].toLowerCase();
+                return repoName.includes(repoSearchFilter.toLowerCase());
+            });
+            
+            filteredRepos.forEach(repo => {
+                if (!selectedRepos.includes(repo.fullName)) {
+                    selectedRepos.push(repo.fullName);
+                }
+            });
+            renderRepoList();
+        }
+
+        function deselectAllRepos() {
+            const repos = getReposForOrg(selectedOrg);
+            // Only deselect repos that match current filter (or all if no filter)
+            const filteredRepos = repos.filter(repo => {
+                if (!repoSearchFilter) return true;
+                const repoName = repo.fullName.split('/')[1].toLowerCase();
+                return repoName.includes(repoSearchFilter.toLowerCase());
+            });
+            
+            const filteredNames = filteredRepos.map(r => r.fullName);
+            selectedRepos = selectedRepos.filter(r => !filteredNames.includes(r));
+            renderRepoList();
+        }
+
+        function updateRepoCount() {
+            const countEl = document.getElementById('repo-count');
+            if (countEl) {
+                countEl.textContent = `${selectedRepos.length} selected`;
+            }
+        }
+
         function selectOrg(orgLogin) {
             selectedOrg = orgLogin;
-            selectedProject = null;
+            // Clear selected repos when org changes (they belong to different org)
+            selectedRepos = [];
+            repoSearchFilter = '';
 
             // Update UI
             document.querySelectorAll('.org-card').forEach(card => {
                 card.classList.toggle('selected', card.dataset.org === orgLogin);
             });
 
-            // Enable project section
-            const projectSection = document.getElementById('project-section');
-            projectSection.style.opacity = '1';
-            projectSection.style.pointerEvents = 'auto';
-
-            // Update project dropdown
-            const projectSelect = document.getElementById('project-select');
-            const projects = getProjectsForOrg(orgLogin);
-            projectSelect.innerHTML = `
-                <option value="">Select a project...</option>
-                ${projects.map(repo => `
-                    <option value="${repo.fullName}">${repo.fullName}</option>
-                `).join('')}
-            `;
-
             // Enable continue button
-            document.getElementById('continue-btn').disabled = false;
+            const nextBtn = document.getElementById('btn-next');
+            if (nextBtn) {
+                nextBtn.disabled = false;
+            }
         }
 
-        function selectProject(projectFullName) {
-            selectedProject = projectFullName;
+        function showStep(step) {
+            currentStep = step;
+            renderOnboarding();
+        }
+
+        function goNext() {
+            if (currentStep === 1) {
+                if (!selectedOrg) {
+                    CEDA.showError(document.getElementById('step-org'), 'Please select an organization');
+                    return;
+                }
+                showStep(2);
+            } else if (currentStep === 2) {
+                if (selectedRepos.length === 0) {
+                    CEDA.showError(document.getElementById('step-repos'), 'Please select at least one repository');
+                    return;
+                }
+                saveAndContinue();
+            }
+        }
+
+        function goBack() {
+            if (currentStep === 2) {
+                showStep(1);
+            }
         }
 
         async function saveAndContinue() {
-            if (!selectedOrg) {
-                CEDA.showError(document.getElementById('content'), 'Please select an organization');
-                return;
-            }
-
-            const btn = document.getElementById('continue-btn');
+            const btn = document.getElementById('btn-next');
             btn.disabled = true;
             btn.textContent = 'Saving...';
 
             try {
+                // Use first selected repo as default project
+                const defaultProject = selectedRepos.length > 0 ? selectedRepos[0] : `${selectedOrg}/default`;
+                
                 await CEDA.updatePreferences({
                     defaultOrg: selectedOrg,
-                    defaultProject: selectedProject || `${selectedOrg}/default`,
+                    defaultProject: defaultProject,
+                    selectedRepos: selectedRepos,
                 });
 
                 // Update local user data
                 profile.preferences = {
                     defaultOrg: selectedOrg,
-                    defaultProject: selectedProject || `${selectedOrg}/default`,
+                    defaultProject: defaultProject,
+                    selectedRepos: selectedRepos,
                 };
                 CEDA.setUser(profile);
 
@@ -220,7 +354,7 @@
                 console.error('Failed to save preferences:', error);
                 CEDA.showError(document.getElementById('content'), 'Failed to save preferences. Please try again.');
                 btn.disabled = false;
-                btn.textContent = 'Continue to Dashboard';
+                btn.textContent = 'Complete Setup';
             }
         }
 
@@ -232,8 +366,9 @@
             CEDA.updatePreferences({
                 defaultOrg,
                 defaultProject,
+                selectedRepos: [],
             }).then(() => {
-                profile.preferences = { defaultOrg, defaultProject };
+                profile.preferences = { defaultOrg, defaultProject, selectedRepos: [] };
                 CEDA.setUser(profile);
                 window.location.href = '/dashboard.html';
             }).catch(error => {
