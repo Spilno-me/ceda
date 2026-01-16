@@ -10,8 +10,28 @@ This playbook is Devin's local pattern buffer for CEDA. Patterns here are valida
 ## Before Starting Any Task
 
 1. **Read CLAUDE.md** in the repo root
-2. **Check Herald patterns**: If Herald MCP is available, call `herald_patterns()` to get current antipatterns
+2. **Call Herald MCP** (already installed):
+   ```
+   herald_patterns()  # Get antipatterns to avoid
+   herald_patterns(context="ceda")  # Get project-specific patterns
+   ```
 3. **Read this playbook** for validated patterns specific to this codebase
+4. **Apply patterns** from both Herald and playbook to your work
+
+## After Completing Task
+
+1. **Reflect on outcome**:
+   ```
+   herald_reflect(
+     session="Brief description of what you did",
+     feeling="success" | "stuck",
+     insight="What worked or what went wrong"
+   )
+   ```
+2. **If pattern from Herald helped**:
+   ```
+   herald_pattern_feedback(pattern_text="the pattern", outcome="helped")
+   ```
 
 ---
 
