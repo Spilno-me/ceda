@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - CEDA</title>
+    <meta name="description" content="Your CEDA dashboard with Herald MCP configuration and pattern statistics.">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <a href="/dashboard.html" class="logo">CEDA</a>
+            <div class="nav-links">
+                <a href="/onboarding.html">Settings</a>
+                <a href="#" onclick="CEDA.logout(); return false;">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="page">
+        <div class="page-content">
+            <div class="container">
+                <div id="content">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>Loading dashboard...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <div class="container">
+            <p>Built by <a href="https://spilno.me" target="_blank">Spilno</a> &middot; <a href="https://github.com/Spilno-me/ceda" target="_blank">GitHub</a> &middot; <a href="https://www.npmjs.com/package/@spilno/herald-mcp" target="_blank">npm</a></p>
+        </div>
+    </footer>
+
+    <script src="/app.js"></script>
+    <script>
+        let profile = null;
+
+        async function init() {
+            // Initialize page and check auth
+            if (!CEDA.initPage(true)) return;
+
+            const content = document.getElementById('content');
+
+            try {
+                // Fetch user profile
+                profile = await CEDA.getProfile();
+                CEDA.setUser(profile);
+
+                // Check if user needs to complete onboarding
+                if (!profile.preferences || !profile.preferences.defaultOrg) {
+                    window.location.href = '/onboarding.html';
+                    return;
+                }
+
+                renderDashboard();
+            } catch (error) {
+                console.error('Failed to load profile:', error);
+                content.innerHTML = `
+                    <div class="error-message">
+                        Failed to load your profile. Please try logging in again.
+                    </div>
+                    <div class="actions">
+                        <button class="btn btn-primary" onclick="CEDA.logout()">Login Again</button>
+                    </div>
+                `;
+            }
+        }
+
+        function renderDashboard() {
+            const content = document.getElementById('content');
+            const { defaultOrg, defaultProject } = profile.preferences;
+            
+            // Generate Herald config
+            const config = CEDA.generateHeraldConfig(defaultOrg, defaultProject);
+            const configJson = JSON.stringify(config, null, 2);
+
+            content.innerHTML = `
+                <div class="page-header" style="text-align: left;">
+                    <h1>Welcome back, ${profile.githubLogin}</h1>
+                    <p>Your Herald MCP is configured for <strong>${defaultOrg}</strong> / <strong>${defaultProject || 'default'}</strong></p>
+                </div>
+
+                <div class="section config-display">
+                    <div class="section-header">
+                        <h3>Herald MCP Configuration</h3>
+                        <button class="btn btn-secondary" onclick="copyConfig()">Copy Config</button>
+                    </div>
+                    <p>Add this to your Claude Desktop configuration file (<code>~/.claude.json</code> or <code>.mcp.json</code> in your project):</p>
+                    <div class="code-block">
+                        <pre><code id="config-code">${escapeHtml(configJson)}</code></pre>
+                        <button class="copy-btn" onclick="copyConfig(this)">Copy</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Quick Start</h3>
+                    <div class="steps">
+                        <div class="step">
+                            <div class="step-number">1</div>
+                            <div class="step-content">
+                                <h3>Copy the configuration above</h3>
+                                <p>Click the "Copy" button to copy your personalized Herald MCP configuration.</p>
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-number">2</div>
+                            <div class="step-content">
+                                <h3>Add to Claude Desktop</h3>
+                                <p>Paste the configuration into your <code>~/.claude.json</code> file or create a <code>.mcp.json</code> file in your project root.</p>
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-number">3</div>
+                            <div class="step-content">
+                                <h3>Restart Claude Desktop</h3>
+                                <p>Restart Claude Desktop to load the Herald MCP server with your configuration.</p>
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-number">4</div>
+                            <div class="step-content">
+                                <h3>Start using CEDA</h3>
+                                <p>Ask Claude to generate modules, and CEDA will learn from your patterns automatically.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Your Context</h3>
+                        <a href="/onboarding.html" class="btn btn-secondary">Change Settings</a>
+                    </div>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value">${defaultOrg}</div>
+                            <div class="stat-label">Organization</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${defaultProject ? defaultProject.split('/')[1] : 'default'}</div>
+                            <div class="stat-label">Project</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${profile.gitIdentity?.repositories?.length || 0}</div>
+                            <div class="stat-label">Repositories</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Alternative: Quick Install</h3>
+                    <p>You can also use the Herald MCP CLI to automatically configure Claude Desktop:</p>
+                    <div class="code-block">
+                        <pre><code>npx @spilno/herald-mcp init</code></pre>
+                        <button class="copy-btn" onclick="CEDA.copyToClipboard('npx @spilno/herald-mcp init', this)">Copy</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Resources</h3>
+                    <p>
+                        <a href="https://github.com/Spilno-me/ceda/blob/main/docs/herald-setup-guide.md" target="_blank">Setup Guide</a> &middot;
+                        <a href="https://getceda.com" target="_blank">Documentation</a> &middot;
+                        <a href="https://github.com/Spilno-me/ceda" target="_blank">GitHub</a> &middot;
+                        <a href="https://www.npmjs.com/package/@spilno/herald-mcp" target="_blank">npm Package</a>
+                    </p>
+                </div>
+            `;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function copyConfig(button) {
+            const { defaultOrg, defaultProject } = profile.preferences;
+            const config = CEDA.generateHeraldConfig(defaultOrg, defaultProject);
+            const configJson = JSON.stringify(config, null, 2);
+            
+            CEDA.copyToClipboard(configJson, button || document.querySelector('.copy-btn'));
+        }
+
+        // Initialize on load
+        init();
+    </script>
+</body>
+</html>

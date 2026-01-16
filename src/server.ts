@@ -547,6 +547,8 @@ const API_ENDPOINTS = [
   { method: 'GET', path: '/api/auth/github', description: 'Start GitHub OAuth flow', ticket: 'CEDA-80' },
   { method: 'GET', path: '/api/auth/github/callback', description: 'GitHub OAuth callback', ticket: 'CEDA-80' },
   { method: 'POST', path: '/api/auth/verify', description: 'Verify Herald by git remote', ticket: 'CEDA-80' },
+  { method: 'GET', path: '/api/profile', description: 'Get user profile with git identity', ticket: 'CEDA-81' },
+  { method: 'PATCH', path: '/api/profile/preferences', description: 'Update user preferences', ticket: 'CEDA-81' },
 ] as const;
 
 /**
@@ -715,6 +717,76 @@ async function checkRateLimitAndRespond(
   return false;
 }
 
+// CEDA-81: User preferences storage (in-memory for simplicity, could use Redis)
+const userPreferences = new Map<string, { defaultOrg?: string; defaultProject?: string; customTags?: string[] }>();
+
+/**
+ * CEDA-81: Serve static files from /public directory
+ */
+function serveStaticFile(filePath: string, res: http.ServerResponse): boolean {
+  const publicDir = path.join(process.cwd(), 'public');
+  const fullPath = path.join(publicDir, filePath);
+  
+  // Security: Prevent directory traversal
+  if (!fullPath.startsWith(publicDir)) {
+    return false;
+  }
+  
+  // Check if file exists
+  if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+    return false;
+  }
+  
+  // Determine content type
+  const ext = path.extname(fullPath).toLowerCase();
+  const contentTypes: Record<string, string> = {
+    '.html': 'text/html',
+    '.css': 'text/css',
+    '.js': 'application/javascript',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon',
+  };
+  
+  const contentType = contentTypes[ext] || 'application/octet-stream';
+  
+  try {
+    const content = fs.readFileSync(fullPath);
+    res.writeHead(200, { 'Content-Type': contentType });
+    res.end(content);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * CEDA-81: Extract user ID from JWT token in Authorization header
+ */
+function extractUserFromToken(req: http.IncomingMessage): { userId: string; email: string; company: string } | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+  
+  const token = authHeader.substring(7);
+  const payload = authService.verifyAccessToken(token);
+  
+  if (!payload) {
+    return null;
+  }
+  
+  return {
+    userId: payload.sub,
+    email: payload.email,
+    company: payload.company,
+  };
+}
+
 /**
  * Request handler
  */
@@ -737,8 +809,13 @@ async function handleRequest(
   }
 
   try {
-    // Landing page
+    // CEDA-81: Serve static files from /public directory
+    // Handle root path - serve index.html from public
     if (url === '/' && method === 'GET') {
+      if (serveStaticFile('index.html', res)) {
+        return;
+      }
+      // Fallback to inline landing page if public/index.html doesn't exist
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(`<!DOCTYPE html>
 <html lang="en">
@@ -829,6 +906,14 @@ async function handleRequest(
 </body>
 </html>`);
       return;
+    }
+
+    // CEDA-81: Serve static files (CSS, JS, HTML pages)
+    if (method === 'GET' && (url.endsWith('.html') || url.endsWith('.css') || url.endsWith('.js') || url.endsWith('.png') || url.endsWith('.jpg') || url.endsWith('.svg') || url.endsWith('.ico'))) {
+      const filePath = url.startsWith('/') ? url.substring(1) : url;
+      if (serveStaticFile(filePath, res)) {
+        return;
+      }
     }
 
     // Health check
@@ -4877,6 +4962,127 @@ async function handleRequest(
     }
 
     // ============================================
+    // CEDA-81: Profile Endpoints
+    // ============================================
+
+    // GET /api/profile - Get user profile with git identity
+    if (url === '/api/profile' && method === 'GET') {
+      const userInfo = extractUserFromToken(req);
+      
+      if (!userInfo) {
+        sendJson(res, 401, {
+          error: 'Unauthorized',
+          message: 'Valid authentication token required',
+        });
+        return;
+      }
+
+      try {
+        // Extract GitHub ID from user ID (format: git_{githubId})
+        const githubIdMatch = userInfo.userId.match(/^git_(\d+)$/);
+        if (!githubIdMatch) {
+          sendJson(res, 400, {
+            error: 'Invalid user ID format',
+            message: 'User ID must be in format git_{githubId}',
+          });
+          return;
+        }
+        const githubId = parseInt(githubIdMatch[1], 10);
+
+        // Get git identity for the user
+        const gitIdentity = await gitIdentityService.findByGithubId(githubId);
+        
+        if (!gitIdentity) {
+          sendJson(res, 404, {
+            error: 'Profile not found',
+            message: 'User profile not found. Please re-authenticate.',
+          });
+          return;
+        }
+
+        // Get user preferences
+        const preferences = userPreferences.get(userInfo.userId) || {};
+
+        // Build profile response
+        const profileResponse = {
+          id: gitIdentity.id,
+          email: userInfo.email,
+          githubLogin: gitIdentity.githubLogin,
+          avatarUrl: `https://github.com/${gitIdentity.githubLogin}.png`,
+          gitIdentity: {
+            organizations: gitIdentity.organizations.map((org: { login: string; role?: string }) => ({
+              login: org.login,
+              role: org.role || 'member',
+            })),
+            repositories: gitIdentity.repositories.map((repo: { fullName: string; permission?: string }) => ({
+              fullName: repo.fullName,
+              permission: repo.permission || 'read',
+            })),
+          },
+          preferences,
+        };
+
+        sendJson(res, 200, profileResponse);
+        return;
+      } catch (err) {
+        console.error('[CEDA-81] Profile fetch error:', err);
+        sendJson(res, 500, {
+          error: 'Failed to fetch profile',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
+    // PATCH /api/profile/preferences - Update user preferences
+    if (url === '/api/profile/preferences' && method === 'PATCH') {
+      const userInfo = extractUserFromToken(req);
+      
+      if (!userInfo) {
+        sendJson(res, 401, {
+          error: 'Unauthorized',
+          message: 'Valid authentication token required',
+        });
+        return;
+      }
+
+      try {
+        const body = await parseBody<{
+          defaultOrg?: string;
+          defaultProject?: string;
+          customTags?: string[];
+        }>(req);
+
+        // Get existing preferences and merge with new ones
+        const existingPrefs = userPreferences.get(userInfo.userId) || {};
+        const updatedPrefs = {
+          ...existingPrefs,
+          ...(body.defaultOrg !== undefined && { defaultOrg: body.defaultOrg }),
+          ...(body.defaultProject !== undefined && { defaultProject: body.defaultProject }),
+          ...(body.customTags !== undefined && { customTags: body.customTags }),
+        };
+
+        // Store updated preferences
+        userPreferences.set(userInfo.userId, updatedPrefs);
+
+        console.log(`[CEDA-81] Preferences updated for user ${userInfo.userId}: ${JSON.stringify(updatedPrefs)}`);
+
+        sendJson(res, 200, {
+          success: true,
+          preferences: updatedPrefs,
+        });
+        return;
+      } catch (err) {
+        console.error('[CEDA-81] Preferences update error:', err);
+        sendJson(res, 500, {
+          error: 'Failed to update preferences',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
+    // ============================================
     // CEDA-80: GitHub OAuth Routes
     // ============================================
 
@@ -4998,6 +5204,18 @@ async function handleRequest(
 
         console.log(`[CEDA-80] GitHub OAuth successful for ${user.login} (${orgs.length} orgs, ${repos.length} repos)`);
 
+        // CEDA-81: Redirect to onboarding page with token for browser flows
+        // Check if the request came from a browser (Accept header contains text/html)
+        const acceptHeader = req.headers.accept || '';
+        if (acceptHeader.includes('text/html')) {
+          res.writeHead(302, {
+            Location: `/onboarding.html?token=${tokens.accessToken}`,
+          });
+          res.end();
+          return;
+        }
+
+        // For API clients, return JSON response
         sendJson(res, 200, response);
         return;
       } catch (err) {
