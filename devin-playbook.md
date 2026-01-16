@@ -67,11 +67,28 @@ herald_pattern_feedback(pattern_text="the pattern", outcome="didnt_help")
 
 | Tool | When | Example |
 |------|------|---------|
+| `herald_context(refresh=true)` | After cloning repo | Refresh context from git |
 | `herald_patterns()` | Session start | Get all patterns for context |
 | `herald_patterns(context="testing")` | Specific domain | Get testing patterns |
 | `herald_reflect(session, feeling, insight)` | Friction/success | Capture signal |
 | `herald_pattern_feedback(pattern_text, outcome)` | After using pattern | Reinforce/break |
 | `herald_simulate(session, feeling, insight)` | Complex analysis | AI-to-AI reflection |
+
+### Context Refresh (IMPORTANT for Devin)
+
+When you clone a repo, Herald may not automatically detect the git context.
+Call `herald_context(refresh=true)` after cloning to update context:
+
+```
+1. Clone repo: git clone https://github.com/org/repo
+2. cd repo
+3. herald_context(refresh=true)  # Now context is: company=org, project=repo
+```
+
+Context is derived from git (trusted, immutable):
+- **company**: GitHub org from remote
+- **project**: Repo name from remote
+- **user**: git config user.name
 
 ---
 

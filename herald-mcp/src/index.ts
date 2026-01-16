@@ -38,6 +38,11 @@ const CEDA_API_PASS = process.env.HERALD_API_PASS;
 // User is ALWAYS known (whoami). Company/project inferred from path as tags.
 
 function deriveUser(): string {
+  // Priority: git user > env var > OS user
+  // Git user is trusted (immutable identity from git config)
+  const gitUser = getGitUser();
+  if (gitUser) return gitUser;
+
   try {
     return userInfo().username;
   } catch {
@@ -111,6 +116,35 @@ function getGitRemote(): GitInfo {
     return { remote: normalized, org, repo };
   } catch {
     return { remote: null, org: null, repo: null };
+  }
+}
+
+// Git-based user identity (trusted - derived from git config)
+function getGitUser(): string | null {
+  try {
+    const gitRoot = findGitRoot(process.cwd());
+    if (!gitRoot) return null;
+
+    const configPath = join(gitRoot, '.git', 'config');
+    if (!existsSync(configPath)) return null;
+
+    const config = readFileSync(configPath, 'utf-8');
+
+    // Check local git config first: [user] name = ...
+    const nameMatch = config.match(/\[user\][^\[]*name\s*=\s*(.+)/m);
+    if (nameMatch) return nameMatch[1].trim();
+
+    // Fall back to global git config
+    const globalConfigPath = join(homedir(), '.gitconfig');
+    if (existsSync(globalConfigPath)) {
+      const globalConfig = readFileSync(globalConfigPath, 'utf-8');
+      const globalNameMatch = globalConfig.match(/\[user\][^\[]*name\s*=\s*(.+)/m);
+      if (globalNameMatch) return globalNameMatch[1].trim();
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -298,13 +332,13 @@ function loadOrDeriveContext(): LoadedContext {
 // Load context once at startup
 const LOADED_CONTEXT = loadOrDeriveContext();
 
-// User is always known
-const HERALD_USER = LOADED_CONTEXT.user;
+// User is always known (can be refreshed via herald_context)
+let HERALD_USER = LOADED_CONTEXT.user;
 
-// Tags from context (env > stored > git > path)
-const HERALD_TAGS = LOADED_CONTEXT.tags;
-const HERALD_COMPANY = HERALD_TAGS[0] || "";
-const HERALD_PROJECT = HERALD_TAGS[1] || HERALD_TAGS[0] || "";
+// Tags from context (env > stored > git > path) - can be refreshed
+let HERALD_TAGS = LOADED_CONTEXT.tags;
+let HERALD_COMPANY = HERALD_TAGS[0] || "";
+let HERALD_PROJECT = HERALD_TAGS[1] || HERALD_TAGS[0] || "";
 
 // ADR-001: Trust level determines pattern propagation
 // These are mutable - verification with CEDA may upgrade/downgrade trust
@@ -329,7 +363,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.32.1";
+const VERSION = "1.33.0";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -1071,6 +1105,24 @@ const tools: Tool[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "herald_context",
+    description: `Get or refresh Herald's context (company/project/user).
+
+Context is derived from git (trusted) or path (fallback).
+Use refresh=true after cloning a repo or changing directories to update context.
+
+Returns: Current context including trust level and source.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        refresh: {
+          type: "boolean",
+          description: "Re-derive context from current directory's git info"
+        }
+      }
+    },
+  },
+  {
     name: "herald_stats",
     description: "Get CEDA server statistics and loaded patterns info",
     inputSchema: { type: "object", properties: {} },
@@ -1799,6 +1851,68 @@ Herald will:
                 mode: cloudAvailable ? "cloud" : "local",
                 hint: buffer.length > 0 ? "Use herald_sync to flush buffered insights" : undefined,
               },
+            }, null, 2)
+          }],
+        };
+      }
+
+      case "herald_context": {
+        const refresh = args?.refresh as boolean;
+
+        if (refresh) {
+          // Re-derive context from current directory
+          const newContext = loadOrDeriveContext();
+
+          // Update module-level variables directly
+          HERALD_USER = newContext.user;
+          HERALD_TAGS = newContext.tags;
+          HERALD_COMPANY = newContext.tags[0] || "";
+          HERALD_PROJECT = newContext.tags[1] || newContext.tags[0] || "";
+          TRUST_LEVEL = newContext.trust;
+          CONTEXT_SOURCE = newContext.source;
+          PROPAGATES = newContext.propagates;
+
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                refreshed: true,
+                context: {
+                  company: HERALD_COMPANY,
+                  project: HERALD_PROJECT,
+                  user: HERALD_USER,
+                  tags: HERALD_TAGS,
+                  trust: TRUST_LEVEL,
+                  source: CONTEXT_SOURCE,
+                  propagates: PROPAGATES,
+                  gitRemote: newContext.gitRemote,
+                },
+                message: TRUST_LEVEL === 'HIGH'
+                  ? `Context refreshed from git: ${newContext.gitRemote}`
+                  : `Context refreshed from ${CONTEXT_SOURCE} (LOW trust)`
+              }, null, 2)
+            }],
+          };
+        }
+
+        // Just return current context
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              context: {
+                company: HERALD_COMPANY,
+                project: HERALD_PROJECT,
+                user: HERALD_USER,
+                tags: HERALD_TAGS,
+                trust: TRUST_LEVEL,
+                source: CONTEXT_SOURCE,
+                propagates: PROPAGATES,
+                gitRemote: GIT_REMOTE,
+              },
+              hint: TRUST_LEVEL === 'LOW'
+                ? "Use herald_context(refresh=true) in a git repo for HIGH trust"
+                : undefined
             }, null, 2)
           }],
         };
