@@ -1,41 +1,81 @@
 # CEDA Devin Playbook
 
 ## Purpose
-This playbook is Devin's local pattern buffer for CEDA. Patterns here are validated through PR review.
 
-**Flow:** CEDA patterns → Playbook → Devin work → PR review → Reinforce/Correct → Update playbook
+This playbook teaches Devin how to cooperate with Herald MCP to enrich CEDA's pattern memory.
 
----
-
-## Before Starting Any Task
-
-1. **Read CLAUDE.md** in the repo root
-2. **Call Herald MCP** (already installed):
-   ```
-   herald_patterns()  # Get antipatterns to avoid
-   herald_patterns(context="ceda")  # Get project-specific patterns
-   ```
-3. **Read this playbook** for validated patterns specific to this codebase
-4. **Apply patterns** from both Herald and playbook to your work
-
-## After Completing Task
-
-1. **Reflect on outcome**:
-   ```
-   herald_reflect(
-     session="Brief description of what you did",
-     feeling="success" | "stuck",
-     insight="What worked or what went wrong"
-   )
-   ```
-2. **If pattern from Herald helped**:
-   ```
-   herald_pattern_feedback(pattern_text="the pattern", outcome="helped")
-   ```
+**Formula:** More patterns → Smarter Devin → Better code → More patterns (exponential)
 
 ---
 
-## Validated Patterns (Reinforced through PR review)
+## Herald MCP Integration
+
+Herald is your connection to CEDA's active pattern memory. USE IT.
+
+### Session Start (REQUIRED)
+
+```
+1. Read this playbook
+2. Call herald_patterns()
+3. Apply patterns to your work
+4. Avoid antipatterns listed below
+```
+
+### During Work
+
+When you hit **friction** (stuck, confused, error):
+```
+herald_reflect(
+  session="Brief context",
+  feeling="stuck",
+  insight="What went wrong"
+)
+```
+
+When something **works well** (smooth, elegant, fast):
+```
+herald_reflect(
+  session="Brief context",
+  feeling="success",
+  insight="What worked"
+)
+```
+
+### Session End
+
+```
+1. Open PR with clear summary
+2. Reference patterns used (if any)
+3. Wait for Claude review
+```
+
+### After PR Review
+
+If pattern from Herald helped your work:
+```
+herald_pattern_feedback(pattern_text="the pattern", outcome="helped")
+```
+
+If pattern didn't help or led you astray:
+```
+herald_pattern_feedback(pattern_text="the pattern", outcome="didnt_help")
+```
+
+---
+
+## Herald Tools Reference
+
+| Tool | When | Example |
+|------|------|---------|
+| `herald_patterns()` | Session start | Get all patterns for context |
+| `herald_patterns(context="testing")` | Specific domain | Get testing patterns |
+| `herald_reflect(session, feeling, insight)` | Friction/success | Capture signal |
+| `herald_pattern_feedback(pattern_text, outcome)` | After using pattern | Reinforce/break |
+| `herald_simulate(session, feeling, insight)` | Complex analysis | AI-to-AI reflection |
+
+---
+
+## Validated Patterns (PR Review Approved)
 
 ### Architecture
 - [ ] *Empty - patterns added after successful PR reviews*
@@ -48,46 +88,80 @@ This playbook is Devin's local pattern buffer for CEDA. Patterns here are valida
 
 ---
 
-## Antipatterns (Learned from PR feedback)
+## Antipatterns (PR Review Feedback)
 
 ### Context Confusion
 - **KIOSK/ADMIN/WEB are separate contexts** - kiosk-web is for physical kiosks, goprint-web is for website. Always check service map before editing cross-repo.
 
 ### Publishing
-- **Never publish without explicit cd** - Always `cd /path/to/package && npm publish` to prevent wrong repo publish
+- **Never publish without explicit cd** - Always `cd /path/to/package && npm publish` to prevent wrong repo publish.
+
+### Herald Usage
+- **Don't guess insights** - When calling herald_reflect(), ask what specifically worked/failed. Don't invent signals.
+- **Call herald_patterns() first** - Always check existing patterns before starting work. Don't reinvent.
+
+---
+
+## Pattern Propagation
+
+```
+user → team → org → orgs → global
+
+Your patterns help everyone. Everyone's patterns help you.
+```
+
+When you discover something valuable:
+```
+herald_share_scoped(
+  insight="The insight",
+  scope="siblings"  # or "parent" or "all"
+)
+```
 
 ---
 
 ## PR Review Protocol
 
-When PR is reviewed:
+### If PR Approved/Merged
 
-### If Approved/Merged
-```
-Pattern validated. Add to "Validated Patterns" section:
+Pattern validated. Add to "Validated Patterns" above:
 - What worked
 - Why it worked
 - Link to PR as evidence
+
+Call:
+```
+herald_reflect(
+  session="PR approved",
+  feeling="success",
+  insight="What the review validated"
+)
 ```
 
 ### If Changes Requested
-```
-Check PR comments for pattern guidance. Add to "Antipatterns" section:
+
+Check PR comments. Add to "Antipatterns" above:
 - What went wrong
-- Better approach suggested
-- Link to PR comment as evidence
+- Better approach from review
+- Link to PR comment
+
+Call:
+```
+herald_reflect(
+  session="PR changes requested",
+  feeling="stuck",
+  insight="What should have been done differently"
+)
 ```
 
 ---
 
-## Feedback to CEDA
+## The Double Loop
 
-After task completion, if Herald available:
-```
-herald_pattern_feedback(pattern_id, outcome="helped"|"didnt_help")
-```
+**Loop 1 (Real-time):** You → Herald → CEDA (immediate signals)
+**Loop 2 (Async):** You → PR → Claude Review → Playbook (validated patterns)
 
-This closes the loop - validated patterns propagate back to CEDA global memory.
+Both loops make you smarter. Each session compounds.
 
 ---
 
@@ -95,5 +169,5 @@ This closes the loop - validated patterns propagate back to CEDA global memory.
 
 | Date | Change | PR Evidence |
 |------|--------|-------------|
+| 2026-01-17 | Added Herald integration guide | - |
 | 2026-01-16 | Initial playbook created | - |
-
