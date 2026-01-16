@@ -28,6 +28,7 @@ import { AbstractionService } from './services/abstraction.service';
 import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
 import { DocumentService } from './services/document.service';
+import { upstashRedis } from './services/upstash-redis.service';
 import { QualityScoreService } from './services/quality-score.service';
 import { LinkingService } from './services/linking.service';
 import { AnomalyDetectionService } from './services/anomaly-detection.service';
@@ -110,12 +111,16 @@ interface MetaPattern {
   lastUpdated: string;
 }
 
-// Simple file-based Herald storage
+// CEDA-83: Hybrid file + Redis storage for Herald data
+// File storage for fast synchronous reads, Redis for persistence across deploys
 const heraldStorage = {
   getContextsFile: () => path.join(HERALD_DATA_PATH, 'contexts.json'),
   getInsightsFile: () => path.join(HERALD_DATA_PATH, 'insights.json'),
   getReflectionsFile: () => path.join(HERALD_DATA_PATH, 'reflections.json'),
   getMetaPatternsFile: () => path.join(HERALD_DATA_PATH, 'meta-patterns.json'),
+
+  // Flag to track if Redis sync completed
+  _redisSynced: false,
 
   loadContexts: (): HeraldContext[] => {
     const file = heraldStorage.getContextsFile();
@@ -138,7 +143,19 @@ const heraldStorage = {
   },
 
   saveInsights: (insights: HeraldInsight[]) => {
+    // Save to file (synchronous)
     fs.writeFileSync(heraldStorage.getInsightsFile(), JSON.stringify(insights, null, 2));
+
+    // Also save to Redis for persistence (async, fire-and-forget)
+    if (upstashRedis.isEnabled()) {
+      // Save only the latest insight (incremental)
+      const latest = insights[insights.length - 1];
+      if (latest) {
+        upstashRedis.saveInsight(latest).catch(err => {
+          console.error('[Herald] Redis insight save failed:', err);
+        });
+      }
+    }
   },
 
   // Meta-learning: Reflections with method tracking
@@ -151,7 +168,75 @@ const heraldStorage = {
   },
 
   saveReflections: (reflections: HeraldReflection[]) => {
+    // Save to file (synchronous)
     fs.writeFileSync(heraldStorage.getReflectionsFile(), JSON.stringify(reflections, null, 2));
+
+    // Also save to Redis for persistence (async, fire-and-forget)
+    if (upstashRedis.isEnabled()) {
+      // Save only the latest reflection (incremental)
+      const latest = reflections[reflections.length - 1];
+      if (latest) {
+        upstashRedis.saveReflection(latest).catch(err => {
+          console.error('[Herald] Redis reflection save failed:', err);
+        });
+      }
+    }
+  },
+
+  // CEDA-83: Sync Redis → File on startup (restores data after deploy)
+  syncFromRedis: async () => {
+    if (!upstashRedis.isEnabled()) {
+      console.log('[Herald] Redis not configured - using file storage only');
+      return;
+    }
+
+    try {
+      // Load reflections from Redis
+      const redisReflections = await upstashRedis.loadReflections({ limit: 1000 });
+      if (redisReflections.length > 0) {
+        const existingReflections = heraldStorage.loadReflections();
+        const existingIds = new Set(existingReflections.map(r => r.id));
+
+        // Merge (add Redis items not in file)
+        let added = 0;
+        for (const reflection of redisReflections) {
+          if (!existingIds.has(reflection.id)) {
+            existingReflections.push(reflection as HeraldReflection);
+            added++;
+          }
+        }
+
+        if (added > 0) {
+          fs.writeFileSync(heraldStorage.getReflectionsFile(), JSON.stringify(existingReflections, null, 2));
+          console.log(`[Herald] Synced ${added} reflections from Redis`);
+        }
+      }
+
+      // Load insights from Redis
+      const redisInsights = await upstashRedis.loadInsights({ limit: 1000 });
+      if (redisInsights.length > 0) {
+        const existingInsights = heraldStorage.loadInsights();
+        const existingIds = new Set(existingInsights.map(i => i.id));
+
+        let added = 0;
+        for (const insight of redisInsights) {
+          if (!existingIds.has(insight.id)) {
+            existingInsights.push(insight as HeraldInsight);
+            added++;
+          }
+        }
+
+        if (added > 0) {
+          fs.writeFileSync(heraldStorage.getInsightsFile(), JSON.stringify(existingInsights, null, 2));
+          console.log(`[Herald] Synced ${added} insights from Redis`);
+        }
+      }
+
+      heraldStorage._redisSynced = true;
+      console.log('[Herald] Redis sync complete');
+    } catch (err) {
+      console.error('[Herald] Redis sync failed:', err);
+    }
   },
 
   // Meta-learning: Meta-patterns (learned weights)
@@ -5306,6 +5391,11 @@ server.listen(PORT, async () => {
   // Initialize vector store in background (non-blocking)
   initializeVectorStore().catch(err => {
     console.error('[CEDA] Vector store initialization error:', err);
+  });
+
+  // CEDA-83: Sync Herald data from Redis (restores after deploy)
+  heraldStorage.syncFromRedis().catch(err => {
+    console.error('[CEDA] Herald Redis sync error:', err);
   });
 
   // CEDA-51: Schedule daily decay job at 3 AM UTC

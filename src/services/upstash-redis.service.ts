@@ -404,6 +404,253 @@ class UpstashRedisService {
   }
 
   // ============================================
+  // REFLECTION STORAGE (CEDA-83)
+  // ============================================
+
+  /**
+   * Store a reflection in Redis
+   */
+  async saveReflection(reflection: {
+    id: string;
+    session: string;
+    feeling: 'stuck' | 'success';
+    insight: string;
+    method?: string;
+    signal?: string;
+    outcome?: string;
+    reinforcement?: string;
+    warning?: string;
+    company: string;
+    project: string;
+    user: string;
+    applications?: Array<{ sessionId: string; helped: boolean; timestamp: string }>;
+    timestamp: string;
+  }): Promise<boolean> {
+    const key = `reflection:${reflection.id}`;
+    const serialized = JSON.stringify(reflection);
+
+    // Store the reflection
+    const result = await this.execute(['SET', key, serialized]);
+
+    // Add to indices for querying
+    const timestamp = new Date(reflection.timestamp).getTime();
+
+    // Global sorted set by timestamp
+    await this.execute(['ZADD', 'reflections:all', timestamp.toString(), reflection.id]);
+
+    // Company index
+    await this.execute(['ZADD', `reflections:company:${reflection.company}`, timestamp.toString(), reflection.id]);
+
+    // Project index
+    await this.execute(['ZADD', `reflections:project:${reflection.company}:${reflection.project}`, timestamp.toString(), reflection.id]);
+
+    // User index
+    await this.execute(['ZADD', `reflections:user:${reflection.user}`, timestamp.toString(), reflection.id]);
+
+    // Feeling index (pattern vs antipattern)
+    await this.execute(['ZADD', `reflections:feeling:${reflection.feeling}`, timestamp.toString(), reflection.id]);
+
+    return result !== null;
+  }
+
+  /**
+   * Load reflections with filtering
+   */
+  async loadReflections(options: {
+    company?: string;
+    project?: string;
+    user?: string;
+    feeling?: 'stuck' | 'success';
+    limit?: number;
+  } = {}): Promise<Array<{
+    id: string;
+    session: string;
+    feeling: 'stuck' | 'success';
+    insight: string;
+    method?: string;
+    signal?: string;
+    outcome?: string;
+    reinforcement?: string;
+    warning?: string;
+    company: string;
+    project: string;
+    user: string;
+    applications: Array<{ sessionId: string; helped: boolean; timestamp: string }>;
+    timestamp: string;
+  }>> {
+    const limit = options.limit || 100;
+
+    // Determine which index to query
+    let indexKey = 'reflections:all';
+    if (options.user) {
+      indexKey = `reflections:user:${options.user}`;
+    } else if (options.project && options.company) {
+      indexKey = `reflections:project:${options.company}:${options.project}`;
+    } else if (options.company) {
+      indexKey = `reflections:company:${options.company}`;
+    }
+
+    // Get IDs from sorted set (newest first)
+    const ids = await this.execute<string[]>(['ZREVRANGE', indexKey, '0', (limit - 1).toString()]);
+    if (!ids || ids.length === 0) return [];
+
+    // Batch get all reflections
+    const commands = ids.map(id => ['GET', `reflection:${id}`]);
+    const results = await this.pipeline<string>(commands);
+    if (!results) return [];
+
+    const reflections = results
+      .filter(r => r !== null)
+      .map(r => {
+        try {
+          return JSON.parse(r);
+        } catch {
+          return null;
+        }
+      })
+      .filter(r => r !== null);
+
+    // Apply additional filters
+    let filtered = reflections;
+    if (options.feeling) {
+      filtered = filtered.filter(r => r.feeling === options.feeling);
+    }
+
+    return filtered;
+  }
+
+  /**
+   * Delete a reflection
+   */
+  async deleteReflection(id: string): Promise<boolean> {
+    const reflection = await this.execute<string>(['GET', `reflection:${id}`]);
+    if (!reflection) return false;
+
+    const parsed = JSON.parse(reflection);
+
+    // Remove from all indices
+    await this.execute(['ZREM', 'reflections:all', id]);
+    await this.execute(['ZREM', `reflections:company:${parsed.company}`, id]);
+    await this.execute(['ZREM', `reflections:project:${parsed.company}:${parsed.project}`, id]);
+    await this.execute(['ZREM', `reflections:user:${parsed.user}`, id]);
+    await this.execute(['ZREM', `reflections:feeling:${parsed.feeling}`, id]);
+
+    // Delete the reflection
+    const result = await this.execute(['DEL', `reflection:${id}`]);
+    return result !== null;
+  }
+
+  /**
+   * Delete all reflections for a user
+   */
+  async deleteUserReflections(user: string): Promise<number> {
+    const ids = await this.execute<string[]>(['ZRANGE', `reflections:user:${user}`, '0', '-1']);
+    if (!ids || ids.length === 0) return 0;
+
+    let deleted = 0;
+    for (const id of ids) {
+      if (await this.deleteReflection(id)) {
+        deleted++;
+      }
+    }
+    return deleted;
+  }
+
+  // ============================================
+  // INSIGHT STORAGE (CEDA-83)
+  // ============================================
+
+  /**
+   * Store an insight in Redis
+   */
+  async saveInsight(insight: {
+    id: string;
+    fromContext: string;
+    toContext: string;
+    topic?: string;
+    insight: string;
+    timestamp: string;
+  }): Promise<boolean> {
+    const key = `insight:${insight.id}`;
+    const serialized = JSON.stringify(insight);
+
+    const result = await this.execute(['SET', key, serialized]);
+
+    // Add to indices
+    const timestamp = new Date(insight.timestamp).getTime();
+    await this.execute(['ZADD', 'insights:all', timestamp.toString(), insight.id]);
+    await this.execute(['ZADD', `insights:to:${insight.toContext}`, timestamp.toString(), insight.id]);
+
+    if (insight.topic) {
+      await this.execute(['ZADD', `insights:topic:${insight.topic.toLowerCase()}`, timestamp.toString(), insight.id]);
+    }
+
+    return result !== null;
+  }
+
+  /**
+   * Load insights with filtering
+   */
+  async loadInsights(options: {
+    toContext?: string;
+    topic?: string;
+    limit?: number;
+  } = {}): Promise<Array<{
+    id: string;
+    fromContext: string;
+    toContext: string;
+    topic?: string;
+    insight: string;
+    timestamp: string;
+  }>> {
+    const limit = options.limit || 100;
+
+    let indexKey = 'insights:all';
+    if (options.toContext) {
+      indexKey = `insights:to:${options.toContext}`;
+    } else if (options.topic) {
+      indexKey = `insights:topic:${options.topic.toLowerCase()}`;
+    }
+
+    const ids = await this.execute<string[]>(['ZREVRANGE', indexKey, '0', (limit - 1).toString()]);
+    if (!ids || ids.length === 0) return [];
+
+    const commands = ids.map(id => ['GET', `insight:${id}`]);
+    const results = await this.pipeline<string>(commands);
+    if (!results) return [];
+
+    return results
+      .filter(r => r !== null)
+      .map(r => {
+        try {
+          return JSON.parse(r);
+        } catch {
+          return null;
+        }
+      })
+      .filter(r => r !== null);
+  }
+
+  /**
+   * Delete an insight
+   */
+  async deleteInsight(id: string): Promise<boolean> {
+    const insight = await this.execute<string>(['GET', `insight:${id}`]);
+    if (!insight) return false;
+
+    const parsed = JSON.parse(insight);
+
+    await this.execute(['ZREM', 'insights:all', id]);
+    await this.execute(['ZREM', `insights:to:${parsed.toContext}`, id]);
+    if (parsed.topic) {
+      await this.execute(['ZREM', `insights:topic:${parsed.topic.toLowerCase()}`, id]);
+    }
+
+    const result = await this.execute(['DEL', `insight:${id}`]);
+    return result !== null;
+  }
+
+  // ============================================
   // HEALTH & DIAGNOSTICS
   // ============================================
 
