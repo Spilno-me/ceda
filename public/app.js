@@ -116,8 +116,10 @@ const CEDA = {
 
   /**
    * Generate Herald MCP config
+   * AI-native: Token for identity, git remote for context
    */
-  generateHeraldConfig(company, project) {
+  generateHeraldConfig() {
+    const token = this.getToken();
     return {
       mcpServers: {
         herald: {
@@ -125,8 +127,8 @@ const CEDA = {
           args: ['@spilno/herald-mcp'],
           env: {
             CEDA_URL: 'https://getceda.com',
-            HERALD_COMPANY: company,
-            HERALD_PROJECT: project,
+            CEDA_TOKEN: token,
+            // Context derived from git remote automatically
           },
         },
       },

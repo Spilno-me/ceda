@@ -28,7 +28,9 @@ import { sanitize, previewSanitization, sanitizeReflection, DataClassification }
 // Configuration - all sensitive values from environment only
 // CEDA_URL is primary, HERALD_API_URL for backwards compat, default to cloud
 const CEDA_API_URL = process.env.CEDA_URL || process.env.HERALD_API_URL || "https://getceda.com";
-const CEDA_API_TOKEN = process.env.HERALD_API_TOKEN;
+// CEDA_TOKEN is the primary auth (from app.getceda.com OAuth)
+// HERALD_API_TOKEN kept for backwards compatibility
+const CEDA_API_TOKEN = process.env.CEDA_TOKEN || process.env.HERALD_API_TOKEN;
 const CEDA_API_USER = process.env.HERALD_API_USER;
 const CEDA_API_PASS = process.env.HERALD_API_PASS;
 
