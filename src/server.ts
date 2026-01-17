@@ -5025,7 +5025,7 @@ async function handleRequest(
     // GET /api/profile - Get user profile with git identity
     if (url === '/api/profile' && method === 'GET') {
       const userInfo = extractUserFromToken(req);
-      
+
       if (!userInfo) {
         sendJson(res, 401, {
           error: 'Unauthorized',
@@ -5035,21 +5035,10 @@ async function handleRequest(
       }
 
       try {
-        // Extract GitHub ID from user ID (format: git_{githubId})
-        const githubIdMatch = userInfo.userId.match(/^git_(\d+)$/);
-        if (!githubIdMatch) {
-          sendJson(res, 400, {
-            error: 'Invalid user ID format',
-            message: 'User ID must be in format git_{githubId}',
-          });
-          return;
-        }
-        const githubId = parseInt(githubIdMatch[1], 10);
+        // Get user from PlanetScale by UUID
+        const dbUser = await db.users.findById(userInfo.userId);
 
-        // Get git identity for the user
-        const gitIdentity = await gitIdentityService.findByGithubId(githubId);
-        
-        if (!gitIdentity) {
+        if (!dbUser) {
           sendJson(res, 404, {
             error: 'Profile not found',
             message: 'User profile not found. Please re-authenticate.',
@@ -5057,16 +5046,23 @@ async function handleRequest(
           return;
         }
 
+        // Get git identity from Redis for repo/org details
+        const gitIdentity = await gitIdentityService.findByGithubId(dbUser.github_id);
+
+        // Get user organizations from DB
+        const userOrgs = await db.users.getUserOrganizations(dbUser.id);
+
         // Get user preferences
         const preferences = userPreferences.get(userInfo.userId) || {};
 
         // Build profile response
         const profileResponse = {
-          id: gitIdentity.id,
-          email: userInfo.email,
-          githubLogin: gitIdentity.githubLogin,
-          avatarUrl: `https://github.com/${gitIdentity.githubLogin}.png`,
-          gitIdentity: {
+          id: dbUser.id,
+          email: dbUser.email || userInfo.email,
+          githubLogin: dbUser.github_login,
+          avatarUrl: dbUser.avatar_url || `https://github.com/${dbUser.github_login}.png`,
+          company: userInfo.company,
+          gitIdentity: gitIdentity ? {
             organizations: gitIdentity.organizations.map((org: { login: string; role?: string }) => ({
               login: org.login,
               role: org.role || 'member',
@@ -5075,6 +5071,9 @@ async function handleRequest(
               fullName: repo.fullName,
               permission: repo.permission || 'read',
             })),
+          } : {
+            organizations: userOrgs.map(o => ({ login: o.org_login, role: o.role })),
+            repositories: [],
           },
           preferences,
         };
