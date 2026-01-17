@@ -108,7 +108,7 @@
                     <img class="user-avatar" src="${profile.avatarUrl || `https://github.com/${profile.githubLogin}.png`}" alt="${profile.githubLogin}" onerror="this.style.display='none'">
                     <div class="user-details">
                         <h3>${profile.githubLogin}</h3>
-                        <p>${profile.email || profile.githubLogin}@github.local</p>
+                        <p>${profile.email || `${profile.githubLogin}@github.local`}</p>
                     </div>
                 </div>
 
