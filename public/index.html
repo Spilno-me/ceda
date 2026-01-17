@@ -165,6 +165,46 @@
                 window.location.href = '/onboarding.html';
             }
         }
+
+        // Add loading state to all GitHub auth links
+        document.querySelectorAll('a[href="/api/auth/github"]').forEach(link => {
+            link.addEventListener('click', function(e) {
+                const btn = this;
+                const originalContent = btn.innerHTML;
+
+                // Show loading state
+                btn.innerHTML = `
+                    <div class="btn-spinner"></div>
+                    Connecting to GitHub...
+                `;
+                btn.style.pointerEvents = 'none';
+                btn.classList.add('btn-loading');
+
+                // Allow the navigation to proceed
+                // The page will redirect, but if it takes too long, user sees feedback
+            });
+        });
     </script>
+
+    <style>
+        .btn-loading {
+            opacity: 0.85;
+            cursor: wait !important;
+        }
+        .btn-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
 </body>
 </html>
