@@ -367,7 +367,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.33.0";
+const VERSION = "1.34.1";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -3180,8 +3180,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  // If stdin is a TTY (human at terminal), show help
-  if (process.stdin.isTTY) {
+  // If stdout is a TTY (human at terminal), show help
+  // Using stdout because npx may not have stdin as TTY
+  if (process.stdout.isTTY) {
     printUsage();
     return;
   }
