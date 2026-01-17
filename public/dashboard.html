@@ -4,11 +4,217 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - CEDA</title>
-    <meta name="description" content="Your CEDA dashboard with Herald MCP configuration and pattern statistics.">
+    <meta name="description" content="Your CEDA dashboard with patterns, usage stats, and Herald MCP configuration.">
     <link rel="stylesheet" href="/styles.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 2rem;
+        }
+        @media (max-width: 900px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+        .usage-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+        .usage-card h3 {
+            margin: 0 0 1rem 0;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .usage-meter {
+            margin-bottom: 1rem;
+        }
+        .usage-meter:last-child {
+            margin-bottom: 0;
+        }
+        .usage-meter-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+            font-size: 0.875rem;
+        }
+        .usage-meter-label {
+            color: var(--text-primary);
+        }
+        .usage-meter-value {
+            color: var(--text-secondary);
+        }
+        .usage-meter-bar {
+            height: 8px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .usage-meter-fill {
+            height: 100%;
+            background: var(--primary);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        .usage-meter-fill.warning {
+            background: #f59e0b;
+        }
+        .usage-meter-fill.danger {
+            background: #ef4444;
+        }
+        .plan-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: var(--primary);
+            color: white;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-bottom: 1rem;
+        }
+        .plan-badge.free { background: #6b7280; }
+        .plan-badge.pro { background: var(--primary); }
+        .plan-badge.team { background: #8b5cf6; }
+        .upgrade-link {
+            display: block;
+            text-align: center;
+            padding: 0.75rem 1rem;
+            background: var(--primary);
+            color: white;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            margin-top: 1rem;
+            transition: background 0.2s;
+        }
+        .upgrade-link:hover {
+            background: var(--primary-hover);
+        }
+        .patterns-section {
+            margin-bottom: 2rem;
+        }
+        .patterns-tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .patterns-tab {
+            padding: 0.75rem 1.5rem;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            position: relative;
+            transition: color 0.2s;
+        }
+        .patterns-tab:hover {
+            color: var(--text-primary);
+        }
+        .patterns-tab.active {
+            color: var(--primary);
+        }
+        .patterns-tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: var(--primary);
+        }
+        .patterns-tab .count {
+            display: inline-block;
+            padding: 0.125rem 0.5rem;
+            background: var(--border);
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            margin-left: 0.5rem;
+        }
+        .patterns-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .pattern-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            transition: border-color 0.2s;
+        }
+        .pattern-card:hover {
+            border-color: var(--primary);
+        }
+        .pattern-card.antipattern {
+            border-left: 3px solid #ef4444;
+        }
+        .pattern-card.pattern {
+            border-left: 3px solid #22c55e;
+        }
+        .pattern-insight {
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+            line-height: 1.5;
+        }
+        .pattern-meta {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .pattern-meta span {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-secondary);
+        }
+        .empty-state h4 {
+            margin: 0 0 0.5rem 0;
+            color: var(--text-primary);
+        }
+        .config-section {
+            margin-top: 2rem;
+        }
+        .config-section summary {
+            cursor: pointer;
+            padding: 1rem;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+        .config-section[open] summary {
+            border-radius: 8px 8px 0 0;
+        }
+        .config-section .config-content {
+            border: 1px solid var(--border);
+            border-top: none;
+            border-radius: 0 0 8px 8px;
+            padding: 1rem;
+            background: var(--bg);
+        }
+    </style>
 </head>
 <body>
     <nav class="navbar">
@@ -43,6 +249,10 @@
     <script src="/app.js"></script>
     <script>
         let profile = null;
+        let usage = null;
+        let patterns = [];
+        let antipatterns = [];
+        let activeTab = 'patterns';
 
         async function init() {
             // Initialize page and check auth
@@ -51,8 +261,14 @@
             const content = document.getElementById('content');
 
             try {
-                // Fetch user profile
-                profile = await CEDA.getProfile();
+                // Fetch profile and usage in parallel
+                const [profileRes, usageRes] = await Promise.all([
+                    CEDA.getProfile(),
+                    fetchUsage(),
+                ]);
+
+                profile = profileRes;
+                usage = usageRes;
                 CEDA.setUser(profile);
 
                 // Check if user needs to complete onboarding
@@ -60,6 +276,9 @@
                     window.location.href = '/onboarding.html';
                     return;
                 }
+
+                // Fetch patterns
+                await fetchPatterns();
 
                 renderDashboard();
             } catch (error) {
@@ -75,113 +294,212 @@
             }
         }
 
+        async function fetchUsage() {
+            try {
+                const response = await fetch('/api/usage', {
+                    headers: {
+                        'Authorization': `Bearer ${CEDA.getToken()}`,
+                    },
+                });
+                if (!response.ok) throw new Error('Failed to fetch usage');
+                return await response.json();
+            } catch (error) {
+                console.error('Failed to fetch usage:', error);
+                return null;
+            }
+        }
+
+        async function fetchPatterns() {
+            try {
+                const { defaultOrg, defaultProject } = profile.preferences;
+                const params = new URLSearchParams();
+                if (defaultOrg) params.append('company', defaultOrg);
+                if (defaultProject) params.append('project', defaultProject);
+                params.append('limit', '50');
+
+                const response = await fetch(`/api/herald/reflections?${params}`, {
+                    headers: {
+                        'Authorization': `Bearer ${CEDA.getToken()}`,
+                    },
+                });
+                if (!response.ok) throw new Error('Failed to fetch patterns');
+                const data = await response.json();
+                patterns = data.patterns || [];
+                antipatterns = data.antipatterns || [];
+            } catch (error) {
+                console.error('Failed to fetch patterns:', error);
+                patterns = [];
+                antipatterns = [];
+            }
+        }
+
         function renderDashboard() {
             const content = document.getElementById('content');
-            const { defaultOrg, defaultProject, selectedRepos } = profile.preferences;
+            const { defaultOrg, defaultProject } = profile.preferences;
 
-            // Generate Herald config (AI-native: token + git remote)
+            content.innerHTML = `
+                <div class="page-header" style="text-align: left; margin-bottom: 2rem;">
+                    <h1>Welcome back, ${profile.githubLogin}</h1>
+                    <p>Your context: <strong>${defaultOrg}</strong> / <strong>${defaultProject || 'default'}</strong></p>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="main-content">
+                        ${renderPatternsSection()}
+                        ${renderConfigSection()}
+                    </div>
+                    <div class="sidebar">
+                        ${renderUsageCard()}
+                        ${renderContextCard()}
+                    </div>
+                </div>
+            `;
+
+            // Attach tab click handlers
+            document.querySelectorAll('.patterns-tab').forEach(tab => {
+                tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+            });
+        }
+
+        function renderUsageCard() {
+            if (!usage) {
+                return `
+                    <div class="usage-card">
+                        <h3>Usage</h3>
+                        <p style="color: var(--text-secondary); font-size: 0.875rem;">Unable to load usage data</p>
+                    </div>
+                `;
+            }
+
+            const planClass = usage.plan || 'free';
+            const planLabel = usage.plan === 'team' ? 'Team' : usage.plan === 'pro' ? 'Pro' : 'Free';
+
+            return `
+                <div class="usage-card">
+                    <span class="plan-badge ${planClass}">${planLabel}</span>
+                    <h3>Usage This Period</h3>
+                    ${renderUsageMeter('Patterns', usage.patterns.used, usage.patterns.limit)}
+                    ${renderUsageMeter('Queries', usage.queries.used, usage.queries.limit)}
+                    ${renderUsageMeter('Projects', usage.projects.used, usage.projects.limit)}
+                    ${usage.plan === 'free' ? `<a href="https://app.getceda.com/billing" class="upgrade-link">Upgrade to Pro</a>` : ''}
+                </div>
+            `;
+        }
+
+        function renderUsageMeter(label, used, limit) {
+            const isUnlimited = limit === -1;
+            const percentage = isUnlimited ? 10 : Math.min((used / limit) * 100, 100);
+            const displayValue = isUnlimited ? `${used} / Unlimited` : `${used} / ${limit}`;
+
+            let fillClass = '';
+            if (!isUnlimited) {
+                if (percentage >= 90) fillClass = 'danger';
+                else if (percentage >= 70) fillClass = 'warning';
+            }
+
+            return `
+                <div class="usage-meter">
+                    <div class="usage-meter-header">
+                        <span class="usage-meter-label">${label}</span>
+                        <span class="usage-meter-value">${displayValue}</span>
+                    </div>
+                    <div class="usage-meter-bar">
+                        <div class="usage-meter-fill ${fillClass}" style="width: ${percentage}%"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderContextCard() {
+            const { defaultOrg, selectedRepos } = profile.preferences;
+            return `
+                <div class="usage-card">
+                    <h3>Your Context</h3>
+                    <div style="margin-bottom: 0.75rem;">
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem;">Organization</div>
+                        <div style="font-weight: 500;">${defaultOrg}</div>
+                    </div>
+                    <div style="margin-bottom: 0.75rem;">
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem;">Tracked Repos</div>
+                        <div style="font-weight: 500;">${selectedRepos?.length || 0}</div>
+                    </div>
+                    <a href="/onboarding.html" class="btn btn-secondary" style="display: block; text-align: center; margin-top: 1rem;">Change Settings</a>
+                </div>
+            `;
+        }
+
+        function renderPatternsSection() {
+            const total = patterns.length + antipatterns.length;
+            const currentList = activeTab === 'patterns' ? patterns : antipatterns;
+
+            return `
+                <div class="patterns-section">
+                    <div class="patterns-tabs">
+                        <button class="patterns-tab ${activeTab === 'patterns' ? 'active' : ''}" data-tab="patterns">
+                            Patterns <span class="count">${patterns.length}</span>
+                        </button>
+                        <button class="patterns-tab ${activeTab === 'antipatterns' ? 'active' : ''}" data-tab="antipatterns">
+                            Antipatterns <span class="count">${antipatterns.length}</span>
+                        </button>
+                    </div>
+                    <div class="patterns-list" id="patterns-list">
+                        ${renderPatternsList(currentList, activeTab)}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderPatternsList(list, type) {
+            if (list.length === 0) {
+                return `
+                    <div class="empty-state">
+                        <h4>No ${type} yet</h4>
+                        <p>Use <code>herald_reflect()</code> in your sessions to capture ${type}.</p>
+                    </div>
+                `;
+            }
+
+            return list.map(item => `
+                <div class="pattern-card ${type === 'antipatterns' ? 'antipattern' : 'pattern'}">
+                    <div class="pattern-insight">${escapeHtml(item.insight)}</div>
+                    <div class="pattern-meta">
+                        <span>${formatDate(item.timestamp)}</span>
+                        ${item.method ? `<span>via ${item.method}</span>` : ''}
+                        ${item.applications ? `<span>${item.applications} applications</span>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function switchTab(tab) {
+            activeTab = tab;
+            document.querySelectorAll('.patterns-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.tab === tab);
+            });
+            const list = tab === 'patterns' ? patterns : antipatterns;
+            document.getElementById('patterns-list').innerHTML = renderPatternsList(list, tab);
+        }
+
+        function renderConfigSection() {
             const config = CEDA.generateHeraldConfig();
             const configJson = JSON.stringify(config, null, 2);
 
-            content.innerHTML = `
-                <div class="page-header" style="text-align: left;">
-                    <h1>Welcome back, ${profile.githubLogin}</h1>
-                    <p>Your Herald MCP is configured for <strong>${defaultOrg}</strong> / <strong>${defaultProject || 'default'}</strong></p>
-                </div>
-
-                <div class="section config-display">
-                    <div class="section-header">
-                        <h3>Herald MCP Configuration</h3>
-                        <button class="btn btn-secondary" onclick="copyConfig()">Copy Config</button>
-                    </div>
-                    <p>Add this to your Claude Desktop configuration file (<code>~/.claude.json</code> or <code>.mcp.json</code> in your project):</p>
-                    <div class="code-block">
-                        <pre><code id="config-code">${escapeHtml(configJson)}</code></pre>
-                        <button class="copy-btn" onclick="copyConfig(this)">Copy</button>
-                    </div>
-                </div>
-
-                <div class="section">
-                    <h3>Quick Start</h3>
-                    <div class="steps">
-                        <div class="step">
-                            <div class="step-number">1</div>
-                            <div class="step-content">
-                                <h3>Copy the configuration above</h3>
-                                <p>Click the "Copy" button to copy your personalized Herald MCP configuration.</p>
-                            </div>
+            return `
+                <details class="config-section">
+                    <summary>Herald MCP Configuration</summary>
+                    <div class="config-content">
+                        <p style="margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.875rem;">
+                            Add this to your MCP client configuration (<code>~/.claude.json</code>, <code>.mcp.json</code>, or your IDE settings):
+                        </p>
+                        <div class="code-block">
+                            <pre><code id="config-code">${escapeHtml(configJson)}</code></pre>
+                            <button class="copy-btn" onclick="copyConfig(this)">Copy</button>
                         </div>
-                        <div class="step">
-                            <div class="step-number">2</div>
-                            <div class="step-content">
-                                <h3>Add to Claude Desktop</h3>
-                                <p>Paste the configuration into your <code>~/.claude.json</code> file or create a <code>.mcp.json</code> file in your project root.</p>
-                            </div>
-                        </div>
-                        <div class="step">
-                            <div class="step-number">3</div>
-                            <div class="step-content">
-                                <h3>Restart Claude Desktop</h3>
-                                <p>Restart Claude Desktop to load the Herald MCP server with your configuration.</p>
-                            </div>
-                        </div>
-                        <div class="step">
-                            <div class="step-number">4</div>
-                            <div class="step-content">
-                                <h3>Start using CEDA</h3>
-                                <p>Ask Claude to generate modules, and CEDA will learn from your patterns automatically.</p>
-                            </div>
-                        </div>
+                        <p style="margin-top: 1rem; font-size: 0.875rem;">
+                            Or use the CLI: <code>npx @spilno/herald-mcp config</code>
+                        </p>
                     </div>
-                </div>
-
-                <div class="section">
-                    <div class="section-header">
-                        <h3>Your Context</h3>
-                        <a href="/onboarding.html" class="btn btn-secondary">Change Settings</a>
-                    </div>
-                    <div class="stats-grid">
-                        <div class="stat-card">
-                            <div class="stat-value">${defaultOrg}</div>
-                            <div class="stat-label">Organization</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-value">${selectedRepos?.length || 0}</div>
-                            <div class="stat-label">Tracked Repos</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-value">${profile.gitIdentity?.repositories?.length || 0}</div>
-                            <div class="stat-label">Total Repositories</div>
-                        </div>
-                    </div>
-                    ${selectedRepos && selectedRepos.length > 0 ? `
-                    <div style="margin-top: 1rem;">
-                        <h4 style="margin-bottom: 0.5rem; color: var(--text-secondary); font-size: 0.875rem;">Tracked Repositories</h4>
-                        <ul class="tracked-repos-list">
-                            ${selectedRepos.map(repo => `<li>${repo}</li>`).join('')}
-                        </ul>
-                    </div>
-                    ` : ''}
-                </div>
-
-                <div class="section">
-                    <h3>Alternative: Quick Install</h3>
-                    <p>You can also use the Herald MCP CLI to automatically configure Claude Desktop:</p>
-                    <div class="code-block">
-                        <pre><code>npx @spilno/herald-mcp init</code></pre>
-                        <button class="copy-btn" onclick="CEDA.copyToClipboard('npx @spilno/herald-mcp init', this)">Copy</button>
-                    </div>
-                </div>
-
-                <div class="section">
-                    <h3>Resources</h3>
-                    <p>
-                        <a href="https://github.com/Spilno-me/ceda/blob/main/docs/herald-setup-guide.md" target="_blank">Setup Guide</a> &middot;
-                        <a href="https://getceda.com" target="_blank">Documentation</a> &middot;
-                        <a href="https://github.com/Spilno-me/ceda" target="_blank">GitHub</a> &middot;
-                        <a href="https://www.npmjs.com/package/@spilno/herald-mcp" target="_blank">npm Package</a>
-                    </p>
-                </div>
+                </details>
             `;
         }
 
@@ -191,11 +509,23 @@
             return div.innerHTML;
         }
 
+        function formatDate(timestamp) {
+            const date = new Date(timestamp);
+            const now = new Date();
+            const diff = now - date;
+
+            if (diff < 60000) return 'just now';
+            if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+            if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+            if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+
+            return date.toLocaleDateString();
+        }
+
         function copyConfig(button) {
             const config = CEDA.generateHeraldConfig();
             const configJson = JSON.stringify(config, null, 2);
-
-            CEDA.copyToClipboard(configJson, button || document.querySelector('.copy-btn'));
+            CEDA.copyToClipboard(configJson, button);
         }
 
         // Initialize on load
