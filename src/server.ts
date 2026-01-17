@@ -5175,7 +5175,8 @@ async function handleRequest(
     // ============================================
 
     // GET /api/auth/github - Start GitHub OAuth flow
-    if (url?.startsWith('/api/auth/github') && !url?.includes('/callback') && method === 'GET') {
+    const urlPath = url?.split('?')[0];
+    if (urlPath === '/api/auth/github' && method === 'GET') {
       if (!githubService.isConfigured()) {
         sendJson(res, 503, {
           error: 'GitHub OAuth not configured',
@@ -5203,7 +5204,7 @@ async function handleRequest(
     }
 
     // GET /api/auth/github/callback - Handle GitHub OAuth callback
-    if (url?.startsWith('/api/auth/github/callback') && method === 'GET') {
+    if (urlPath === '/api/auth/github/callback' && method === 'GET') {
       const urlObj = new URL(url, `http://${req.headers.host || 'localhost'}`);
       const code = urlObj.searchParams.get('code');
       const state = urlObj.searchParams.get('state');
