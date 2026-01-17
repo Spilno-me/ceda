@@ -15,6 +15,19 @@ AI agents start fresh each session. Herald gives them memory:
 | Generic responses | Context-aware predictions |
 | No learning curve | Knowledge compounds |
 
+## SDK Usage
+
+```bash
+npm i @spilno/herald-mcp
+```
+
+```typescript
+import { herald } from '@spilno/herald-mcp';
+
+herald.learned('What worked');
+herald.gotStuck('What failed');
+```
+
 ## Quick Start
 
 ```bash

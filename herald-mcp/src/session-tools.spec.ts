@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 describe('CEDA-49: Session Management Tools', () => {
-  const indexPath = path.join(process.cwd(), 'src', 'index.ts');
+  const indexPath = path.join(process.cwd(), 'src', 'cli.ts');
   let indexContent: string;
 
   beforeAll(() => {
