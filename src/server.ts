@@ -38,6 +38,7 @@ import { GitHubService } from './auth/github.service';
 import { GitIdentityService } from './auth/git-identity.service';
 import { HeraldVerifyService } from './auth/herald-verify.service';
 import { AuthService } from './auth/auth.service';
+import * as db from './db/repositories';
 import { HeraldVerifyRequest, OAuthCallbackResponse } from './auth/github.interface';
 import { UserRecord, UserRole } from './auth/auth.interface';
 import * as crypto from 'crypto';
@@ -5260,7 +5261,7 @@ async function handleRequest(
           email = await githubService.getPrimaryEmail(accessToken);
         }
 
-        // Store git identity
+        // Store git identity in Redis (for repo/org access indexing)
         const gitIdentity = await gitIdentityService.createOrUpdate(
           user,
           orgs,
@@ -5269,16 +5270,26 @@ async function handleRequest(
           email,
         );
 
-        // Create user record for JWT generation
+        // Persist user to PlanetScale (authoritative user record)
+        const { user: dbUser, isNew: isNewUser } = await db.users.upsertFromGitHub({
+          githubId: user.id,
+          githubLogin: user.login,
+          email: email || undefined,
+          avatarUrl: user.avatar_url,
+          accessToken,
+          organizations: orgs.map(o => ({ login: o.login, id: o.id })),
+        });
+
+        // Create user record for JWT generation (from PlanetScale)
         const userRecord: UserRecord = {
-          id: gitIdentity.id,
-          email: email || `${user.login}@github.local`,
+          id: dbUser.id,
+          email: dbUser.email || `${user.login}@github.local`,
           passwordHash: '', // OAuth users don't have passwords
-          company: orgs.length > 0 ? orgs[0].login : user.login,
-          roles: [UserRole.CONTRIBUTOR],
-          createdAt: gitIdentity.createdAt,
-          lastLoginAt: new Date().toISOString(),
-          isActive: true,
+          company: dbUser.company || user.login,
+          roles: dbUser.roles as UserRole[],
+          createdAt: dbUser.created_at.toISOString(),
+          lastLoginAt: dbUser.last_login_at.toISOString(),
+          isActive: dbUser.is_active,
           gitIdentityId: gitIdentity.id,
         };
 
@@ -5298,7 +5309,7 @@ async function handleRequest(
             expiresIn: tokens.expiresIn,
             tokenType: 'Bearer',
           },
-          isNewUser: gitIdentity.createdAt === gitIdentity.updatedAt,
+          isNewUser,
           organizations: orgs.map(o => o.login),
         };
 
