@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pattern Journal - CEDA</title>
+    <meta name="description" content="Capture what works and what fails. Build your pattern memory.">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        .capture-container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        .capture-header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+        .capture-header h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        .capture-header p {
+            color: var(--text-secondary);
+        }
+        .capture-form {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .capture-form h3 {
+            margin: 0 0 1rem 0;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .capture-form.success h3 { color: #10b981; }
+        .capture-form.failure h3 { color: #ef4444; }
+        .capture-input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            box-sizing: border-box;
+        }
+        .capture-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .capture-btn {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .capture-btn:hover { opacity: 0.9; }
+        .capture-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .capture-btn.success { background: #10b981; color: white; }
+        .capture-btn.failure { background: #ef4444; color: white; }
+        .patterns-section {
+            margin-top: 3rem;
+        }
+        .patterns-section h2 {
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .pattern-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .pattern-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 1rem;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
+        }
+        .pattern-icon {
+            font-size: 1.25rem;
+            line-height: 1;
+        }
+        .pattern-icon.success { color: #10b981; }
+        .pattern-icon.failure { color: #ef4444; }
+        .pattern-text {
+            flex: 1;
+        }
+        .pattern-meta {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-secondary);
+        }
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 0.75rem 1.5rem;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 0.875rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        .toast.show { opacity: 1; }
+        .toast.success { border-color: #10b981; }
+        .toast.error { border-color: #ef4444; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/" class="logo">CEDA</a>
+        <div class="nav-links">
+            <a href="/docs">Docs</a>
+            <a href="https://github.com/Spilno-me/ceda" target="_blank">GitHub</a>
+            <a href="/dashboard.html">Dashboard</a>
+        </div>
+    </nav>
+
+    <main class="capture-container">
+        <div class="capture-header">
+            <h1>Pattern Journal</h1>
+            <p>Capture what works. Learn from what fails.</p>
+        </div>
+
+        <div class="capture-form success">
+            <h3><span>&#10003;</span> What worked?</h3>
+            <input type="text" id="success-input" class="capture-input" placeholder="e.g., Error boundaries prevent silent failures">
+            <button onclick="capture('success')" class="capture-btn success">Capture Pattern</button>
+        </div>
+
+        <div class="capture-form failure">
+            <h3><span>&#10007;</span> What failed?</h3>
+            <input type="text" id="failure-input" class="capture-input" placeholder="e.g., Forgot to await in test setup">
+            <button onclick="capture('stuck')" class="capture-btn failure">Capture Antipattern</button>
+        </div>
+
+        <div class="patterns-section">
+            <h2>Recent Patterns</h2>
+            <ul id="pattern-list" class="pattern-list">
+                <li class="empty-state">Loading...</li>
+            </ul>
+        </div>
+    </main>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        const API_URL = '';  // Same origin
+
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast show ' + type;
+            setTimeout(() => toast.className = 'toast', 3000);
+        }
+
+        async function capture(feeling) {
+            const inputId = feeling === 'success' ? 'success-input' : 'failure-input';
+            const input = document.getElementById(inputId);
+            const insight = input.value.trim();
+
+            if (!insight) {
+                showToast('Please enter something', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_URL}/api/herald/reflect`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        feeling,
+                        insight,
+                        session: 'web-capture'
+                    })
+                });
+
+                if (!res.ok) throw new Error('Failed to capture');
+
+                input.value = '';
+                showToast(feeling === 'success' ? 'Pattern captured!' : 'Antipattern captured!', 'success');
+                loadPatterns();
+            } catch (err) {
+                showToast('Failed to capture: ' + err.message, 'error');
+            }
+        }
+
+        async function loadPatterns() {
+            const list = document.getElementById('pattern-list');
+
+            try {
+                const res = await fetch(`${API_URL}/api/herald/reflections?limit=20`);
+                if (!res.ok) throw new Error('Failed to load');
+
+                const data = await res.json();
+                const patterns = data.patterns || [];
+                const antipatterns = data.antipatterns || [];
+
+                // Combine and sort by timestamp
+                const all = [
+                    ...patterns.map(p => ({ ...p, type: 'success' })),
+                    ...antipatterns.map(p => ({ ...p, type: 'failure' }))
+                ].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+
+                if (all.length === 0) {
+                    list.innerHTML = '<li class="empty-state">No patterns yet. Capture your first insight above!</li>';
+                    return;
+                }
+
+                list.innerHTML = all.map(p => `
+                    <li class="pattern-item">
+                        <span class="pattern-icon ${p.type}">${p.type === 'success' ? '&#10003;' : '&#10007;'}</span>
+                        <div class="pattern-text">
+                            ${escapeHtml(p.insight)}
+                            <div class="pattern-meta">${formatTime(p.timestamp)}</div>
+                        </div>
+                    </li>
+                `).join('');
+            } catch (err) {
+                list.innerHTML = '<li class="empty-state">Failed to load patterns</li>';
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return '';
+            const date = new Date(timestamp);
+            const now = new Date();
+            const diff = now - date;
+
+            if (diff < 60000) return 'just now';
+            if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+            if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+            return date.toLocaleDateString();
+        }
+
+        // Handle Enter key
+        document.getElementById('success-input').addEventListener('keypress', e => {
+            if (e.key === 'Enter') capture('success');
+        });
+        document.getElementById('failure-input').addEventListener('keypress', e => {
+            if (e.key === 'Enter') capture('stuck');
+        });
+
+        // Load patterns on page load
+        loadPatterns();
+    </script>
+</body>
+</html>
