@@ -1,4 +1,4 @@
-const BASE_URL = 'https://api.getceda.com';
+const BASE_URL = 'https://getceda.com';
 
 export const herald = {
   async learned(insight: string): Promise<void> {
