@@ -865,7 +865,7 @@ async function handleRequest(
   "mcpServers": {
     "herald": {
       "command": "npx",
-      "args": ["@spilno/herald-mcp"],
+      "args": ["@spilno/herald-mcp@latest"],
       "env": {
         "CEDA_URL": "https://getceda.com",
         "HERALD_COMPANY": "your-company",

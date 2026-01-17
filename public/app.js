@@ -124,7 +124,7 @@ const CEDA = {
       mcpServers: {
         herald: {
           command: 'npx',
-          args: ['@spilno/herald-mcp'],
+          args: ['@spilno/herald-mcp@latest'],
           env: {
             CEDA_URL: 'https://getceda.com',
             CEDA_TOKEN: token,
