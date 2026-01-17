@@ -29,6 +29,7 @@ import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
 import { DocumentService } from './services/document.service';
 import { QualityScoreService } from './services/quality-score.service';
+import { usageService, type UsageStats, type LimitCheckResult } from './services/usage.service';
 import { LinkingService } from './services/linking.service';
 import { AnomalyDetectionService } from './services/anomaly-detection.service';
 import { AnalyticsService } from './services/analytics.service';
@@ -549,6 +550,7 @@ const API_ENDPOINTS = [
   { method: 'POST', path: '/api/auth/verify', description: 'Verify Herald by git remote', ticket: 'CEDA-80' },
   { method: 'GET', path: '/api/profile', description: 'Get user profile with git identity', ticket: 'CEDA-81' },
   { method: 'PATCH', path: '/api/profile/preferences', description: 'Update user preferences', ticket: 'CEDA-81' },
+  { method: 'GET', path: '/api/usage', description: 'Get current user usage stats and limits', ticket: 'CEDA-90' },
 ] as const;
 
 /**
@@ -1772,6 +1774,38 @@ async function handleRequest(
         return;
       }
 
+      // CEDA-90: Check pattern limit before storing
+      const userId = body.user || 'anonymous';
+      const limitCheck = await usageService.checkPatternLimit(userId);
+      if (!limitCheck.allowed) {
+        sendJson(res, 429, {
+          error: 'Pattern limit reached',
+          message: `You have used ${limitCheck.used}/${limitCheck.limit} patterns. Upgrade to continue.`,
+          resource: limitCheck.resource,
+          used: limitCheck.used,
+          limit: limitCheck.limit,
+          upgradeUrl: limitCheck.upgradeUrl,
+        });
+        return;
+      }
+
+      // CEDA-90: Check project limit (new projects for free tier)
+      const projectName = body.project || 'default';
+      const projectLimitCheck = await usageService.checkProjectLimit(userId, projectName);
+      if (!projectLimitCheck.allowed) {
+        sendJson(res, 429, {
+          error: 'Project limit reached',
+          message: `You have used ${projectLimitCheck.used}/${projectLimitCheck.limit} projects. Upgrade to add more projects.`,
+          resource: projectLimitCheck.resource,
+          used: projectLimitCheck.used,
+          limit: projectLimitCheck.limit,
+          upgradeUrl: projectLimitCheck.upgradeUrl,
+        });
+        return;
+      }
+      // Track new project
+      await usageService.addProject(userId, projectName);
+
       const clientIp = getClientIp(req);
 
       // CEDA-65: Sanitize data before storage
@@ -1903,6 +1937,9 @@ async function handleRequest(
       };
 
       console.log(`[Herald] Reflection recorded: ${body.feeling} via ${captureMethod} from ${body.vault || body.user || 'unknown'}`);
+
+      // CEDA-90: Increment pattern count after successful capture
+      await usageService.incrementPatterns(userId);
 
       sendJson(res, 200, response);
       return;
@@ -2248,6 +2285,23 @@ async function handleRequest(
     // This is what Claude queries to learn from past sessions
     if (url?.startsWith('/api/herald/reflections') && method === 'GET') {
       const urlObj = new URL(url, `http://localhost:${PORT}`);
+      
+      // CEDA-90: Check query limit
+      const userId = urlObj.searchParams.get('user') || 'anonymous';
+      const queryLimitCheck = await usageService.checkQueryLimit(userId);
+      if (!queryLimitCheck.allowed) {
+        sendJson(res, 429, {
+          error: 'Query limit reached',
+          message: `You have used ${queryLimitCheck.used}/${queryLimitCheck.limit} queries this month. Upgrade to continue.`,
+          resource: queryLimitCheck.resource,
+          used: queryLimitCheck.used,
+          limit: queryLimitCheck.limit,
+          upgradeUrl: queryLimitCheck.upgradeUrl,
+        });
+        return;
+      }
+      // Increment query count
+      await usageService.incrementQueries(userId);
       const company = urlObj.searchParams.get('company');
       const project = urlObj.searchParams.get('project');
       const feeling = urlObj.searchParams.get('feeling'); // 'stuck' or 'success'
@@ -5080,6 +5134,36 @@ async function handleRequest(
         console.error('[CEDA-81] Preferences update error:', err);
         sendJson(res, 500, {
           error: 'Failed to update preferences',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
+    // ============================================
+    // CEDA-90: Usage Tracking & Limits
+    // ============================================
+
+    // GET /api/usage - Get current user's usage stats
+    if (url === '/api/usage' && method === 'GET') {
+      const userInfo = extractUserFromToken(req);
+      
+      if (!userInfo) {
+        sendJson(res, 401, {
+          error: 'Unauthorized',
+          message: 'Valid authentication token required',
+        });
+        return;
+      }
+
+      try {
+        const usage = await usageService.getUsage(userInfo.userId);
+        sendJson(res, 200, usage);
+        return;
+      } catch (err) {
+        console.error('[CEDA-90] Usage fetch error:', err);
+        sendJson(res, 500, {
+          error: 'Failed to fetch usage',
           message: err instanceof Error ? err.message : 'Unknown error',
         });
         return;
