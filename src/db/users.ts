@@ -3,28 +3,37 @@
  *
  * Handles all user-related database operations.
  * Users are created via GitHub OAuth and persist across sessions.
+ * Access tokens are encrypted using pgcrypto.
  */
 
 import { query, transaction } from './index';
-import { v4 as uuidv4 } from 'uuid';
+import * as companies from './companies';
+
+// Encryption key from environment - MUST be set in production
+const ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY || 'ceda-dev-key-change-in-prod';
 
 /**
  * User record as stored in the database
  */
 export interface DbUser {
-  id: string;
+  id: string; // UUID
   github_id: number;
   github_login: string;
   email: string | null;
   avatar_url: string | null;
-  company: string | null;
-  access_token: string | null;
-  refresh_token: string | null;
+  company_id: string | null; // UUID FK to companies
   roles: string[];
   is_active: boolean;
   created_at: Date;
   updated_at: Date;
   last_login_at: Date;
+}
+
+/**
+ * User with decrypted access token (for internal use only)
+ */
+export interface DbUserWithToken extends DbUser {
+  access_token: string | null;
 }
 
 /**
@@ -54,7 +63,7 @@ export interface GitHubUserInput {
  */
 export async function findByGitHubId(githubId: number): Promise<DbUser | null> {
   const result = await query<DbUser>(
-    'SELECT * FROM users WHERE github_id = $1',
+    'SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at FROM users WHERE github_id = $1',
     [githubId]
   );
   return result.rows[0] || null;
@@ -65,7 +74,7 @@ export async function findByGitHubId(githubId: number): Promise<DbUser | null> {
  */
 export async function findById(id: string): Promise<DbUser | null> {
   const result = await query<DbUser>(
-    'SELECT * FROM users WHERE id = $1',
+    'SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at FROM users WHERE id = $1',
     [id]
   );
   return result.rows[0] || null;
@@ -76,7 +85,7 @@ export async function findById(id: string): Promise<DbUser | null> {
  */
 export async function findByGitHubLogin(login: string): Promise<DbUser | null> {
   const result = await query<DbUser>(
-    'SELECT * FROM users WHERE github_login = $1',
+    'SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at FROM users WHERE github_login = $1',
     [login]
   );
   return result.rows[0] || null;
@@ -87,10 +96,22 @@ export async function findByGitHubLogin(login: string): Promise<DbUser | null> {
  */
 export async function findByEmail(email: string): Promise<DbUser | null> {
   const result = await query<DbUser>(
-    'SELECT * FROM users WHERE email = $1',
+    'SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at FROM users WHERE email = $1',
     [email]
   );
   return result.rows[0] || null;
+}
+
+/**
+ * Get user's decrypted access token (use sparingly)
+ */
+export async function getAccessToken(userId: string): Promise<string | null> {
+  const result = await query<{ token: string | null }>(
+    `SELECT pgp_sym_decrypt(access_token_encrypted, $1) as token
+     FROM users WHERE id = $2`,
+    [ENCRYPTION_KEY, userId]
+  );
+  return result.rows[0]?.token || null;
 }
 
 /**
@@ -99,8 +120,14 @@ export async function findByEmail(email: string): Promise<DbUser | null> {
  */
 export async function upsertFromGitHub(
   input: GitHubUserInput
-): Promise<{ user: DbUser; isNew: boolean }> {
+): Promise<{ user: DbUser; isNew: boolean; companySlug: string }> {
   return transaction(async (client) => {
+    // Determine company from first org or username
+    const companySlug = input.organizations?.[0]?.login || input.githubLogin;
+
+    // Ensure company exists
+    const { company } = await companies.upsertBySlug(companySlug);
+
     // Check if user exists
     const existing = await client.query<DbUser>(
       'SELECT * FROM users WHERE github_id = $1',
@@ -108,55 +135,54 @@ export async function upsertFromGitHub(
     );
 
     const isNew = existing.rows.length === 0;
-    const now = new Date();
     let user: DbUser;
 
     if (isNew) {
-      // Create new user
-      const id = uuidv4();
-      const company = input.organizations?.[0]?.login || input.githubLogin;
-
+      // Create new user with encrypted token
       const result = await client.query<DbUser>(
         `INSERT INTO users (
-          id, github_id, github_login, email, avatar_url, company,
-          access_token, roles, is_active, created_at, updated_at, last_login_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $10)
-        RETURNING *`,
+          github_id, github_login, email, avatar_url, company_id,
+          access_token_encrypted, roles, is_active
+        ) VALUES (
+          $1, $2, $3, $4, $5,
+          pgp_sym_encrypt($6, $7),
+          $8, $9
+        )
+        RETURNING id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at`,
         [
-          id,
           input.githubId,
           input.githubLogin,
           input.email || null,
           input.avatarUrl || null,
-          company,
+          company.id,
           input.accessToken,
+          ENCRYPTION_KEY,
           ['contributor'],
           true,
-          now,
         ]
       );
       user = result.rows[0];
 
-      console.log(`[DB:Users] Created new user: ${input.githubLogin} (${id})`);
+      console.log(`[DB:Users] Created new user: ${input.githubLogin} (company: ${companySlug})`);
     } else {
-      // Update existing user
+      // Update existing user with new encrypted token
       const result = await client.query<DbUser>(
         `UPDATE users SET
           github_login = $2,
           email = COALESCE($3, email),
           avatar_url = COALESCE($4, avatar_url),
-          access_token = $5,
-          updated_at = $6,
-          last_login_at = $6
+          access_token_encrypted = pgp_sym_encrypt($5, $6),
+          updated_at = NOW(),
+          last_login_at = NOW()
         WHERE github_id = $1
-        RETURNING *`,
+        RETURNING id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at`,
         [
           input.githubId,
           input.githubLogin,
           input.email || null,
           input.avatarUrl || null,
           input.accessToken,
-          now,
+          ENCRYPTION_KEY,
         ]
       );
       user = result.rows[0];
@@ -180,18 +206,9 @@ export async function upsertFromGitHub(
           [user.id, org.login, org.id, 'member']
         );
       }
-
-      // Update company to first org if user is new or has no company
-      if (isNew || !user.company) {
-        await client.query(
-          'UPDATE users SET company = $1 WHERE id = $2',
-          [input.organizations[0].login, user.id]
-        );
-        user.company = input.organizations[0].login;
-      }
     }
 
-    return { user, isNew };
+    return { user, isNew, companySlug };
   });
 }
 
@@ -207,12 +224,12 @@ export async function getUserOrganizations(userId: string): Promise<DbUserOrg[]>
 }
 
 /**
- * Update user's company (primary organization)
+ * Update user's company
  */
-export async function updateCompany(userId: string, company: string): Promise<void> {
+export async function updateCompany(userId: string, companyId: string): Promise<void> {
   await query(
-    'UPDATE users SET company = $1, updated_at = $2 WHERE id = $3',
-    [company, new Date(), userId]
+    'UPDATE users SET company_id = $1, updated_at = NOW() WHERE id = $2',
+    [companyId, userId]
   );
 }
 
@@ -221,8 +238,8 @@ export async function updateCompany(userId: string, company: string): Promise<vo
  */
 export async function updateRoles(userId: string, roles: string[]): Promise<void> {
   await query(
-    'UPDATE users SET roles = $1, updated_at = $2 WHERE id = $3',
-    [roles, new Date(), userId]
+    'UPDATE users SET roles = $1, updated_at = NOW() WHERE id = $2',
+    [roles, userId]
   );
 }
 
@@ -231,18 +248,19 @@ export async function updateRoles(userId: string, roles: string[]): Promise<void
  */
 export async function deactivate(userId: string): Promise<void> {
   await query(
-    'UPDATE users SET is_active = false, updated_at = $1 WHERE id = $2',
-    [new Date(), userId]
+    'UPDATE users SET is_active = false, updated_at = NOW() WHERE id = $1',
+    [userId]
   );
 }
 
 /**
  * Get users by company
  */
-export async function findByCompany(company: string): Promise<DbUser[]> {
+export async function findByCompanyId(companyId: string): Promise<DbUser[]> {
   const result = await query<DbUser>(
-    'SELECT * FROM users WHERE company = $1 AND is_active = true ORDER BY created_at',
-    [company]
+    `SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at
+     FROM users WHERE company_id = $1 AND is_active = true ORDER BY created_at`,
+    [companyId]
   );
   return result.rows;
 }

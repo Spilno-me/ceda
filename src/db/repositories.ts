@@ -14,6 +14,10 @@ export {
   closePool,
 } from './index';
 
+// Company repository (tenants)
+export * as companies from './companies';
+export type { DbCompany } from './companies';
+
 // User repository
 export * as users from './users';
 export type { DbUser, DbUserOrg, GitHubUserInput } from './users';

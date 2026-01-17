@@ -5271,7 +5271,7 @@ async function handleRequest(
         );
 
         // Persist user to PlanetScale (authoritative user record)
-        const { user: dbUser, isNew: isNewUser } = await db.users.upsertFromGitHub({
+        const { user: dbUser, isNew: isNewUser, companySlug } = await db.users.upsertFromGitHub({
           githubId: user.id,
           githubLogin: user.login,
           email: email || undefined,
@@ -5285,7 +5285,7 @@ async function handleRequest(
           id: dbUser.id,
           email: dbUser.email || `${user.login}@github.local`,
           passwordHash: '', // OAuth users don't have passwords
-          company: dbUser.company || user.login,
+          company: companySlug,
           roles: dbUser.roles as UserRole[],
           createdAt: dbUser.created_at.toISOString(),
           lastLoginAt: dbUser.last_login_at.toISOString(),

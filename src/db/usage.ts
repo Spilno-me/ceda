@@ -2,17 +2,18 @@
  * CEDA Usage Repository
  *
  * Tracks usage metrics for billing, analytics, and rate limiting.
- * Each metric is recorded with company context for aggregation.
+ * Metrics are recorded per company (tenant).
  */
 
 import { query } from './index';
+import * as companies from './companies';
 
 /**
  * Usage record as stored in the database
  */
 export interface DbUsageRecord {
   id: number;
-  company: string;
+  company_id: string; // UUID FK to companies
   metric: string;
   count: number;
   recorded_at: Date;
@@ -30,25 +31,37 @@ export type UsageMetric =
   | 'tokens_used';      // LLM tokens (for simulation)
 
 /**
- * Record a usage event
+ * Record a usage event by company ID
  */
 export async function record(
-  company: string,
+  companyId: string,
   metric: UsageMetric,
   count: number = 1
 ): Promise<void> {
   await query(
-    `INSERT INTO usage_records (company, metric, count, recorded_at)
+    `INSERT INTO usage_records (company_id, metric, count, recorded_at)
      VALUES ($1, $2, $3, NOW())`,
-    [company, metric, count]
+    [companyId, metric, count]
   );
+}
+
+/**
+ * Record usage by company slug (convenience method)
+ */
+export async function recordBySlug(
+  companySlug: string,
+  metric: UsageMetric,
+  count: number = 1
+): Promise<void> {
+  const { company } = await companies.upsertBySlug(companySlug);
+  await record(company.id, metric, count);
 }
 
 /**
  * Record multiple usage events in batch
  */
 export async function recordBatch(
-  events: Array<{ company: string; metric: UsageMetric; count?: number }>
+  events: Array<{ companyId: string; metric: UsageMetric; count?: number }>
 ): Promise<void> {
   if (events.length === 0) return;
 
@@ -58,11 +71,11 @@ export async function recordBatch(
   events.forEach((event, i) => {
     const offset = i * 3;
     placeholders.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, NOW())`);
-    values.push(event.company, event.metric, event.count || 1);
+    values.push(event.companyId, event.metric, event.count || 1);
   });
 
   await query(
-    `INSERT INTO usage_records (company, metric, count, recorded_at)
+    `INSERT INTO usage_records (company_id, metric, count, recorded_at)
      VALUES ${placeholders.join(', ')}`,
     values
   );
@@ -72,7 +85,7 @@ export async function recordBatch(
  * Get usage for a company in a time period
  */
 export async function getUsage(
-  company: string,
+  companyId: string,
   metric: UsageMetric,
   startDate: Date,
   endDate: Date = new Date()
@@ -80,9 +93,9 @@ export async function getUsage(
   const result = await query<{ total: string }>(
     `SELECT COALESCE(SUM(count), 0) as total
      FROM usage_records
-     WHERE company = $1 AND metric = $2
+     WHERE company_id = $1 AND metric = $2
      AND recorded_at >= $3 AND recorded_at <= $4`,
-    [company, metric, startDate, endDate]
+    [companyId, metric, startDate, endDate]
   );
   return parseInt(result.rows[0].total, 10);
 }
@@ -91,17 +104,17 @@ export async function getUsage(
  * Get all usage metrics for a company in a time period
  */
 export async function getUsageSummary(
-  company: string,
+  companyId: string,
   startDate: Date,
   endDate: Date = new Date()
 ): Promise<Record<string, number>> {
   const result = await query<{ metric: string; total: string }>(
     `SELECT metric, COALESCE(SUM(count), 0) as total
      FROM usage_records
-     WHERE company = $1
+     WHERE company_id = $1
      AND recorded_at >= $2 AND recorded_at <= $3
      GROUP BY metric`,
-    [company, startDate, endDate]
+    [companyId, startDate, endDate]
   );
 
   const summary: Record<string, number> = {};
@@ -115,18 +128,18 @@ export async function getUsageSummary(
  * Get daily usage breakdown for charts
  */
 export async function getDailyUsage(
-  company: string,
+  companyId: string,
   metric: UsageMetric,
   days: number = 30
 ): Promise<Array<{ date: string; count: number }>> {
   const result = await query<{ date: string; count: string }>(
     `SELECT DATE(recorded_at) as date, COALESCE(SUM(count), 0) as count
      FROM usage_records
-     WHERE company = $1 AND metric = $2
+     WHERE company_id = $1 AND metric = $2
      AND recorded_at >= NOW() - INTERVAL '1 day' * $3
      GROUP BY DATE(recorded_at)
      ORDER BY date`,
-    [company, metric, days]
+    [companyId, metric, days]
   );
 
   return result.rows.map((row) => ({
@@ -160,30 +173,29 @@ export async function getTopCompanies(
   metric: UsageMetric,
   limit: number = 10,
   days: number = 30
-): Promise<Array<{ company: string; count: number }>> {
-  const result = await query<{ company: string; count: string }>(
-    `SELECT company, COALESCE(SUM(count), 0) as count
+): Promise<Array<{ companyId: string; count: number }>> {
+  const result = await query<{ company_id: string; count: string }>(
+    `SELECT company_id, COALESCE(SUM(count), 0) as count
      FROM usage_records
      WHERE metric = $1
      AND recorded_at >= NOW() - INTERVAL '1 day' * $2
-     GROUP BY company
+     GROUP BY company_id
      ORDER BY count DESC
      LIMIT $3`,
     [metric, days, limit]
   );
 
   return result.rows.map((row) => ({
-    company: row.company,
+    companyId: row.company_id,
     count: parseInt(row.count, 10),
   }));
 }
 
 /**
  * Check if company is within usage limits
- * Returns remaining quota or -1 if unlimited
  */
 export async function checkQuota(
-  company: string,
+  companyId: string,
   metric: UsageMetric,
   limit: number,
   periodDays: number = 30
@@ -191,7 +203,7 @@ export async function checkQuota(
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - periodDays);
 
-  const used = await getUsage(company, metric, startDate);
+  const used = await getUsage(companyId, metric, startDate);
   const remaining = Math.max(0, limit - used);
 
   return { remaining, used, limit };
@@ -224,7 +236,7 @@ export async function getStats(): Promise<{
   }>(
     `SELECT
       COUNT(*) as total,
-      COUNT(DISTINCT company) as companies,
+      COUNT(DISTINCT company_id) as companies,
       COUNT(*) FILTER (WHERE recorded_at >= CURRENT_DATE) as today
      FROM usage_records`
   );

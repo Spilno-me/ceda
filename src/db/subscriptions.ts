@@ -2,18 +2,20 @@
  * CEDA Subscriptions Repository
  *
  * Handles Stripe subscription persistence and webhook idempotency.
- * Ensures billing state survives restarts.
+ * Subscriptions are linked to companies (tenants).
  */
 
 import { query, transaction } from './index';
+import * as companies from './companies';
 
 /**
  * Subscription as stored in the database
  */
 export interface DbSubscription {
-  id: string; // Stripe subscription ID (sub_xxx)
-  customer_id: string; // Stripe customer ID (cus_xxx)
-  company: string; // CEDA company identifier
+  id: string; // UUID
+  stripe_subscription_id: string;
+  stripe_customer_id: string;
+  company_id: string; // UUID FK to companies
   status: SubscriptionStatus;
   plan: string;
   current_period_start: Date | null;
@@ -66,7 +68,7 @@ export async function markEventProcessed(
 }
 
 /**
- * Find subscription by ID
+ * Find subscription by internal ID
  */
 export async function findById(subscriptionId: string): Promise<DbSubscription | null> {
   const result = await query<DbSubscription>(
@@ -77,26 +79,46 @@ export async function findById(subscriptionId: string): Promise<DbSubscription |
 }
 
 /**
- * Find subscription by company
+ * Find subscription by Stripe subscription ID
  */
-export async function findByCompany(company: string): Promise<DbSubscription | null> {
+export async function findByStripeId(stripeSubscriptionId: string): Promise<DbSubscription | null> {
   const result = await query<DbSubscription>(
-    `SELECT * FROM subscriptions
-     WHERE company = $1 AND status IN ('active', 'trialing', 'past_due')
-     ORDER BY created_at DESC
-     LIMIT 1`,
-    [company]
+    'SELECT * FROM subscriptions WHERE stripe_subscription_id = $1',
+    [stripeSubscriptionId]
   );
   return result.rows[0] || null;
 }
 
 /**
- * Find subscription by Stripe customer ID
+ * Find active subscription by company ID
  */
-export async function findByCustomerId(customerId: string): Promise<DbSubscription | null> {
+export async function findByCompanyId(companyId: string): Promise<DbSubscription | null> {
   const result = await query<DbSubscription>(
     `SELECT * FROM subscriptions
-     WHERE customer_id = $1 AND status IN ('active', 'trialing', 'past_due')
+     WHERE company_id = $1 AND status IN ('active', 'trialing', 'past_due')
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [companyId]
+  );
+  return result.rows[0] || null;
+}
+
+/**
+ * Find subscription by company slug (convenience method)
+ */
+export async function findByCompanySlug(companySlug: string): Promise<DbSubscription | null> {
+  const company = await companies.findBySlug(companySlug);
+  if (!company) return null;
+  return findByCompanyId(company.id);
+}
+
+/**
+ * Find subscription by Stripe customer ID
+ */
+export async function findByStripeCustomerId(customerId: string): Promise<DbSubscription | null> {
+  const result = await query<DbSubscription>(
+    `SELECT * FROM subscriptions
+     WHERE stripe_customer_id = $1 AND status IN ('active', 'trialing', 'past_due')
      ORDER BY created_at DESC
      LIMIT 1`,
     [customerId]
@@ -108,75 +130,83 @@ export async function findByCustomerId(customerId: string): Promise<DbSubscripti
  * Create or update subscription from Stripe webhook
  */
 export async function upsertFromStripe(
-  subscriptionId: string,
-  customerId: string,
-  company: string,
+  stripeSubscriptionId: string,
+  stripeCustomerId: string,
+  companyId: string,
   status: SubscriptionStatus,
   plan: string,
   periodStart?: Date,
   periodEnd?: Date
 ): Promise<DbSubscription> {
-  const now = new Date();
+  // Check if exists by Stripe subscription ID
+  const existing = await findByStripeId(stripeSubscriptionId);
 
-  const result = await query<DbSubscription>(
-    `INSERT INTO subscriptions (
-      id, customer_id, company, status, plan,
-      current_period_start, current_period_end,
-      created_at, updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
-    ON CONFLICT (id) DO UPDATE SET
-      status = $4,
-      plan = $5,
-      current_period_start = COALESCE($6, subscriptions.current_period_start),
-      current_period_end = COALESCE($7, subscriptions.current_period_end),
-      updated_at = $8
-    RETURNING *`,
-    [
-      subscriptionId,
-      customerId,
-      company,
-      status,
-      plan,
-      periodStart || null,
-      periodEnd || null,
-      now,
-    ]
-  );
-
-  console.log(`[DB:Subscriptions] Upserted subscription ${subscriptionId} for ${company}: ${status}`);
-  return result.rows[0];
+  if (existing) {
+    // Update existing
+    const result = await query<DbSubscription>(
+      `UPDATE subscriptions SET
+        status = $2,
+        plan = $3,
+        current_period_start = COALESCE($4, current_period_start),
+        current_period_end = COALESCE($5, current_period_end),
+        updated_at = NOW()
+      WHERE stripe_subscription_id = $1
+      RETURNING *`,
+      [stripeSubscriptionId, status, plan, periodStart || null, periodEnd || null]
+    );
+    console.log(`[DB:Subscriptions] Updated subscription ${stripeSubscriptionId}: ${status}`);
+    return result.rows[0];
+  } else {
+    // Create new
+    const result = await query<DbSubscription>(
+      `INSERT INTO subscriptions (
+        stripe_subscription_id, stripe_customer_id, company_id,
+        status, plan, current_period_start, current_period_end
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *`,
+      [
+        stripeSubscriptionId,
+        stripeCustomerId,
+        companyId,
+        status,
+        plan,
+        periodStart || null,
+        periodEnd || null,
+      ]
+    );
+    console.log(`[DB:Subscriptions] Created subscription ${stripeSubscriptionId} for company ${companyId}`);
+    return result.rows[0];
+  }
 }
 
 /**
  * Cancel subscription
  */
-export async function cancel(subscriptionId: string): Promise<void> {
-  const now = new Date();
+export async function cancel(stripeSubscriptionId: string): Promise<void> {
   await query(
     `UPDATE subscriptions
-     SET status = 'canceled', canceled_at = $1, updated_at = $1
-     WHERE id = $2`,
-    [now, subscriptionId]
+     SET status = 'canceled', canceled_at = NOW(), updated_at = NOW()
+     WHERE stripe_subscription_id = $1`,
+    [stripeSubscriptionId]
   );
-  console.log(`[DB:Subscriptions] Canceled subscription ${subscriptionId}`);
+  console.log(`[DB:Subscriptions] Canceled subscription ${stripeSubscriptionId}`);
 }
 
 /**
  * Update subscription status
  */
 export async function updateStatus(
-  subscriptionId: string,
+  stripeSubscriptionId: string,
   status: SubscriptionStatus
 ): Promise<void> {
   await query(
-    'UPDATE subscriptions SET status = $1, updated_at = $2 WHERE id = $3',
-    [status, new Date(), subscriptionId]
+    'UPDATE subscriptions SET status = $1, updated_at = NOW() WHERE stripe_subscription_id = $2',
+    [status, stripeSubscriptionId]
   );
 }
 
 /**
  * Process a Stripe webhook event with idempotency
- * Returns true if event was processed, false if already processed
  */
 export async function processWebhookEvent<T>(
   eventId: string,
@@ -195,17 +225,36 @@ export async function processWebhookEvent<T>(
       return { processed: false };
     }
 
-    // Mark as processed first (prevents race conditions)
+    // Mark as processed first
     await client.query(
       'INSERT INTO stripe_events (id, type) VALUES ($1, $2)',
       [eventId, eventType]
     );
 
-    // Run the handler
+    // Run handler
     const result = await handler();
-
     return { processed: true, result };
   });
+}
+
+/**
+ * Check if company has active subscription
+ */
+export async function hasActiveSubscription(companyId: string): Promise<boolean> {
+  const result = await query<{ count: string }>(
+    `SELECT COUNT(*) FROM subscriptions
+     WHERE company_id = $1 AND status IN ('active', 'trialing')`,
+    [companyId]
+  );
+  return parseInt(result.rows[0].count, 10) > 0;
+}
+
+/**
+ * Get company's current plan (by company ID)
+ */
+export async function getCompanyPlan(companyId: string): Promise<string> {
+  const sub = await findByCompanyId(companyId);
+  return sub?.plan || 'free';
 }
 
 /**
@@ -218,22 +267,14 @@ export async function getStats(): Promise<{
   pastDue: number;
 }> {
   const result = await query<{ status: string; count: string }>(
-    `SELECT status, COUNT(*) as count
-     FROM subscriptions
-     GROUP BY status`
+    `SELECT status, COUNT(*) as count FROM subscriptions GROUP BY status`
   );
 
-  const stats = {
-    total: 0,
-    active: 0,
-    canceled: 0,
-    pastDue: 0,
-  };
+  const stats = { total: 0, active: 0, canceled: 0, pastDue: 0 };
 
   for (const row of result.rows) {
     const count = parseInt(row.count, 10);
     stats.total += count;
-
     switch (row.status) {
       case 'active':
       case 'trialing':
@@ -250,24 +291,4 @@ export async function getStats(): Promise<{
   }
 
   return stats;
-}
-
-/**
- * Check if company has active subscription
- */
-export async function hasActiveSubscription(company: string): Promise<boolean> {
-  const result = await query<{ count: string }>(
-    `SELECT COUNT(*) FROM subscriptions
-     WHERE company = $1 AND status IN ('active', 'trialing')`,
-    [company]
-  );
-  return parseInt(result.rows[0].count, 10) > 0;
-}
-
-/**
- * Get company's current plan
- */
-export async function getCompanyPlan(company: string): Promise<string> {
-  const sub = await findByCompany(company);
-  return sub?.plan || 'free';
 }
