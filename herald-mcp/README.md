@@ -42,6 +42,41 @@ npx @spilno/herald-mcp init
 
 Company and project default to your folder name. Zero config.
 
+## Interactive Chat
+
+For humans who want to capture patterns directly from the terminal:
+
+```bash
+npx @spilno/herald-mcp chat
+```
+
+```
+Herald Pattern Journal
+
+Commands:
+  /learned <insight>  - capture what worked
+  /stuck <insight>    - capture what failed
+  /recall [topic]     - see your patterns
+  /quit               - exit
+
+> /learned Error boundaries prevent silent failures
+Pattern captured
+
+> /stuck Forgot to await in test setup
+Antipattern captured
+
+> /recall testing
+Patterns:
+  - Error boundaries prevent silent failures
+Antipatterns:
+  - Forgot to await in test setup
+
+> /quit
+Bye! Your patterns are saved.
+```
+
+No AI key needed. Just pattern capture and recall.
+
 ## Init Options
 
 ```bash

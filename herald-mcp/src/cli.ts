@@ -27,6 +27,7 @@ import { runLogin } from "./cli/login.js";
 import { runLogout } from "./cli/logout.js";
 import { runConfig } from "./cli/config.js";
 import { runUpgrade } from "./cli/upgrade.js";
+import { runChat } from "./cli/chat.js";
 import { sanitize, previewSanitization, sanitizeReflection, DataClassification } from "./sanitization.js";
 
 // Configuration - all sensitive values from environment only
@@ -1004,7 +1005,7 @@ async function runCLI(args: string[]): Promise<void> {
     }
 
     case "chat": {
-      await runChatMode();
+      await runChat();
       break;
     }
 
