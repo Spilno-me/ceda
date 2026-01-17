@@ -4,8 +4,9 @@
  * Tracks patterns, queries, and projects per user.
  * Enforces tier limits (Free, Pro, Team).
  * Integrates with Stripe for subscription management.
+ * Supports PostgreSQL persistence for subscriptions.
  *
- * Storage: Upstash Redis
+ * Storage: Upstash Redis (usage tracking), PostgreSQL (subscriptions)
  * - usage:${userId}:patterns - total patterns created
  * - usage:${userId}:queries:${month} - queries this month
  * - usage:${userId}:projects - set of project names
@@ -13,6 +14,7 @@
  */
 
 import upstashRedis from './upstash-redis.service.js';
+import * as postgresService from './postgres.service.js';
 
 export type Plan = 'free' | 'pro' | 'team';
 export type PlanType = Plan; // Alias for compatibility
@@ -93,8 +95,21 @@ const memoryUsage = new Map<string, {
   plan: Plan;
 }>();
 
-// In-memory subscription storage (for Stripe integration)
-const subscriptions = new Map<string, UserSubscription>();
+// CEDA-91: In-memory subscription storage (fallback when PostgreSQL unavailable)
+const subscriptionStorage = new Map<string, UserSubscription>();
+
+function rowToSubscription(row: postgresService.SubscriptionRow): UserSubscription {
+  return {
+    userId: row.company,
+    plan: row.plan as Plan,
+    status: row.status as SubscriptionStatus,
+    stripeCustomerId: row.customer_id || undefined,
+    stripeSubscriptionId: row.stripe_subscription_id || undefined,
+    currentPeriodEnd: row.current_period_end?.toISOString(),
+    seats: row.seats || undefined,
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
 
 function getCurrentMonth(): string {
   const now = new Date();
@@ -370,22 +385,9 @@ export class UsageService {
       status?: SubscriptionStatus;
     },
   ): Promise<PlanChangeResult> {
-    const existing = subscriptions.get(userId);
-    const previousPlan = existing?.plan || 'free';
+    const existingSubscription = await this.getSubscription(userId);
+    const previousPlan = existingSubscription?.plan || 'free';
     const timestamp = new Date().toISOString();
-
-    const subscription: UserSubscription = {
-      userId,
-      plan,
-      status: options?.status || 'active',
-      stripeCustomerId: options?.stripeCustomerId || existing?.stripeCustomerId,
-      stripeSubscriptionId: options?.stripeSubscriptionId || existing?.stripeSubscriptionId,
-      currentPeriodEnd: options?.currentPeriodEnd || existing?.currentPeriodEnd,
-      seats: options?.seats || existing?.seats,
-      updatedAt: timestamp,
-    };
-
-    subscriptions.set(userId, subscription);
 
     // Also update Redis if available
     if (upstashRedis.isEnabled()) {
@@ -410,6 +412,45 @@ export class UsageService {
       memoryUsage.set(userId, mem);
     }
 
+    // CEDA-91: If options provided, also update subscription storage
+    if (options) {
+      // Use PostgreSQL if available, otherwise fallback to in-memory
+      if (postgresService.isEnabled()) {
+        await postgresService.upsertSubscription(
+          userId,
+          plan,
+          options.status || 'active',
+          options.stripeCustomerId,
+          options.stripeSubscriptionId,
+          options.currentPeriodEnd,
+          options.seats
+        );
+      } else {
+        const existing = subscriptionStorage.get(userId);
+        const subscription: UserSubscription = {
+          userId,
+          plan,
+          status: options.status || 'active',
+          stripeCustomerId: options.stripeCustomerId || existing?.stripeCustomerId,
+          stripeSubscriptionId: options.stripeSubscriptionId || existing?.stripeSubscriptionId,
+          currentPeriodEnd: options.currentPeriodEnd || existing?.currentPeriodEnd,
+          seats: options.seats || existing?.seats,
+          updatedAt: timestamp,
+        };
+        subscriptionStorage.set(userId, subscription);
+      }
+
+      console.log(`[UsageService] Plan changed for user ${userId}: ${previousPlan} -> ${plan}`);
+
+      return {
+        success: true,
+        previousPlan,
+        newPlan: plan,
+        userId,
+        timestamp,
+      };
+    }
+
     console.log(`[UsageService] Plan changed for user ${userId}: ${previousPlan} -> ${plan}`);
 
     return {
@@ -426,10 +467,18 @@ export class UsageService {
    * @param userId - User identifier
    * @returns User subscription or default free plan
    */
-  getSubscription(userId: string): UserSubscription {
-    const existing = subscriptions.get(userId);
-    if (existing) {
-      return existing;
+  async getSubscription(userId: string): Promise<UserSubscription> {
+    // Use PostgreSQL if available
+    if (postgresService.isEnabled()) {
+      const row = await postgresService.getSubscriptionByUserId(userId);
+      if (row) {
+        return rowToSubscription(row);
+      }
+    } else {
+      const existing = subscriptionStorage.get(userId);
+      if (existing) {
+        return existing;
+      }
     }
 
     return {
@@ -446,12 +495,17 @@ export class UsageService {
    * @param status - New subscription status
    */
   async setStatus(userId: string, status: SubscriptionStatus): Promise<void> {
-    const existing = subscriptions.get(userId);
-    if (existing) {
-      existing.status = status;
-      existing.updatedAt = new Date().toISOString();
-      subscriptions.set(userId, existing);
+    if (postgresService.isEnabled()) {
+      await postgresService.updateSubscriptionStatus(userId, status);
       console.log(`[UsageService] Status changed for user ${userId}: ${status}`);
+    } else {
+      const existing = subscriptionStorage.get(userId);
+      if (existing) {
+        existing.status = status;
+        existing.updatedAt = new Date().toISOString();
+        subscriptionStorage.set(userId, existing);
+        console.log(`[UsageService] Status changed for user ${userId}: ${status}`);
+      }
     }
   }
 
@@ -460,8 +514,16 @@ export class UsageService {
    * @param stripeCustomerId - Stripe customer identifier
    * @returns User subscription or undefined
    */
-  getByStripeCustomerId(stripeCustomerId: string): UserSubscription | undefined {
-    for (const subscription of subscriptions.values()) {
+  async getByStripeCustomerId(stripeCustomerId: string): Promise<UserSubscription | undefined> {
+    if (postgresService.isEnabled()) {
+      const row = await postgresService.getSubscriptionByStripeCustomerId(stripeCustomerId);
+      if (row) {
+        return rowToSubscription(row);
+      }
+      return undefined;
+    }
+
+    for (const subscription of subscriptionStorage.values()) {
       if (subscription.stripeCustomerId === stripeCustomerId) {
         return subscription;
       }
@@ -474,8 +536,16 @@ export class UsageService {
    * @param stripeSubscriptionId - Stripe subscription identifier
    * @returns User subscription or undefined
    */
-  getByStripeSubscriptionId(stripeSubscriptionId: string): UserSubscription | undefined {
-    for (const subscription of subscriptions.values()) {
+  async getByStripeSubscriptionId(stripeSubscriptionId: string): Promise<UserSubscription | undefined> {
+    if (postgresService.isEnabled()) {
+      const row = await postgresService.getSubscriptionByStripeSubscriptionId(stripeSubscriptionId);
+      if (row) {
+        return rowToSubscription(row);
+      }
+      return undefined;
+    }
+
+    for (const subscription of subscriptionStorage.values()) {
       if (subscription.stripeSubscriptionId === stripeSubscriptionId) {
         return subscription;
       }
@@ -489,8 +559,8 @@ export class UsageService {
    * @param requiredPlan - Minimum required plan
    * @returns Whether user has access
    */
-  hasAccess(userId: string, requiredPlan: PlanType): boolean {
-    const subscription = this.getSubscription(userId);
+  async hasAccess(userId: string, requiredPlan: Plan): Promise<boolean> {
+    const subscription = await this.getSubscription(userId);
     
     if (subscription.status !== 'active' && subscription.status !== 'trialing') {
       return false;
@@ -509,15 +579,19 @@ export class UsageService {
    * Get all subscriptions (for admin purposes)
    * @returns All user subscriptions
    */
-  getAllSubscriptions(): UserSubscription[] {
-    return Array.from(subscriptions.values());
+  async getAllSubscriptions(): Promise<UserSubscription[]> {
+    if (postgresService.isEnabled()) {
+      const rows = await postgresService.getAllSubscriptions();
+      return rows.map(rowToSubscription);
+    }
+    return Array.from(subscriptionStorage.values());
   }
 
   /**
    * Clear all subscriptions (for testing)
    */
   clearAll(): void {
-    subscriptions.clear();
+    subscriptionStorage.clear();
   }
 
   // ============================================
@@ -587,10 +661,18 @@ export class UsageService {
   }
 
   private async getPlan(userId: string): Promise<Plan> {
-    // First check in-memory subscriptions (for Stripe-managed plans)
-    const subscription = subscriptions.get(userId);
-    if (subscription) {
-      return subscription.plan;
+    // First check PostgreSQL subscriptions (for Stripe-managed plans)
+    if (postgresService.isEnabled()) {
+      const row = await postgresService.getSubscriptionByUserId(userId);
+      if (row) {
+        return row.plan as Plan;
+      }
+    } else {
+      // Check in-memory subscriptions
+      const subscription = subscriptionStorage.get(userId);
+      if (subscription) {
+        return subscription.plan;
+      }
     }
 
     if (upstashRedis.isEnabled()) {

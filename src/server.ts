@@ -29,7 +29,8 @@ import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
 import { DocumentService } from './services/document.service';
 import { QualityScoreService } from './services/quality-score.service';
-import { usageService, UsageService, type UsageStats, type LimitCheckResult, type PlanType } from './services/usage.service';
+import { usageService, UsageService, type UsageStats, type LimitCheckResult, type Plan, type PlanType, type SubscriptionStatus, type UserSubscription, type PlanChangeResult } from './services/usage.service';
+import * as postgresService from './services/postgres.service.js';
 import { LinkingService } from './services/linking.service';
 import { AnomalyDetectionService } from './services/anomaly-detection.service';
 import { AnalyticsService } from './services/analytics.service';
@@ -5614,7 +5615,7 @@ async function handleRequest(
         const stripe = getStripeClient();
 
         // Get or create Stripe customer
-        const existingSubscription = usageService.getSubscription(body.userId);
+        const existingSubscription = await usageService.getSubscription(body.userId);
         let customerId = existingSubscription.stripeCustomerId;
 
         if (!customerId) {
@@ -5719,6 +5720,16 @@ async function handleRequest(
 
         console.log(`[CEDA-91] Webhook received: ${event.type}`);
 
+        // CEDA-91: Check for duplicate webhook processing (idempotency)
+        if (postgresService.isEnabled()) {
+          const alreadyProcessed = await postgresService.checkStripeEventProcessed(event.id);
+          if (alreadyProcessed) {
+            console.log(`[CEDA-91] Webhook event ${event.id} already processed, skipping`);
+            sendJson(res, 200, { received: true, duplicate: true });
+            return;
+          }
+        }
+
         // Handle webhook events
         switch (event.type) {
           case 'checkout.session.completed': {
@@ -5728,6 +5739,11 @@ async function handleRequest(
             const seats = parseInt(session.metadata?.seats || '1', 10);
 
             if (userId && plan) {
+              // Record event before processing (idempotency)
+              if (postgresService.isEnabled()) {
+                await postgresService.recordStripeEvent(event.id, event.type);
+              }
+
               await usageService.setPlan(userId, plan, {
                 stripeCustomerId: session.customer as string,
                 stripeSubscriptionId: session.subscription as string,
@@ -5741,9 +5757,14 @@ async function handleRequest(
 
           case 'customer.subscription.deleted': {
             const subscription = event.data.object as Stripe.Subscription;
-            const existingUser = usageService.getByStripeSubscriptionId(subscription.id);
+            const existingUser = await usageService.getByStripeSubscriptionId(subscription.id);
 
             if (existingUser) {
+              // Record event before processing (idempotency)
+              if (postgresService.isEnabled()) {
+                await postgresService.recordStripeEvent(event.id, event.type);
+              }
+
               await usageService.setPlan(existingUser.userId, 'free', {
                 status: 'canceled',
               });
@@ -5761,9 +5782,14 @@ async function handleRequest(
               : subscriptionId?.id;
 
             if (subscriptionIdStr) {
-              const existingUser = usageService.getByStripeSubscriptionId(subscriptionIdStr);
+              const existingUser = await usageService.getByStripeSubscriptionId(subscriptionIdStr);
 
               if (existingUser) {
+                // Record event before processing (idempotency)
+                if (postgresService.isEnabled()) {
+                  await postgresService.recordStripeEvent(event.id, event.type);
+                }
+
                 await usageService.setStatus(existingUser.userId, 'past_due');
                 console.log(`[CEDA-91] User ${existingUser.userId} subscription marked as past_due`);
               }
@@ -5811,7 +5837,7 @@ async function handleRequest(
           return;
         }
 
-        const subscription = usageService.getSubscription(userId);
+        const subscription = await usageService.getSubscription(userId);
 
         if (!subscription.stripeCustomerId) {
           sendJson(res, 404, {
@@ -5876,6 +5902,7 @@ console.log('[CEDA] STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? 'SET' :
 console.log('[CEDA] STRIPE_WEBHOOK_SECRET:', process.env.STRIPE_WEBHOOK_SECRET ? 'SET' : 'NOT SET');
 console.log('[CEDA] STRIPE_PRICE_PRO:', process.env.STRIPE_PRICE_PRO || 'NOT SET');
 console.log('[CEDA] STRIPE_PRICE_TEAM:', process.env.STRIPE_PRICE_TEAM || 'NOT SET');
+console.log('[CEDA] DATABASE_URL:', process.env.DATABASE_URL ? 'SET' : 'NOT SET');
 console.log('[CEDA] All env var keys:', Object.keys(process.env).filter(k => !k.startsWith('npm_')).join(', '));
 console.log('[CEDA] ================================\n');
 
