@@ -5175,7 +5175,7 @@ async function handleRequest(
     // ============================================
 
     // GET /api/auth/github - Start GitHub OAuth flow
-    const urlPath = url?.split('?')[0];
+    // Note: urlPath already defined at line 915
     if (urlPath === '/api/auth/github' && method === 'GET') {
       if (!githubService.isConfigured()) {
         sendJson(res, 503, {
