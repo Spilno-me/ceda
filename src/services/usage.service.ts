@@ -1,8 +1,9 @@
 /**
- * CEDA-90: Usage Tracking Service
+ * CEDA-90 & CEDA-91: Usage Tracking & Stripe Billing Service
  *
  * Tracks patterns, queries, and projects per user.
  * Enforces tier limits (Free, Pro, Team).
+ * Integrates with Stripe for subscription management.
  *
  * Storage: Upstash Redis
  * - usage:${userId}:patterns - total patterns created
@@ -14,6 +15,9 @@
 import upstashRedis from './upstash-redis.service.js';
 
 export type Plan = 'free' | 'pro' | 'team';
+export type PlanType = Plan; // Alias for compatibility
+
+export type SubscriptionStatus = 'active' | 'past_due' | 'canceled' | 'trialing';
 
 export interface PlanLimits {
   patterns: number;   // -1 = unlimited
@@ -56,6 +60,31 @@ export interface LimitCheckResult {
   upgradeUrl?: string;
 }
 
+/**
+ * User subscription record (for Stripe integration)
+ */
+export interface UserSubscription {
+  userId: string;
+  plan: PlanType;
+  status: SubscriptionStatus;
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
+  currentPeriodEnd?: string;
+  seats?: number;
+  updatedAt: string;
+}
+
+/**
+ * Plan change result
+ */
+export interface PlanChangeResult {
+  success: boolean;
+  previousPlan: PlanType;
+  newPlan: PlanType;
+  userId: string;
+  timestamp: string;
+}
+
 // In-memory fallback when Redis unavailable
 const memoryUsage = new Map<string, {
   patterns: number;
@@ -63,6 +92,9 @@ const memoryUsage = new Map<string, {
   projects: Set<string>;
   plan: Plan;
 }>();
+
+// In-memory subscription storage (for Stripe integration)
+const subscriptions = new Map<string, UserSubscription>();
 
 function getCurrentMonth(): string {
   const now = new Date();
@@ -74,7 +106,15 @@ function getPeriodStart(): string {
   return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 }
 
-class UsageService {
+export class UsageService {
+  constructor() {
+    console.log('[UsageService] Initialized');
+  }
+
+  // ============================================
+  // USAGE TRACKING (CEDA-90)
+  // ============================================
+
   /**
    * Get usage stats for a user
    */
@@ -307,10 +347,47 @@ class UsageService {
     return mem.projects.size;
   }
 
+  // ============================================
+  // STRIPE BILLING INTEGRATION (CEDA-91)
+  // ============================================
+
   /**
-   * Set user's plan
+   * Set user's subscription plan
+   * Called by Stripe webhook handlers on subscription changes
+   * @param userId - User identifier
+   * @param plan - New plan type
+   * @param options - Additional subscription options
+   * @returns Plan change result
    */
-  async setPlan(userId: string, plan: Plan): Promise<void> {
+  async setPlan(
+    userId: string,
+    plan: PlanType,
+    options?: {
+      stripeCustomerId?: string;
+      stripeSubscriptionId?: string;
+      currentPeriodEnd?: string;
+      seats?: number;
+      status?: SubscriptionStatus;
+    },
+  ): Promise<PlanChangeResult> {
+    const existing = subscriptions.get(userId);
+    const previousPlan = existing?.plan || 'free';
+    const timestamp = new Date().toISOString();
+
+    const subscription: UserSubscription = {
+      userId,
+      plan,
+      status: options?.status || 'active',
+      stripeCustomerId: options?.stripeCustomerId || existing?.stripeCustomerId,
+      stripeSubscriptionId: options?.stripeSubscriptionId || existing?.stripeSubscriptionId,
+      currentPeriodEnd: options?.currentPeriodEnd || existing?.currentPeriodEnd,
+      seats: options?.seats || existing?.seats,
+      updatedAt: timestamp,
+    };
+
+    subscriptions.set(userId, subscription);
+
+    // Also update Redis if available
     if (upstashRedis.isEnabled()) {
       const key = `usage:${userId}:plan`;
       await fetch(process.env.UPSTASH_REDIS_REST_URL!, {
@@ -321,18 +398,126 @@ class UsageService {
         },
         body: JSON.stringify(['SET', key, plan]),
       });
-      return;
+    } else {
+      // Update memory fallback
+      const mem = memoryUsage.get(userId) || {
+        patterns: 0,
+        queries: new Map(),
+        projects: new Set(),
+        plan: 'free' as Plan,
+      };
+      mem.plan = plan;
+      memoryUsage.set(userId, mem);
     }
 
-    // Fallback
-    const mem = memoryUsage.get(userId) || {
-      patterns: 0,
-      queries: new Map(),
-      projects: new Set(),
-      plan: 'free' as Plan,
+    console.log(`[UsageService] Plan changed for user ${userId}: ${previousPlan} -> ${plan}`);
+
+    return {
+      success: true,
+      previousPlan,
+      newPlan: plan,
+      userId,
+      timestamp,
     };
-    mem.plan = plan;
-    memoryUsage.set(userId, mem);
+  }
+
+  /**
+   * Get user's current subscription
+   * @param userId - User identifier
+   * @returns User subscription or default free plan
+   */
+  getSubscription(userId: string): UserSubscription {
+    const existing = subscriptions.get(userId);
+    if (existing) {
+      return existing;
+    }
+
+    return {
+      userId,
+      plan: 'free',
+      status: 'active',
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Update subscription status (e.g., mark as past_due)
+   * @param userId - User identifier
+   * @param status - New subscription status
+   */
+  async setStatus(userId: string, status: SubscriptionStatus): Promise<void> {
+    const existing = subscriptions.get(userId);
+    if (existing) {
+      existing.status = status;
+      existing.updatedAt = new Date().toISOString();
+      subscriptions.set(userId, existing);
+      console.log(`[UsageService] Status changed for user ${userId}: ${status}`);
+    }
+  }
+
+  /**
+   * Get subscription by Stripe customer ID
+   * @param stripeCustomerId - Stripe customer identifier
+   * @returns User subscription or undefined
+   */
+  getByStripeCustomerId(stripeCustomerId: string): UserSubscription | undefined {
+    for (const subscription of subscriptions.values()) {
+      if (subscription.stripeCustomerId === stripeCustomerId) {
+        return subscription;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Get subscription by Stripe subscription ID
+   * @param stripeSubscriptionId - Stripe subscription identifier
+   * @returns User subscription or undefined
+   */
+  getByStripeSubscriptionId(stripeSubscriptionId: string): UserSubscription | undefined {
+    for (const subscription of subscriptions.values()) {
+      if (subscription.stripeSubscriptionId === stripeSubscriptionId) {
+        return subscription;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Check if user has access to a feature based on their plan
+   * @param userId - User identifier
+   * @param requiredPlan - Minimum required plan
+   * @returns Whether user has access
+   */
+  hasAccess(userId: string, requiredPlan: PlanType): boolean {
+    const subscription = this.getSubscription(userId);
+    
+    if (subscription.status !== 'active' && subscription.status !== 'trialing') {
+      return false;
+    }
+
+    const planHierarchy: Record<PlanType, number> = {
+      free: 0,
+      pro: 1,
+      team: 2,
+    };
+
+    return planHierarchy[subscription.plan] >= planHierarchy[requiredPlan];
+  }
+
+  /**
+   * Get all subscriptions (for admin purposes)
+   * @returns All user subscriptions
+   */
+  getAllSubscriptions(): UserSubscription[] {
+    return Array.from(subscriptions.values());
+  }
+
+  /**
+   * Clear all subscriptions (for testing)
+   */
+  clearAll(): void {
+    subscriptions.clear();
   }
 
   // ============================================
@@ -402,6 +587,12 @@ class UsageService {
   }
 
   private async getPlan(userId: string): Promise<Plan> {
+    // First check in-memory subscriptions (for Stripe-managed plans)
+    const subscription = subscriptions.get(userId);
+    if (subscription) {
+      return subscription.plan;
+    }
+
     if (upstashRedis.isEnabled()) {
       const key = `usage:${userId}:plan`;
       const result = await fetch(process.env.UPSTASH_REDIS_REST_URL!, {
