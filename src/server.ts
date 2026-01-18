@@ -29,11 +29,13 @@ import { RateLimiterService } from './services/rate-limiter.service';
 import { AuditService } from './services/audit.service';
 import { DocumentService } from './services/document.service';
 import { QualityScoreService } from './services/quality-score.service';
-import { usageService, type UsageStats, type LimitCheckResult } from './services/usage.service';
+import { usageService, UsageService, type UsageStats, type LimitCheckResult, type Plan, type PlanType, type SubscriptionStatus, type UserSubscription, type PlanChangeResult } from './services/usage.service';
+import * as postgresService from './services/postgres.service.js';
 import { LinkingService } from './services/linking.service';
 import { AnomalyDetectionService } from './services/anomaly-detection.service';
 import { AnalyticsService } from './services/analytics.service';
 import { upstashRedis } from './services/upstash-redis.service';
+import Stripe from 'stripe';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { GitHubService } from './auth/github.service';
 import { GitIdentityService } from './auth/git-identity.service';
@@ -320,6 +322,26 @@ const gitIdentityService = new GitIdentityService();
 const heraldVerifyService = new HeraldVerifyService(gitIdentityService);
 const authService = new AuthService();
 
+// CEDA-91: Stripe billing services (usageService imported from usage.service.ts)
+
+// Stripe client - initialized lazily when STRIPE_SECRET_KEY is available
+let stripeClient: Stripe | null = null;
+function getStripeClient(): Stripe {
+  if (!stripeClient) {
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      throw new Error('STRIPE_SECRET_KEY environment variable is not set');
+    }
+    stripeClient = new Stripe(secretKey);
+  }
+  return stripeClient;
+}
+
+// Stripe price IDs from environment
+const STRIPE_PRICE_PRO = process.env.STRIPE_PRICE_PRO;
+const STRIPE_PRICE_TEAM = process.env.STRIPE_PRICE_TEAM;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+
 // OAuth state storage (in-memory for simplicity, could use Redis)
 const oauthStates = new Map<string, { createdAt: number; cliCallback?: string }>();
 
@@ -555,6 +577,9 @@ const API_ENDPOINTS = [
   { method: 'GET', path: '/api/profile', description: 'Get user profile with git identity', ticket: 'CEDA-81' },
   { method: 'PATCH', path: '/api/profile/preferences', description: 'Update user preferences', ticket: 'CEDA-81' },
   { method: 'GET', path: '/api/usage', description: 'Get current user usage stats and limits', ticket: 'CEDA-90' },
+  { method: 'POST', path: '/api/billing/checkout', description: 'Create Stripe checkout session', params: 'plan (pro|team), userId', ticket: 'CEDA-91' },
+  { method: 'POST', path: '/api/billing/webhook', description: 'Handle Stripe webhooks', ticket: 'CEDA-91' },
+  { method: 'GET', path: '/api/billing/portal', description: 'Redirect to Stripe customer portal', params: 'userId', ticket: 'CEDA-91' },
 ] as const;
 
 /**
@@ -5559,6 +5584,314 @@ async function handleRequest(
       return;
     }
 
+    // ============================================
+    // CEDA-91: Stripe Billing Endpoints
+    // ============================================
+
+    // POST /api/billing/checkout - Create Stripe checkout session
+    if (url === '/api/billing/checkout' && method === 'POST') {
+      try {
+        const body = await parseBody<{
+          plan: 'pro' | 'team';
+          userId: string;
+          successUrl?: string;
+          cancelUrl?: string;
+          seats?: number;
+        }>(req);
+
+        if (!body.plan || !body.userId) {
+          sendJson(res, 400, {
+            error: 'Missing required fields',
+            required: ['plan', 'userId'],
+          });
+          return;
+        }
+
+        if (body.plan !== 'pro' && body.plan !== 'team') {
+          sendJson(res, 400, {
+            error: 'Invalid plan',
+            message: 'Plan must be "pro" or "team"',
+            validPlans: ['pro', 'team'],
+          });
+          return;
+        }
+
+        // Check if Stripe is configured
+        if (!process.env.STRIPE_SECRET_KEY) {
+          sendJson(res, 503, {
+            error: 'Stripe not configured',
+            message: 'STRIPE_SECRET_KEY environment variable is not set',
+          });
+          return;
+        }
+
+        const priceId = body.plan === 'pro' ? STRIPE_PRICE_PRO : STRIPE_PRICE_TEAM;
+        if (!priceId) {
+          sendJson(res, 503, {
+            error: 'Stripe price not configured',
+            message: `STRIPE_PRICE_${body.plan.toUpperCase()} environment variable is not set`,
+          });
+          return;
+        }
+
+        const stripe = getStripeClient();
+
+        // Get or create Stripe customer
+        const existingSubscription = await usageService.getSubscription(body.userId);
+        let customerId = existingSubscription.stripeCustomerId;
+
+        if (!customerId) {
+          const customer = await stripe.customers.create({
+            metadata: {
+              userId: body.userId,
+            },
+          });
+          customerId = customer.id;
+        }
+
+        // Create checkout session
+        const sessionParams: Stripe.Checkout.SessionCreateParams = {
+          customer: customerId,
+          payment_method_types: ['card'],
+          line_items: [
+            {
+              price: priceId,
+              quantity: body.plan === 'team' ? (body.seats || 1) : 1,
+            },
+          ],
+          mode: 'subscription',
+          success_url: body.successUrl || `${req.headers.origin || 'http://localhost:3030'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: body.cancelUrl || `${req.headers.origin || 'http://localhost:3030'}/billing/cancel`,
+          metadata: {
+            userId: body.userId,
+            plan: body.plan,
+            seats: String(body.seats || 1),
+          },
+        };
+
+        const session = await stripe.checkout.sessions.create(sessionParams);
+
+        console.log(`[CEDA-91] Checkout session created for user ${body.userId}, plan: ${body.plan}`);
+
+        sendJson(res, 200, {
+          sessionId: session.id,
+          url: session.url,
+          customerId,
+        });
+        return;
+      } catch (err) {
+        console.error('[CEDA-91] Checkout error:', err);
+        sendJson(res, 500, {
+          error: 'Failed to create checkout session',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
+    // POST /api/billing/webhook - Handle Stripe webhooks
+    if (url === '/api/billing/webhook' && method === 'POST') {
+      try {
+        // Get raw body for signature verification
+        const rawBody = await new Promise<string>((resolve, reject) => {
+          let body = '';
+          req.on('data', (chunk) => (body += chunk));
+          req.on('end', () => resolve(body));
+          req.on('error', reject);
+        });
+
+        // Check if Stripe is configured
+        if (!process.env.STRIPE_SECRET_KEY) {
+          sendJson(res, 503, {
+            error: 'Stripe not configured',
+            message: 'STRIPE_SECRET_KEY environment variable is not set',
+          });
+          return;
+        }
+
+        const stripe = getStripeClient();
+        const signature = req.headers['stripe-signature'];
+
+        if (!signature) {
+          sendJson(res, 400, {
+            error: 'Missing signature',
+            message: 'stripe-signature header is required',
+          });
+          return;
+        }
+
+        let event: Stripe.Event;
+
+        // Verify webhook signature if secret is configured
+        if (STRIPE_WEBHOOK_SECRET) {
+          try {
+            event = stripe.webhooks.constructEvent(rawBody, signature, STRIPE_WEBHOOK_SECRET);
+          } catch (err) {
+            console.error('[CEDA-91] Webhook signature verification failed:', err);
+            sendJson(res, 400, {
+              error: 'Invalid signature',
+              message: 'Webhook signature verification failed',
+            });
+            return;
+          }
+        } else {
+          // Parse event without verification (not recommended for production)
+          console.warn('[CEDA-91] STRIPE_WEBHOOK_SECRET not set, skipping signature verification');
+          event = JSON.parse(rawBody) as Stripe.Event;
+        }
+
+        console.log(`[CEDA-91] Webhook received: ${event.type}`);
+
+        // CEDA-91: Check for duplicate webhook processing (idempotency)
+        if (postgresService.isEnabled()) {
+          const alreadyProcessed = await postgresService.checkStripeEventProcessed(event.id);
+          if (alreadyProcessed) {
+            console.log(`[CEDA-91] Webhook event ${event.id} already processed, skipping`);
+            sendJson(res, 200, { received: true, duplicate: true });
+            return;
+          }
+        }
+
+        // Handle webhook events
+        switch (event.type) {
+          case 'checkout.session.completed': {
+            const session = event.data.object as Stripe.Checkout.Session;
+            const userId = session.metadata?.userId;
+            const plan = session.metadata?.plan as PlanType;
+            const seats = parseInt(session.metadata?.seats || '1', 10);
+
+            if (userId && plan) {
+              // Record event before processing (idempotency)
+              if (postgresService.isEnabled()) {
+                await postgresService.recordStripeEvent(event.id, event.type);
+              }
+
+              await usageService.setPlan(userId, plan, {
+                stripeCustomerId: session.customer as string,
+                stripeSubscriptionId: session.subscription as string,
+                seats: plan === 'team' ? seats : undefined,
+                status: 'active',
+              });
+              console.log(`[CEDA-91] User ${userId} upgraded to ${plan} plan`);
+            }
+            break;
+          }
+
+          case 'customer.subscription.deleted': {
+            const subscription = event.data.object as Stripe.Subscription;
+            const existingUser = await usageService.getByStripeSubscriptionId(subscription.id);
+
+            if (existingUser) {
+              // Record event before processing (idempotency)
+              if (postgresService.isEnabled()) {
+                await postgresService.recordStripeEvent(event.id, event.type);
+              }
+
+              await usageService.setPlan(existingUser.userId, 'free', {
+                status: 'canceled',
+              });
+              console.log(`[CEDA-91] User ${existingUser.userId} downgraded to free plan`);
+            }
+            break;
+          }
+
+          case 'invoice.payment_failed': {
+            const invoice = event.data.object as Stripe.Invoice;
+            const subscriptionDetails = invoice.parent?.subscription_details;
+            const subscriptionId = subscriptionDetails?.subscription;
+            const subscriptionIdStr = typeof subscriptionId === 'string' 
+              ? subscriptionId 
+              : subscriptionId?.id;
+
+            if (subscriptionIdStr) {
+              const existingUser = await usageService.getByStripeSubscriptionId(subscriptionIdStr);
+
+              if (existingUser) {
+                // Record event before processing (idempotency)
+                if (postgresService.isEnabled()) {
+                  await postgresService.recordStripeEvent(event.id, event.type);
+                }
+
+                await usageService.setStatus(existingUser.userId, 'past_due');
+                console.log(`[CEDA-91] User ${existingUser.userId} subscription marked as past_due`);
+              }
+            }
+            break;
+          }
+
+          default:
+            console.log(`[CEDA-91] Unhandled webhook event: ${event.type}`);
+        }
+
+        sendJson(res, 200, { received: true });
+        return;
+      } catch (err) {
+        console.error('[CEDA-91] Webhook error:', err);
+        sendJson(res, 500, {
+          error: 'Webhook processing failed',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
+    // GET /api/billing/portal - Redirect to Stripe customer portal
+    if (url?.startsWith('/api/billing/portal') && method === 'GET') {
+      try {
+        const urlObj = new URL(url, `http://localhost:${PORT}`);
+        const userId = urlObj.searchParams.get('userId');
+        const returnUrl = urlObj.searchParams.get('returnUrl');
+
+        if (!userId) {
+          sendJson(res, 400, {
+            error: 'Missing required parameter',
+            message: 'userId query parameter is required',
+          });
+          return;
+        }
+
+        // Check if Stripe is configured
+        if (!process.env.STRIPE_SECRET_KEY) {
+          sendJson(res, 503, {
+            error: 'Stripe not configured',
+            message: 'STRIPE_SECRET_KEY environment variable is not set',
+          });
+          return;
+        }
+
+        const subscription = await usageService.getSubscription(userId);
+
+        if (!subscription.stripeCustomerId) {
+          sendJson(res, 404, {
+            error: 'No billing account',
+            message: 'User does not have a Stripe customer account',
+          });
+          return;
+        }
+
+        const stripe = getStripeClient();
+
+        const portalSession = await stripe.billingPortal.sessions.create({
+          customer: subscription.stripeCustomerId,
+          return_url: returnUrl || `${req.headers.origin || 'http://localhost:3030'}/billing`,
+        });
+
+        console.log(`[CEDA-91] Portal session created for user ${userId}`);
+
+        sendJson(res, 200, {
+          url: portalSession.url,
+        });
+        return;
+      } catch (err) {
+        console.error('[CEDA-91] Portal error:', err);
+        sendJson(res, 500, {
+          error: 'Failed to create portal session',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
     // 404 - reference API_ENDPOINTS constant
     sendJson(res, 404, {
       error: 'Not found',
@@ -5587,6 +5920,11 @@ console.log('[CEDA] QDRANT_URL:', process.env.QDRANT_URL || 'NOT SET');
 console.log('[CEDA] VECTOR_URL:', process.env.VECTOR_URL || 'NOT SET');
 console.log('[CEDA] QDRANT_API_KEY:', process.env.QDRANT_API_KEY ? 'SET' : 'NOT SET');
 console.log('[CEDA] VECTOR_KEY:', process.env.VECTOR_KEY ? 'SET' : 'NOT SET');
+console.log('[CEDA] STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? 'SET' : 'NOT SET');
+console.log('[CEDA] STRIPE_WEBHOOK_SECRET:', process.env.STRIPE_WEBHOOK_SECRET ? 'SET' : 'NOT SET');
+console.log('[CEDA] STRIPE_PRICE_PRO:', process.env.STRIPE_PRICE_PRO || 'NOT SET');
+console.log('[CEDA] STRIPE_PRICE_TEAM:', process.env.STRIPE_PRICE_TEAM || 'NOT SET');
+console.log('[CEDA] DATABASE_URL:', process.env.DATABASE_URL ? 'SET' : 'NOT SET');
 console.log('[CEDA] All env var keys:', Object.keys(process.env).filter(k => !k.startsWith('npm_')).join(', '));
 console.log('[CEDA] ================================\n');
 
