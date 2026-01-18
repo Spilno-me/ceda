@@ -372,7 +372,7 @@ const AEGIS_OFFSPRING_PATH = process.env.AEGIS_OFFSPRING_PATH || join(homedir(),
 // Cloud mode: Use CEDA API for offspring communication instead of local files
 const OFFSPRING_CLOUD_MODE = process.env.HERALD_OFFSPRING_CLOUD === "true";
 
-const VERSION = "1.34.3";
+const VERSION = "1.34.5";
 
 // Self-routing description - teaches Claude when to call Herald
 const HERALD_DESCRIPTION = `AI-native pattern learning for CEDA.
@@ -3073,6 +3073,30 @@ Herald will:
   }
 });
 
+/**
+ * CEDA-100: Check npm registry for updates
+ * Non-blocking - runs in background, just informs user
+ */
+function checkForUpdates(): void {
+  // Non-blocking version check
+  fetch("https://registry.npmjs.org/@spilno/herald-mcp/latest", {
+    headers: { "Accept": "application/json" },
+  })
+    .then(res => res.json())
+    .then(data => {
+      const latest = data.version;
+      if (latest && latest !== VERSION) {
+        console.error(`\n╔════════════════════════════════════════════════════════════╗`);
+        console.error(`║  UPDATE AVAILABLE: v${VERSION} → v${latest}`.padEnd(61) + `║`);
+        console.error(`║  Run: rm -rf ~/.npm/_npx/*herald* && /mcp                   ║`);
+        console.error(`╚════════════════════════════════════════════════════════════╝\n`);
+      }
+    })
+    .catch(() => {
+      // Silent fail - don't block startup for version check
+    });
+}
+
 async function autoSyncBuffer(): Promise<void> {
   if (!AUTO_SYNC_ON_STARTUP) return;
 
@@ -3203,6 +3227,9 @@ async function runMCP(): Promise<void> {
   if (VERIFIED_CONTEXT?.verified) {
     console.error(`Context: ${VERIFIED_CONTEXT.org}/${VERIFIED_CONTEXT.project} (server-verified)`);
   }
+
+  // CEDA-100: Version check - inform user if update available
+  checkForUpdates();
 
   // Send startup heartbeat for visibility (non-blocking)
   sendStartupHeartbeat();
