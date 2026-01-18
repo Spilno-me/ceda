@@ -115,7 +115,7 @@ describe('GraduationService', () => {
     });
 
     it('should return canGraduate: false for pattern already at SHARED level', async () => {
-      const pattern = createTestPattern('shared-pattern', PatternLevel.SHARED);
+      const pattern = createTestPattern('shared-pattern', PatternLevel.GLOBAL);
       patternLibrary.registerPattern(pattern);
 
       const result = await service.checkGraduation('shared-pattern');
@@ -176,13 +176,13 @@ describe('GraduationService', () => {
 
         const result = await service.checkGraduation('test-pattern');
         expect(result.canGraduate).toBe(true);
-        expect(result.toLevel).toBe(PatternLevel.LOCAL);
+        expect(result.toLevel).toBe(PatternLevel.USER);
       });
     });
 
     describe('Local -> Company graduation', () => {
       it('should not graduate with insufficient unique users', async () => {
-        const pattern = createTestPattern('test-pattern', PatternLevel.LOCAL);
+        const pattern = createTestPattern('test-pattern', PatternLevel.USER);
         patternLibrary.registerPattern(pattern);
 
         // Add observations from only 2 users
@@ -201,7 +201,7 @@ describe('GraduationService', () => {
       });
 
       it('should graduate with sufficient users and acceptance rate', async () => {
-        const pattern = createTestPattern('test-pattern', PatternLevel.LOCAL);
+        const pattern = createTestPattern('test-pattern', PatternLevel.USER);
         patternLibrary.registerPattern(pattern);
 
         // Add observations from 5 different users
@@ -214,14 +214,14 @@ describe('GraduationService', () => {
 
         const result = await service.checkGraduation('test-pattern');
         expect(result.canGraduate).toBe(true);
-        expect(result.toLevel).toBe(PatternLevel.COMPANY);
+        expect(result.toLevel).toBe(PatternLevel.PROJECT);
         expect(result.requiresApproval).toBe(false);
       });
     });
 
     describe('Company -> Shared graduation', () => {
       it('should not graduate with insufficient unique companies', async () => {
-        const pattern = createTestPattern('test-pattern', PatternLevel.COMPANY);
+        const pattern = createTestPattern('test-pattern', PatternLevel.PROJECT);
         patternLibrary.registerPattern(pattern);
 
         // Add observations from only 2 companies
@@ -240,7 +240,7 @@ describe('GraduationService', () => {
       });
 
       it('should require admin approval for shared graduation', async () => {
-        const pattern = createTestPattern('test-pattern', PatternLevel.COMPANY);
+        const pattern = createTestPattern('test-pattern', PatternLevel.PROJECT);
         patternLibrary.registerPattern(pattern);
 
         // Add observations from 3 different companies with high acceptance
@@ -253,7 +253,7 @@ describe('GraduationService', () => {
 
         const result = await service.checkGraduation('test-pattern');
         expect(result.canGraduate).toBe(true);
-        expect(result.toLevel).toBe(PatternLevel.SHARED);
+        expect(result.toLevel).toBe(PatternLevel.GLOBAL);
         expect(result.requiresApproval).toBe(true);
       });
     });
@@ -261,12 +261,12 @@ describe('GraduationService', () => {
 
   describe('graduate', () => {
     it('should return null for non-existent pattern', async () => {
-      const result = await service.graduate('non-existent', PatternLevel.LOCAL);
+      const result = await service.graduate('non-existent', PatternLevel.USER);
       expect(result).toBeNull();
     });
 
     it('should not allow graduating to lower or same level', async () => {
-      const pattern = createTestPattern('test-pattern', PatternLevel.LOCAL);
+      const pattern = createTestPattern('test-pattern', PatternLevel.USER);
       patternLibrary.registerPattern(pattern);
 
       const result = await service.graduate('test-pattern', PatternLevel.OBSERVATION);
@@ -277,7 +277,7 @@ describe('GraduationService', () => {
       const pattern = createTestPattern('test-pattern', PatternLevel.OBSERVATION);
       patternLibrary.registerPattern(pattern);
 
-      const result = await service.graduate('test-pattern', PatternLevel.COMPANY);
+      const result = await service.graduate('test-pattern', PatternLevel.PROJECT);
       expect(result).toBeNull();
     });
 
@@ -285,19 +285,19 @@ describe('GraduationService', () => {
       const pattern = createTestPattern('test-pattern', PatternLevel.OBSERVATION);
       patternLibrary.registerPattern(pattern);
 
-      const result = await service.graduate('test-pattern', PatternLevel.LOCAL);
+      const result = await service.graduate('test-pattern', PatternLevel.USER);
       expect(result).not.toBeNull();
-      expect(result?.level).toBe(PatternLevel.LOCAL);
+      expect(result?.level).toBe(PatternLevel.USER);
       expect(result?.graduatedAt).toBeDefined();
     });
 
     it('should anonymize pattern when graduating to SHARED', async () => {
-      const pattern = createTestPattern('test-pattern', PatternLevel.COMPANY, 'test-company');
+      const pattern = createTestPattern('test-pattern', PatternLevel.PROJECT, 'test-company');
       patternLibrary.registerPattern(pattern);
 
-      const result = await service.graduate('test-pattern', PatternLevel.SHARED);
+      const result = await service.graduate('test-pattern', PatternLevel.GLOBAL);
       expect(result).not.toBeNull();
-      expect(result?.level).toBe(PatternLevel.SHARED);
+      expect(result?.level).toBe(PatternLevel.GLOBAL);
       expect(result?.company).toBe('*');
     });
   });
@@ -379,7 +379,7 @@ describe('GraduationService', () => {
 
       const status = await service.getGraduationStatus('test-pattern');
       expect(status?.canGraduate).toBe(true);
-      expect(status?.nextLevel).toBe(PatternLevel.LOCAL);
+      expect(status?.nextLevel).toBe(PatternLevel.USER);
     });
   });
 
@@ -407,12 +407,12 @@ describe('GraduationService', () => {
       const candidates = await service.getGraduationCandidates();
       expect(candidates.length).toBe(1);
       expect(candidates[0].patternId).toBe('test-pattern');
-      expect(candidates[0].targetLevel).toBe(PatternLevel.LOCAL);
+      expect(candidates[0].targetLevel).toBe(PatternLevel.USER);
     });
 
     it('should filter by target level', async () => {
       const pattern1 = createTestPattern('pattern1', PatternLevel.OBSERVATION);
-      const pattern2 = createTestPattern('pattern2', PatternLevel.LOCAL);
+      const pattern2 = createTestPattern('pattern2', PatternLevel.USER);
       patternLibrary.registerPattern(pattern1);
       patternLibrary.registerPattern(pattern2);
 
@@ -432,11 +432,11 @@ describe('GraduationService', () => {
         );
       }
 
-      const localCandidates = await service.getGraduationCandidates(PatternLevel.LOCAL);
+      const localCandidates = await service.getGraduationCandidates(PatternLevel.USER);
       expect(localCandidates.length).toBe(1);
       expect(localCandidates[0].patternId).toBe('pattern1');
 
-      const companyCandidates = await service.getGraduationCandidates(PatternLevel.COMPANY);
+      const companyCandidates = await service.getGraduationCandidates(PatternLevel.PROJECT);
       expect(companyCandidates.length).toBe(1);
       expect(companyCandidates[0].patternId).toBe('pattern2');
     });
@@ -449,7 +449,7 @@ describe('GraduationService', () => {
     });
 
     it('should fail for pattern not at COMPANY level', async () => {
-      const pattern = createTestPattern('test-pattern', PatternLevel.LOCAL);
+      const pattern = createTestPattern('test-pattern', PatternLevel.USER);
       patternLibrary.registerPattern(pattern);
 
       const result = await service.approveGraduation('test-pattern', 'admin1');
@@ -457,7 +457,7 @@ describe('GraduationService', () => {
     });
 
     it('should fail if pattern does not meet criteria', async () => {
-      const pattern = createTestPattern('test-pattern', PatternLevel.COMPANY);
+      const pattern = createTestPattern('test-pattern', PatternLevel.PROJECT);
       patternLibrary.registerPattern(pattern);
 
       // No observations - doesn't meet criteria
@@ -466,7 +466,7 @@ describe('GraduationService', () => {
     });
 
     it('should graduate pattern to SHARED with anonymization', async () => {
-      const pattern = createTestPattern('test-pattern', PatternLevel.COMPANY, 'test-company');
+      const pattern = createTestPattern('test-pattern', PatternLevel.PROJECT, 'test-company');
       patternLibrary.registerPattern(pattern);
 
       // Add observations from 3 companies
@@ -479,12 +479,12 @@ describe('GraduationService', () => {
 
       const result = await service.approveGraduation('test-pattern', 'admin1', 'Approved for sharing');
       expect(result.success).toBe(true);
-      expect(result.newLevel).toBe(PatternLevel.SHARED);
+      expect(result.newLevel).toBe(PatternLevel.GLOBAL);
       expect(result.anonymized).toBe(true);
 
       // Verify pattern was updated
       const updatedPattern = patternLibrary.getPattern('test-pattern');
-      expect(updatedPattern?.level).toBe(PatternLevel.SHARED);
+      expect(updatedPattern?.level).toBe(PatternLevel.GLOBAL);
       expect(updatedPattern?.company).toBe('*');
     });
   });
@@ -508,11 +508,11 @@ describe('GraduationService', () => {
 
       // Verify pattern was graduated
       const updatedPattern = patternLibrary.getPattern('test-pattern');
-      expect(updatedPattern?.level).toBe(PatternLevel.LOCAL);
+      expect(updatedPattern?.level).toBe(PatternLevel.USER);
     });
 
     it('should add COMPANY -> SHARED candidates to pending approval', async () => {
-      const pattern = createTestPattern('test-pattern', PatternLevel.COMPANY);
+      const pattern = createTestPattern('test-pattern', PatternLevel.PROJECT);
       patternLibrary.registerPattern(pattern);
 
       // Add observations from 3 companies
@@ -529,7 +529,7 @@ describe('GraduationService', () => {
 
       // Verify pattern was NOT graduated (needs approval)
       const updatedPattern = patternLibrary.getPattern('test-pattern');
-      expect(updatedPattern?.level).toBe(PatternLevel.COMPANY);
+      expect(updatedPattern?.level).toBe(PatternLevel.PROJECT);
 
       // Verify it's in pending approvals
       const pending = service.getPendingApprovals();
@@ -537,7 +537,7 @@ describe('GraduationService', () => {
     });
 
     it('should skip patterns already at SHARED level', async () => {
-      const pattern = createTestPattern('test-pattern', PatternLevel.SHARED);
+      const pattern = createTestPattern('test-pattern', PatternLevel.GLOBAL);
       patternLibrary.registerPattern(pattern);
 
       const result = await service.checkAllGraduations();
@@ -553,7 +553,7 @@ describe('GraduationService', () => {
     });
 
     it('should return pending approvals after checkAllGraduations', async () => {
-      const pattern = createTestPattern('test-pattern', PatternLevel.COMPANY);
+      const pattern = createTestPattern('test-pattern', PatternLevel.PROJECT);
       patternLibrary.registerPattern(pattern);
 
       // Add observations from 3 companies
@@ -569,7 +569,7 @@ describe('GraduationService', () => {
       const pending = service.getPendingApprovals();
       expect(pending.length).toBe(1);
       expect(pending[0].patternId).toBe('test-pattern');
-      expect(pending[0].targetLevel).toBe(PatternLevel.SHARED);
+      expect(pending[0].targetLevel).toBe(PatternLevel.GLOBAL);
     });
   });
 });

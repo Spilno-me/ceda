@@ -29,11 +29,16 @@ import { upstashRedis, PatternAdaptiveState } from './upstash-redis.service';
 /**
  * GraduationService - Pattern graduation management
  *
- * Handles the evolution of patterns from observations to shared patterns:
- * - Level 0 (Observation): Initial pattern from user input
- * - Level 1 (Local): Validated for a single user (3+ obs, 70% acceptance)
- * - Level 2 (Company): Validated across users in a company (5+ users, 80% acceptance)
- * - Level 3 (Shared): Validated across companies, anonymized (3+ companies, 90% acceptance)
+ * CEDA-95: Updated to support 6-level graduation model:
+ * - Level 0 (Observation): Raw herald_reflect capture
+ * - Level 1 (User): Validated for a single user (3+ obs, 70% helpful)
+ * - Level 2 (Project): Validated across users in a project (3+ users, 80% helpful)
+ * - Level 3 (Org): Validated across projects in an org (3+ projects, 85% helpful)
+ * - Level 4 (Cross-Org): Explicitly shared across orgs (90% helpful)
+ * - Level 5 (Global): Admin approved, anonymized (95% helpful)
+ *
+ * For backwards compatibility, this service still uses the legacy 4-level logic
+ * (Observation -> Local/User -> Company/Project -> Shared/Global) until full migration.
  */
 @Injectable()
 export class GraduationService {
@@ -58,21 +63,25 @@ export class GraduationService {
     }
 
     const currentLevel = pattern.level ?? PatternLevel.OBSERVATION;
-    if (currentLevel >= PatternLevel.SHARED) {
+    // CEDA-95: Use GLOBAL (level 5) as max level
+    if (currentLevel >= PatternLevel.GLOBAL) {
       return {
         canGraduate: false,
-        reason: 'Pattern is already at maximum level (Shared)',
+        reason: 'Pattern is already at maximum level (Global)',
       };
     }
 
     const stats = await this.calculateStats(patternId);
 
+    // CEDA-95: Map old 4-level logic to new 6-level model for backwards compatibility
+    // Observation (0) -> User (1) -> Project (2) -> Global (5)
+    // Levels 3 (ORG) and 4 (CROSS_ORG) are skipped in legacy mode
     switch (currentLevel) {
       case PatternLevel.OBSERVATION:
         return this.checkLocalCriteria(stats);
-      case PatternLevel.LOCAL:
+      case PatternLevel.USER:
         return this.checkCompanyCriteria(stats);
-      case PatternLevel.COMPANY:
+      case PatternLevel.PROJECT:
         return this.checkSharedCriteria(stats);
       default:
         return {
@@ -99,7 +108,11 @@ export class GraduationService {
       return null;
     }
 
-    if (toLevel > currentLevel + 1) {
+    // CEDA-95: Allow legacy graduation path (PROJECT -> GLOBAL) for backwards compatibility
+    // The new 6-level model has ORG (3) and CROSS_ORG (4) between PROJECT (2) and GLOBAL (5)
+    // but existing code expects direct PROJECT -> GLOBAL graduation
+    const isLegacyGlobalGraduation = currentLevel === PatternLevel.PROJECT && toLevel === PatternLevel.GLOBAL;
+    if (toLevel > currentLevel + 1 && !isLegacyGlobalGraduation) {
       this.logger.warn(`Cannot graduate: Cannot skip levels (${currentLevel} -> ${toLevel})`);
       return null;
     }
@@ -107,10 +120,11 @@ export class GraduationService {
     let updatedStructure = pattern.structure;
     let company = pattern.company;
 
-    if (toLevel === PatternLevel.SHARED) {
+    // CEDA-95: Anonymize at GLOBAL level (was SHARED)
+    if (toLevel === PatternLevel.GLOBAL) {
       updatedStructure = this.anonymize(pattern.structure);
       company = '*';
-      this.logger.log(`Anonymized pattern ${patternId} for shared level`);
+      this.logger.log(`Anonymized pattern ${patternId} for global level`);
     }
 
     const updatedPattern: Pattern = {
@@ -139,15 +153,18 @@ export class GraduationService {
 
   /**
    * CEDA-67: Map PatternLevel to Redis adaptive state level name
+   * CEDA-95: Updated for 6-level model
    */
   private levelToStateName(level: PatternLevel): PatternAdaptiveState['level'] {
     switch (level) {
       case PatternLevel.OBSERVATION:
-      case PatternLevel.LOCAL:
+      case PatternLevel.USER:
         return 'user';
-      case PatternLevel.COMPANY:
-        return 'project'; // company patterns map to project scope in Redis
-      case PatternLevel.SHARED:
+      case PatternLevel.PROJECT:
+      case PatternLevel.ORG:
+        return 'project';
+      case PatternLevel.CROSS_ORG:
+      case PatternLevel.GLOBAL:
         return 'global';
       default:
         return 'user';
@@ -191,7 +208,8 @@ export class GraduationService {
 
     for (const pattern of patterns) {
       const currentLevel = pattern.level ?? PatternLevel.OBSERVATION;
-      if (currentLevel >= PatternLevel.SHARED) {
+      // CEDA-95: Use GLOBAL as max level
+      if (currentLevel >= PatternLevel.GLOBAL) {
         continue;
       }
 
@@ -236,8 +254,9 @@ export class GraduationService {
     }
 
     const currentLevel = pattern.level ?? PatternLevel.OBSERVATION;
-    if (currentLevel !== PatternLevel.COMPANY) {
-      this.logger.warn(`Cannot approve graduation: Pattern ${patternId} is not at Company level`);
+    // CEDA-95: Approval required at PROJECT level (was COMPANY)
+    if (currentLevel !== PatternLevel.PROJECT) {
+      this.logger.warn(`Cannot approve graduation: Pattern ${patternId} is not at Project level`);
       return {
         success: false,
         patternId,
@@ -261,7 +280,8 @@ export class GraduationService {
 
     this.logger.log(`Admin ${adminUserId} approved graduation for pattern ${patternId}${comment ? `: ${comment}` : ''}`);
 
-    const graduatedPattern = await this.graduate(patternId, PatternLevel.SHARED);
+    // CEDA-95: Graduate to GLOBAL level (was SHARED)
+    const graduatedPattern = await this.graduate(patternId, PatternLevel.GLOBAL);
     if (!graduatedPattern) {
       return {
         success: false,
@@ -275,7 +295,7 @@ export class GraduationService {
     return {
       success: true,
       patternId,
-      newLevel: PatternLevel.SHARED,
+      newLevel: PatternLevel.GLOBAL,
       graduatedAt: graduatedPattern.graduatedAt || new Date(),
       anonymized: true,
     };
@@ -293,7 +313,8 @@ export class GraduationService {
 
     for (const pattern of patterns) {
       const currentLevel = pattern.level ?? PatternLevel.OBSERVATION;
-      if (currentLevel >= PatternLevel.SHARED) {
+      // CEDA-95: Use GLOBAL as max level
+      if (currentLevel >= PatternLevel.GLOBAL) {
         continue;
       }
 
@@ -422,6 +443,7 @@ export class GraduationService {
 
   /**
    * Calculate graduation statistics for a pattern
+   * CEDA-95: Added uniqueProjects and helpfulRate fields
    */
   private async calculateStats(patternId: string): Promise<GraduationStats> {
     const observations = this.observationService.getObservationsByPattern(patternId);
@@ -430,7 +452,9 @@ export class GraduationService {
       return {
         totalObservations: 0,
         uniqueUsers: 0,
+        uniqueProjects: 0,
         uniqueCompanies: 0,
+        helpfulRate: 0,
         acceptanceRate: 0,
         modificationRate: 0,
         rejectionRate: 0,
@@ -438,16 +462,23 @@ export class GraduationService {
     }
 
     const uniqueUsers = new Set(observations.map(o => o.user));
+    const uniqueProjects = new Set(observations.map(o => o.project).filter(Boolean));
     const uniqueCompanies = new Set(observations.map(o => o.company));
 
     const accepted = observations.filter(o => o.outcome === 'accepted').length;
     const modified = observations.filter(o => o.outcome === 'modified').length;
     const rejected = observations.filter(o => o.outcome === 'rejected').length;
 
+    // CEDA-95: Calculate helpful rate (accepted + modified are considered helpful)
+    const helpful = accepted + modified;
+    const helpfulRate = observations.length > 0 ? helpful / observations.length : 0;
+
     return {
       totalObservations: observations.length,
       uniqueUsers: uniqueUsers.size,
+      uniqueProjects: uniqueProjects.size,
       uniqueCompanies: uniqueCompanies.size,
+      helpfulRate,
       acceptanceRate: accepted / observations.length,
       modificationRate: modified / observations.length,
       rejectionRate: rejected / observations.length,
@@ -468,31 +499,32 @@ export class GraduationService {
       };
     }
 
-    if (stats.acceptanceRate < criteria.minAcceptanceRate) {
+    if (stats.acceptanceRate < criteria.minAcceptanceRate!) {
       return {
         canGraduate: false,
         stats,
-        reason: `Need ${criteria.minAcceptanceRate * 100}% acceptance rate, have ${(stats.acceptanceRate * 100).toFixed(1)}%`,
+        reason: `Need ${criteria.minAcceptanceRate! * 100}% acceptance rate, have ${(stats.acceptanceRate * 100).toFixed(1)}%`,
       };
     }
 
-    if (stats.modificationRate > criteria.maxModificationRate) {
+    if (stats.modificationRate > criteria.maxModificationRate!) {
       return {
         canGraduate: false,
         stats,
-        reason: `Modification rate ${(stats.modificationRate * 100).toFixed(1)}% exceeds maximum ${criteria.maxModificationRate * 100}%`,
+        reason: `Modification rate ${(stats.modificationRate * 100).toFixed(1)}% exceeds maximum ${criteria.maxModificationRate! * 100}%`,
       };
     }
 
+    // CEDA-95: Graduate to USER level (was LOCAL)
     return {
       canGraduate: true,
-      toLevel: PatternLevel.LOCAL,
+      toLevel: PatternLevel.USER,
       stats,
     };
   }
 
   /**
-   * Check criteria for graduating from Local to Company
+   * Check criteria for graduating from User to Project (was Local to Company)
    */
   private checkCompanyCriteria(stats: GraduationStats): GraduationResult {
     const criteria = DEFAULT_GRADUATION_CRITERIA.company;
@@ -505,63 +537,65 @@ export class GraduationService {
       };
     }
 
-    if (stats.acceptanceRate < criteria.minAcceptanceRate) {
+    if (stats.acceptanceRate < criteria.minAcceptanceRate!) {
       return {
         canGraduate: false,
         stats,
-        reason: `Need ${criteria.minAcceptanceRate * 100}% acceptance rate, have ${(stats.acceptanceRate * 100).toFixed(1)}%`,
+        reason: `Need ${criteria.minAcceptanceRate! * 100}% acceptance rate, have ${(stats.acceptanceRate * 100).toFixed(1)}%`,
       };
     }
 
-    if (stats.modificationRate > criteria.maxModificationRate) {
+    if (stats.modificationRate > criteria.maxModificationRate!) {
       return {
         canGraduate: false,
         stats,
-        reason: `Modification rate ${(stats.modificationRate * 100).toFixed(1)}% exceeds maximum ${criteria.maxModificationRate * 100}%`,
+        reason: `Modification rate ${(stats.modificationRate * 100).toFixed(1)}% exceeds maximum ${criteria.maxModificationRate! * 100}%`,
       };
     }
 
+    // CEDA-95: Graduate to PROJECT level (was COMPANY)
     return {
       canGraduate: true,
-      toLevel: PatternLevel.COMPANY,
+      toLevel: PatternLevel.PROJECT,
       requiresApproval: criteria.adminApproval,
       stats,
     };
   }
 
   /**
-   * Check criteria for graduating from Company to Shared
+   * Check criteria for graduating from Project to Global (was Company to Shared)
    */
   private checkSharedCriteria(stats: GraduationStats): GraduationResult {
     const criteria = DEFAULT_GRADUATION_CRITERIA.shared;
 
-    if (stats.uniqueCompanies < criteria.minCompanies) {
+    if (stats.uniqueCompanies < criteria.minCompanies!) {
       return {
         canGraduate: false,
         stats,
-        reason: `Need ${criteria.minCompanies} unique companies, have ${stats.uniqueCompanies}`,
+        reason: `Need ${criteria.minCompanies!} unique companies, have ${stats.uniqueCompanies}`,
       };
     }
 
-    if (stats.acceptanceRate < criteria.minAcceptanceRate) {
+    if (stats.acceptanceRate < criteria.minAcceptanceRate!) {
       return {
         canGraduate: false,
         stats,
-        reason: `Need ${criteria.minAcceptanceRate * 100}% acceptance rate, have ${(stats.acceptanceRate * 100).toFixed(1)}%`,
+        reason: `Need ${criteria.minAcceptanceRate! * 100}% acceptance rate, have ${(stats.acceptanceRate * 100).toFixed(1)}%`,
       };
     }
 
-    if (stats.modificationRate > criteria.maxModificationRate) {
+    if (stats.modificationRate > criteria.maxModificationRate!) {
       return {
         canGraduate: false,
         stats,
-        reason: `Modification rate ${(stats.modificationRate * 100).toFixed(1)}% exceeds maximum ${criteria.maxModificationRate * 100}%`,
+        reason: `Modification rate ${(stats.modificationRate * 100).toFixed(1)}% exceeds maximum ${criteria.maxModificationRate! * 100}%`,
       };
     }
 
+    // CEDA-95: Graduate to GLOBAL level (was SHARED)
     return {
       canGraduate: true,
-      toLevel: PatternLevel.SHARED,
+      toLevel: PatternLevel.GLOBAL,
       requiresApproval: criteria.adminApproval,
       stats,
     };
@@ -569,28 +603,29 @@ export class GraduationService {
 
   /**
    * Calculate progress towards next level (0.0 - 1.0)
+   * CEDA-95: Updated for new enum values
    */
   private calculateProgress(currentLevel: PatternLevel, stats: GraduationStats): number {
     switch (currentLevel) {
       case PatternLevel.OBSERVATION: {
         const criteria = DEFAULT_GRADUATION_CRITERIA.local;
         const obsProgress = Math.min(stats.totalObservations / criteria.minObservations, 1);
-        const acceptProgress = Math.min(stats.acceptanceRate / criteria.minAcceptanceRate, 1);
-        const modProgress = stats.modificationRate <= criteria.maxModificationRate ? 1 : 0;
+        const acceptProgress = Math.min(stats.acceptanceRate / criteria.minAcceptanceRate!, 1);
+        const modProgress = stats.modificationRate <= criteria.maxModificationRate! ? 1 : 0;
         return (obsProgress + acceptProgress + modProgress) / 3;
       }
-      case PatternLevel.LOCAL: {
+      case PatternLevel.USER: {
         const criteria = DEFAULT_GRADUATION_CRITERIA.company;
         const userProgress = Math.min(stats.uniqueUsers / criteria.minUsers, 1);
-        const acceptProgress = Math.min(stats.acceptanceRate / criteria.minAcceptanceRate, 1);
-        const modProgress = stats.modificationRate <= criteria.maxModificationRate ? 1 : 0;
+        const acceptProgress = Math.min(stats.acceptanceRate / criteria.minAcceptanceRate!, 1);
+        const modProgress = stats.modificationRate <= criteria.maxModificationRate! ? 1 : 0;
         return (userProgress + acceptProgress + modProgress) / 3;
       }
-      case PatternLevel.COMPANY: {
+      case PatternLevel.PROJECT: {
         const criteria = DEFAULT_GRADUATION_CRITERIA.shared;
-        const companyProgress = Math.min(stats.uniqueCompanies / criteria.minCompanies, 1);
-        const acceptProgress = Math.min(stats.acceptanceRate / criteria.minAcceptanceRate, 1);
-        const modProgress = stats.modificationRate <= criteria.maxModificationRate ? 1 : 0;
+        const companyProgress = Math.min(stats.uniqueCompanies / criteria.minCompanies!, 1);
+        const acceptProgress = Math.min(stats.acceptanceRate / criteria.minAcceptanceRate!, 1);
+        const modProgress = stats.modificationRate <= criteria.maxModificationRate! ? 1 : 0;
         return (companyProgress + acceptProgress + modProgress) / 3;
       }
       default:
@@ -600,6 +635,7 @@ export class GraduationService {
 
   /**
    * Get list of missing criteria for graduation
+   * CEDA-95: Updated for new enum values
    */
   private getMissingCriteria(currentLevel: PatternLevel, stats: GraduationStats): string[] {
     const missing: string[] = [];
@@ -610,37 +646,37 @@ export class GraduationService {
         if (stats.totalObservations < criteria.minObservations) {
           missing.push(`Need ${criteria.minObservations - stats.totalObservations} more observations`);
         }
-        if (stats.acceptanceRate < criteria.minAcceptanceRate) {
-          missing.push(`Acceptance rate needs to increase from ${(stats.acceptanceRate * 100).toFixed(1)}% to ${criteria.minAcceptanceRate * 100}%`);
+        if (stats.acceptanceRate < criteria.minAcceptanceRate!) {
+          missing.push(`Acceptance rate needs to increase from ${(stats.acceptanceRate * 100).toFixed(1)}% to ${criteria.minAcceptanceRate! * 100}%`);
         }
-        if (stats.modificationRate > criteria.maxModificationRate) {
-          missing.push(`Modification rate needs to decrease from ${(stats.modificationRate * 100).toFixed(1)}% to below ${criteria.maxModificationRate * 100}%`);
+        if (stats.modificationRate > criteria.maxModificationRate!) {
+          missing.push(`Modification rate needs to decrease from ${(stats.modificationRate * 100).toFixed(1)}% to below ${criteria.maxModificationRate! * 100}%`);
         }
         break;
       }
-      case PatternLevel.LOCAL: {
+      case PatternLevel.USER: {
         const criteria = DEFAULT_GRADUATION_CRITERIA.company;
         if (stats.uniqueUsers < criteria.minUsers) {
           missing.push(`Need ${criteria.minUsers - stats.uniqueUsers} more unique users`);
         }
-        if (stats.acceptanceRate < criteria.minAcceptanceRate) {
-          missing.push(`Acceptance rate needs to increase from ${(stats.acceptanceRate * 100).toFixed(1)}% to ${criteria.minAcceptanceRate * 100}%`);
+        if (stats.acceptanceRate < criteria.minAcceptanceRate!) {
+          missing.push(`Acceptance rate needs to increase from ${(stats.acceptanceRate * 100).toFixed(1)}% to ${criteria.minAcceptanceRate! * 100}%`);
         }
-        if (stats.modificationRate > criteria.maxModificationRate) {
-          missing.push(`Modification rate needs to decrease from ${(stats.modificationRate * 100).toFixed(1)}% to below ${criteria.maxModificationRate * 100}%`);
+        if (stats.modificationRate > criteria.maxModificationRate!) {
+          missing.push(`Modification rate needs to decrease from ${(stats.modificationRate * 100).toFixed(1)}% to below ${criteria.maxModificationRate! * 100}%`);
         }
         break;
       }
-      case PatternLevel.COMPANY: {
+      case PatternLevel.PROJECT: {
         const criteria = DEFAULT_GRADUATION_CRITERIA.shared;
-        if (stats.uniqueCompanies < criteria.minCompanies) {
-          missing.push(`Need ${criteria.minCompanies - stats.uniqueCompanies} more unique companies`);
+        if (stats.uniqueCompanies < criteria.minCompanies!) {
+          missing.push(`Need ${criteria.minCompanies! - stats.uniqueCompanies} more unique companies`);
         }
-        if (stats.acceptanceRate < criteria.minAcceptanceRate) {
-          missing.push(`Acceptance rate needs to increase from ${(stats.acceptanceRate * 100).toFixed(1)}% to ${criteria.minAcceptanceRate * 100}%`);
+        if (stats.acceptanceRate < criteria.minAcceptanceRate!) {
+          missing.push(`Acceptance rate needs to increase from ${(stats.acceptanceRate * 100).toFixed(1)}% to ${criteria.minAcceptanceRate! * 100}%`);
         }
-        if (stats.modificationRate > criteria.maxModificationRate) {
-          missing.push(`Modification rate needs to decrease from ${(stats.modificationRate * 100).toFixed(1)}% to below ${criteria.maxModificationRate * 100}%`);
+        if (stats.modificationRate > criteria.maxModificationRate!) {
+          missing.push(`Modification rate needs to decrease from ${(stats.modificationRate * 100).toFixed(1)}% to below ${criteria.maxModificationRate! * 100}%`);
         }
         break;
       }

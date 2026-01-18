@@ -95,6 +95,8 @@ interface HeraldReflection {
   // Tracking
   applications: PatternApplication[];
   timestamp: string;
+  // CEDA-95: Graduation level (0-5)
+  level?: number;
 }
 
 interface PatternApplication {
@@ -2353,6 +2355,8 @@ async function handleRequest(
       const rawProject = urlObj.searchParams.get('project');
       const feeling = urlObj.searchParams.get('feeling'); // 'stuck' or 'success'
       const limit = parseInt(urlObj.searchParams.get('limit') || '20', 10);
+      // CEDA-95: Support filtering by minimum level (0-5)
+      const minLevel = parseInt(urlObj.searchParams.get('minLevel') || '0', 10);
 
       // CEDA-42: Normalize project name - strip org prefix if present
       // Dashboard sends "org/project" but Herald MCP sends just "project"
@@ -2442,7 +2446,12 @@ async function handleRequest(
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
         .slice(0, limit);
 
-      // Format for Claude consumption
+      // CEDA-95: Filter by minimum level if specified
+      if (minLevel > 0) {
+        reflections = reflections.filter(r => (r.level || 0) >= minLevel);
+      }
+
+      // Format for Claude consumption - CEDA-95: Include level field
       const patterns = reflections.filter(r => r.feeling === 'success').map(r => ({
         id: r.id,
         insight: r.insight,
@@ -2451,6 +2460,7 @@ async function handleRequest(
         method: r.method,
         applications: (r.applications || []).length,
         timestamp: r.timestamp,
+        level: r.level || 0,
       }));
 
       const antipatterns = reflections.filter(r => r.feeling === 'stuck').map(r => ({
@@ -2461,6 +2471,7 @@ async function handleRequest(
         method: r.method,
         applications: (r.applications || []).length,
         timestamp: r.timestamp,
+        level: r.level || 0,
       }));
 
       sendJson(res, 200, {

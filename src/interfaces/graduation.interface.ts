@@ -1,8 +1,13 @@
 /**
- * CEDA-36: Pattern Graduation Interfaces
+ * CEDA-95: Git-Native Graduation Model Interfaces
  *
- * Defines types for pattern graduation from observations to shared patterns.
- * Patterns evolve through levels based on usage and acceptance criteria.
+ * Defines types for pattern graduation through 6 levels:
+ * Level 0: Observation (raw herald_reflect capture)
+ * Level 1: User Pattern (3+ obs, 70% helpful, same user)
+ * Level 2: Project Pattern (3+ users, 80% helpful, same project)
+ * Level 3: Org Pattern (3+ projects, 85% helpful, same org)
+ * Level 4: Cross-Org (explicit share, 90% helpful)
+ * Level 5: Global (admin approved, 95% helpful)
  */
 
 import { PatternLevel } from './pattern.interface';
@@ -15,7 +20,7 @@ export interface GraduationResult {
   canGraduate: boolean;
   /** Target level if graduation is possible */
   toLevel?: PatternLevel;
-  /** Whether admin approval is required (for level 2 -> 3) */
+  /** Whether admin approval is required (for level 4 -> 5) */
   requiresApproval?: boolean;
   /** Current graduation statistics */
   stats?: GraduationStats;
@@ -31,9 +36,13 @@ export interface GraduationStats {
   totalObservations: number;
   /** Number of unique users who used this pattern */
   uniqueUsers: number;
-  /** Number of unique companies using this pattern */
+  /** Number of unique projects using this pattern */
+  uniqueProjects: number;
+  /** Number of unique companies/orgs using this pattern */
   uniqueCompanies: number;
-  /** Acceptance rate (accepted / total) */
+  /** Helpful rate (helpful_count / total feedback) - CEDA-95 */
+  helpfulRate: number;
+  /** Acceptance rate (accepted / total) - legacy, kept for compatibility */
   acceptanceRate: number;
   /** Modification rate (modified / total) */
   modificationRate: number;
@@ -42,75 +51,147 @@ export interface GraduationStats {
 }
 
 /**
- * Criteria for graduating from Observation (0) to Local (1)
+ * Criteria for graduating from Observation (0) to User (1)
  */
-export interface LocalGraduationCriteria {
+export interface UserGraduationCriteria {
   /** Minimum number of observations required */
   minObservations: number;
-  /** Minimum acceptance rate (0.0 - 1.0) */
-  minAcceptanceRate: number;
-  /** Maximum modification rate (0.0 - 1.0) */
-  maxModificationRate: number;
+  /** Minimum helpful rate (0.0 - 1.0) */
+  minHelpfulRate: number;
   /** Must be from the same user */
   sameUser: boolean;
-  /** Must be from the same company */
-  sameCompany: boolean;
 }
 
 /**
- * Criteria for graduating from Local (1) to Company (2)
+ * Criteria for graduating from User (1) to Project (2)
  */
-export interface CompanyGraduationCriteria {
+export interface ProjectGraduationCriteria {
   /** Minimum number of unique users */
   minUsers: number;
-  /** Minimum acceptance rate (0.0 - 1.0) */
-  minAcceptanceRate: number;
-  /** Maximum modification rate (0.0 - 1.0) */
-  maxModificationRate: number;
-  /** Must be from the same company */
-  sameCompany: boolean;
-  /** Whether admin approval is required */
-  adminApproval: boolean;
+  /** Minimum helpful rate (0.0 - 1.0) */
+  minHelpfulRate: number;
+  /** Must be from the same project */
+  sameProject: boolean;
 }
 
 /**
- * Criteria for graduating from Company (2) to Shared (3)
+ * Criteria for graduating from Project (2) to Org (3)
  */
-export interface SharedGraduationCriteria {
-  /** Minimum number of unique companies */
-  minCompanies: number;
-  /** Minimum acceptance rate (0.0 - 1.0) */
-  minAcceptanceRate: number;
-  /** Maximum modification rate (0.0 - 1.0) */
-  maxModificationRate: number;
+export interface OrgGraduationCriteria {
+  /** Minimum number of unique projects */
+  minProjects: number;
+  /** Minimum helpful rate (0.0 - 1.0) */
+  minHelpfulRate: number;
+  /** Must be from the same org/company */
+  sameOrg: boolean;
+}
+
+/**
+ * Criteria for graduating from Org (3) to Cross-Org (4)
+ */
+export interface CrossOrgGraduationCriteria {
+  /** Minimum helpful rate (0.0 - 1.0) */
+  minHelpfulRate: number;
+  /** Requires explicit share action */
+  explicitShare: boolean;
+}
+
+/**
+ * Criteria for graduating from Cross-Org (4) to Global (5)
+ */
+export interface GlobalGraduationCriteria {
+  /** Minimum helpful rate (0.0 - 1.0) */
+  minHelpfulRate: number;
   /** Whether admin approval is required */
   adminApproval: boolean;
-  /** Whether to anonymize company-specific data */
+  /** Whether to anonymize org-specific data */
   anonymization: boolean;
 }
 
 /**
- * Default graduation criteria configuration
+ * @deprecated Use UserGraduationCriteria instead
+ */
+export type LocalGraduationCriteria = UserGraduationCriteria & {
+  minAcceptanceRate?: number;
+  maxModificationRate?: number;
+  sameCompany?: boolean;
+};
+
+/**
+ * @deprecated Use ProjectGraduationCriteria instead
+ */
+export type CompanyGraduationCriteria = ProjectGraduationCriteria & {
+  minAcceptanceRate?: number;
+  maxModificationRate?: number;
+  sameCompany?: boolean;
+  adminApproval?: boolean;
+};
+
+/**
+ * @deprecated Use GlobalGraduationCriteria instead
+ */
+export type SharedGraduationCriteria = GlobalGraduationCriteria & {
+  minCompanies?: number;
+  minAcceptanceRate?: number;
+  maxModificationRate?: number;
+};
+
+/**
+ * CEDA-95: Default graduation criteria configuration for 6-level model
  */
 export const DEFAULT_GRADUATION_CRITERIA = {
+  /** Level 0 -> 1: Observation to User Pattern */
+  user: {
+    minObservations: 3,
+    minHelpfulRate: 0.7,
+    sameUser: true,
+  } as UserGraduationCriteria,
+  /** Level 1 -> 2: User to Project Pattern */
+  project: {
+    minUsers: 3,
+    minHelpfulRate: 0.8,
+    sameProject: true,
+  } as ProjectGraduationCriteria,
+  /** Level 2 -> 3: Project to Org Pattern */
+  org: {
+    minProjects: 3,
+    minHelpfulRate: 0.85,
+    sameOrg: true,
+  } as OrgGraduationCriteria,
+  /** Level 3 -> 4: Org to Cross-Org */
+  crossOrg: {
+    minHelpfulRate: 0.9,
+    explicitShare: true,
+  } as CrossOrgGraduationCriteria,
+  /** Level 4 -> 5: Cross-Org to Global */
+  global: {
+    minHelpfulRate: 0.95,
+    adminApproval: true,
+    anonymization: true,
+  } as GlobalGraduationCriteria,
+  /** @deprecated Legacy aliases for backwards compatibility with graduation.service.ts */
   local: {
     minObservations: 3,
+    minHelpfulRate: 0.7,
     minAcceptanceRate: 0.7,
     maxModificationRate: 0.3,
     sameUser: true,
     sameCompany: true,
   } as LocalGraduationCriteria,
   company: {
-    minUsers: 5,
+    minUsers: 3,
+    minHelpfulRate: 0.8,
     minAcceptanceRate: 0.8,
     maxModificationRate: 0.2,
+    sameProject: true,
     sameCompany: true,
     adminApproval: false,
   } as CompanyGraduationCriteria,
   shared: {
-    minCompanies: 3,
+    minHelpfulRate: 0.95,
     minAcceptanceRate: 0.9,
     maxModificationRate: 0.1,
+    minCompanies: 3,
     adminApproval: true,
     anonymization: true,
   } as SharedGraduationCriteria,

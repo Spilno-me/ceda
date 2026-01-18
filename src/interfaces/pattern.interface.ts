@@ -52,11 +52,13 @@ export interface Pattern {
    */
   confidence?: PatternConfidence;
   /**
-   * CEDA-36: Pattern graduation level
-   * 0 = Observation (initial)
-   * 1 = Local Pattern (user-specific)
-   * 2 = Company Pattern (company-wide)
-   * 3 = Shared Pattern (cross-domain)
+   * CEDA-95: Pattern graduation level (6 levels)
+   * 0 = Observation (raw capture)
+   * 1 = User Pattern (3+ obs, 70% helpful, same user)
+   * 2 = Project Pattern (3+ users, 80% helpful, same project)
+   * 3 = Org Pattern (3+ projects, 85% helpful, same org)
+   * 4 = Cross-Org (explicit share, 90% helpful)
+   * 5 = Global (admin approved, 95% helpful)
    * @default 0
    */
   level?: PatternLevel;
@@ -73,17 +75,22 @@ export interface Pattern {
 }
 
 /**
- * CEDA-36: Pattern graduation levels
+ * CEDA-95: Git-native graduation levels (6 levels)
+ * Patterns graduate through levels based on usage and acceptance criteria
  */
 export enum PatternLevel {
-  /** Initial observation - not yet validated */
+  /** Level 0: Raw herald_reflect capture - not yet validated */
   OBSERVATION = 0,
-  /** Local pattern - validated for a single user */
-  LOCAL = 1,
-  /** Company pattern - validated across multiple users in a company */
-  COMPANY = 2,
-  /** Shared pattern - validated across multiple companies, anonymized */
-  SHARED = 3,
+  /** Level 1: User Pattern - 3+ observations, 70% helpful, same user */
+  USER = 1,
+  /** Level 2: Project Pattern - 3+ users, 80% helpful, same project */
+  PROJECT = 2,
+  /** Level 3: Org Pattern - 3+ projects, 85% helpful, same org */
+  ORG = 3,
+  /** Level 4: Cross-Org - explicit share, 90% helpful */
+  CROSS_ORG = 4,
+  /** Level 5: Global - admin approved, 95% helpful */
+  GLOBAL = 5,
 }
 
 export enum PatternCategory {
