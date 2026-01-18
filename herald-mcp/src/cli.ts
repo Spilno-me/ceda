@@ -427,6 +427,12 @@ interface BufferedInsight {
   project: string;
   user: string;
   bufferedAt: string;
+  // CEDA-100: Track buffer type for proper sync routing
+  type?: 'insight' | 'reflection';
+  // Reflection-specific fields (when type='reflection')
+  feeling?: 'stuck' | 'success';
+  session?: string;
+  method?: 'direct' | 'simulation';
 }
 
 // CEDA-64: Session reflection tracking (in-memory, clears on restart)
@@ -2208,12 +2214,29 @@ Herald will:
 
         for (const item of buffer) {
           try {
-            const result = await callCedaAPI("/api/herald/insight", "POST", {
-              insight: item.insight,
-              topic: item.topic,
-              toContext: item.targetVault || "all",  // CEDA expects toContext, default to "all"
-              fromContext: item.sourceVault,         // CEDA expects fromContext
-            });
+            let result;
+
+            // CEDA-100: Route based on buffer item type
+            if (item.type === "reflection") {
+              // Reflections go to /api/herald/reflect (stored in PlanetScale, shown in dashboard)
+              result = await callCedaAPI("/api/herald/reflect", "POST", {
+                session: item.session || item.insight,
+                feeling: item.feeling || "success",
+                insight: item.insight,
+                method: item.method || "direct",
+                org: item.org,
+                project: item.project,
+                user: item.user,
+              });
+            } else {
+              // Insights (default) go to /api/herald/insight (legacy behavior)
+              result = await callCedaAPI("/api/herald/insight", "POST", {
+                insight: item.insight,
+                topic: item.topic,
+                toContext: item.targetVault || "all",
+                fromContext: item.sourceVault,
+              });
+            }
 
             if (result.error) {
               failed.push(item);
@@ -2418,8 +2441,13 @@ Herald will:
 
           if (result.error) {
             // If cloud fails, store locally for later processing (also sanitized)
+            // CEDA-100: Mark as reflection type for proper sync routing
             bufferInsight({
-              insight: `[REFLECT:${feeling}] ${sanitizedInsight} | Context: ${sanitizedSession}`,
+              insight: sanitizedInsight,
+              session: sanitizedSession,
+              feeling,
+              method: "direct",
+              type: "reflection",
               topic: feeling === "stuck" ? "antipattern" : "pattern",
               org: HERALD_ORG,
               project: HERALD_PROJECT,
@@ -2467,8 +2495,13 @@ Herald will:
           };
         } catch (error) {
           // Network error - buffer locally (sanitized)
+          // CEDA-100: Mark as reflection type for proper sync routing
           bufferInsight({
-            insight: `[REFLECT:${feeling}] ${sanitizedInsight} | Context: ${sanitizedSession}`,
+            insight: sanitizedInsight,
+            session: sanitizedSession,
+            feeling,
+            method: "direct",
+            type: "reflection",
             topic: feeling === "stuck" ? "antipattern" : "pattern",
             org: HERALD_ORG,
             project: HERALD_PROJECT,
@@ -2672,8 +2705,13 @@ Herald will:
 
           if (result.error) {
             // Cloud failed but we have AI extraction - buffer with enriched data (sanitized)
+            // CEDA-100: Mark as reflection type for proper sync routing
             bufferInsight({
-              insight: `[SIMULATE:${feeling}] Signal: ${sanitizedSignal} | Insight: ${simSanitizedInsight} | ${extracted.outcome === "pattern" ? `Reinforce: ${sanitizedReinforcement}` : `Warn: ${sanitizedWarning}`}`,
+              insight: simSanitizedInsight,
+              session: simSanitizedSession,
+              feeling,
+              method: "simulation",
+              type: "reflection",
               topic: extracted.outcome,
               org: HERALD_ORG,
               project: HERALD_PROJECT,
