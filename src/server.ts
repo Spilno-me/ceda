@@ -41,6 +41,7 @@ import { GitHubService } from './auth/github.service';
 import { GitIdentityService } from './auth/git-identity.service';
 import { HeraldVerifyService } from './auth/herald-verify.service';
 import { AuthService } from './auth/auth.service';
+import { JwtGuard, AuthenticatedRequest } from './auth/jwt.guard';
 import * as db from './db/repositories';
 import { HeraldVerifyRequest, OAuthCallbackResponse } from './auth/github.interface';
 import { UserRecord, UserRole } from './auth/auth.interface';
@@ -5614,18 +5615,25 @@ async function handleRequest(
     // POST /api/billing/checkout - Create Stripe checkout session
     if (url === '/api/billing/checkout' && method === 'POST') {
       try {
+        // Authenticate request
+        const jwtGuard = new JwtGuard();
+        if (!await jwtGuard.guard(req as AuthenticatedRequest, res)) {
+          return; // Guard already sent 401 response
+        }
+        const authReq = req as AuthenticatedRequest;
+        const userId = authReq.auth!.userId;
+
         const body = await parseBody<{
           plan: 'pro' | 'team';
-          userId: string;
           successUrl?: string;
           cancelUrl?: string;
           seats?: number;
         }>(req);
 
-        if (!body.plan || !body.userId) {
+        if (!body.plan) {
           sendJson(res, 400, {
             error: 'Missing required fields',
-            required: ['plan', 'userId'],
+            required: ['plan'],
           });
           return;
         }
@@ -5660,13 +5668,13 @@ async function handleRequest(
         const stripe = getStripeClient();
 
         // Get or create Stripe customer
-        const existingSubscription = await usageService.getSubscription(body.userId);
+        const existingSubscription = await usageService.getSubscription(userId);
         let customerId = existingSubscription.stripeCustomerId;
 
         if (!customerId) {
           const customer = await stripe.customers.create({
             metadata: {
-              userId: body.userId,
+              userId: userId,
             },
           });
           customerId = customer.id;
@@ -5686,7 +5694,7 @@ async function handleRequest(
           success_url: body.successUrl || `${req.headers.origin || 'http://localhost:3030'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
           cancel_url: body.cancelUrl || `${req.headers.origin || 'http://localhost:3030'}/billing/cancel`,
           metadata: {
-            userId: body.userId,
+            userId: userId,
             plan: body.plan,
             seats: String(body.seats || 1),
           },
@@ -5694,7 +5702,7 @@ async function handleRequest(
 
         const session = await stripe.checkout.sessions.create(sessionParams);
 
-        console.log(`[CEDA-91] Checkout session created for user ${body.userId}, plan: ${body.plan}`);
+        console.log(`[CEDA-91] Checkout session created for user ${userId}, plan: ${body.plan}`);
 
         sendJson(res, 200, {
           sessionId: session.id,
