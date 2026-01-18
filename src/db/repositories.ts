@@ -29,3 +29,7 @@ export type { DbSubscription, DbStripeEvent, SubscriptionStatus } from './subscr
 // Usage repository
 export * as usage from './usage';
 export type { DbUsageRecord, UsageMetric } from './usage';
+
+// Reflections repository (CEDA-42)
+export * as reflections from './reflections';
+export type { DbReflection, CreateReflectionInput, FindReflectionsOptions } from './reflections';

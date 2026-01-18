@@ -1931,6 +1931,30 @@ async function handleRequest(
         console.log(`[Herald] Reflection ${reflectionId} persisted to Upstash`);
       }
 
+      // CEDA-42: Persist to PlanetScale (source of truth)
+      try {
+        await db.reflections.insert({
+          id: reflectionId,
+          session: sanitizedSession,
+          feeling: body.feeling,
+          insight: sanitizedInsight || sanitizedSession,
+          method: captureMethod,
+          signal: sanitizedSignal,
+          outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
+          reinforcement: sanitizedReinforcement,
+          warning: sanitizedWarning,
+          company: body.company || 'default',
+          project: body.project || 'default',
+          user: body.user || 'default',
+          vault: body.vault,
+          timestamp,
+        });
+        console.log(`[Herald] Reflection ${reflectionId} persisted to PlanetScale`);
+      } catch (planetscaleErr) {
+        // Log but don't fail - Upstash is still the cache
+        console.error(`[Herald] PlanetScale write failed for reflection ${reflectionId}:`, planetscaleErr);
+      }
+
       const response = {
         reflectionId,
         feeling: body.feeling,
@@ -2334,18 +2358,59 @@ async function handleRequest(
       // Dashboard sends "org/project" but Herald MCP sends just "project"
       const project = rawProject?.includes('/') ? rawProject.split('/').pop() : rawProject;
 
-      // CEDA-42: Query from Upstash first (persistent), fall back to file storage
+      // CEDA-42: Query from PlanetScale first (source of truth)
       let reflections: HeraldReflection[] = [];
 
+      if (company) {
+        try {
+          const planetscaleReflections = await db.reflections.findByCompany(company, {
+            project: project || undefined,
+            feeling: feeling as 'stuck' | 'success' | undefined,
+            limit,
+          });
+          // Convert DbReflection to HeraldReflection format
+          reflections = planetscaleReflections.map(r => ({
+            id: r.id,
+            session: r.session,
+            feeling: r.feeling,
+            insight: r.insight,
+            method: r.method,
+            signal: r.signal || undefined,
+            outcome: r.outcome || undefined,
+            reinforcement: r.reinforcement || undefined,
+            warning: r.warning || undefined,
+            company: r.company,
+            project: r.project,
+            user: r.user_id,
+            applications: [],
+            timestamp: r.created_at.toISOString(),
+          }));
+          console.log(`[Herald] Loaded ${reflections.length} reflections from PlanetScale for ${company}`);
+        } catch (planetscaleErr) {
+          console.error(`[Herald] PlanetScale query failed for ${company}:`, planetscaleErr);
+        }
+      }
+
+      // CEDA-42: Merge with Upstash (cache layer) for any recent data not yet in PlanetScale
       if (upstashRedis.isEnabled() && company) {
-        // Query from Upstash (persistent storage)
-        const upstashReflections = await upstashRedis.getReflections(company, {
-          project: project || undefined,
-          feeling: feeling as 'stuck' | 'success' | undefined,
-          limit,
-        });
-        reflections = upstashReflections as HeraldReflection[];
-        console.log(`[Herald] Loaded ${reflections.length} reflections from Upstash for ${company}`);
+        try {
+          const upstashReflections = await upstashRedis.getReflections(company, {
+            project: project || undefined,
+            feeling: feeling as 'stuck' | 'success' | undefined,
+            limit,
+          });
+          // Merge Upstash results (PlanetScale takes precedence)
+          const seenIds = new Set(reflections.map(r => r.id));
+          for (const r of upstashReflections as HeraldReflection[]) {
+            if (!seenIds.has(r.id)) {
+              reflections.push(r);
+              seenIds.add(r.id);
+            }
+          }
+          console.log(`[Herald] Merged Upstash reflections for ${company}`);
+        } catch (upstashErr) {
+          console.error(`[Herald] Upstash query failed for ${company}:`, upstashErr);
+        }
       }
 
       // Also load from file storage (for backwards compatibility and recent in-memory data)
@@ -2363,7 +2428,7 @@ async function handleRequest(
         filteredFileReflections = filteredFileReflections.filter(r => r.feeling === feeling);
       }
 
-      // Merge and dedupe by ID (Upstash takes precedence)
+      // Merge file reflections (PlanetScale/Upstash take precedence)
       const seenIds = new Set(reflections.map(r => r.id));
       for (const r of filteredFileReflections) {
         if (!seenIds.has(r.id)) {
@@ -5099,16 +5164,32 @@ async function handleRequest(
         // Get user organizations from DB
         const userOrgs = await db.users.getUserOrganizations(dbUser.id);
 
-        // Get user preferences - try Upstash first (persistent), fall back to memory
-        let preferences = userPreferences.get(userInfo.userId);
-        if (!preferences && upstashRedis.isEnabled()) {
-          preferences = await upstashRedis.getUserPreferences(userInfo.userId) || {};
-          // Cache in memory for faster access
+        // CEDA-42: Get user preferences - PlanetScale first (source of truth), then Upstash, then memory
+        let preferences = {};
+        try {
+          // Try PlanetScale first (source of truth)
+          preferences = await db.users.getPreferences(userInfo.userId);
           if (Object.keys(preferences).length > 0) {
+            // Cache in memory for faster access
+            userPreferences.set(userInfo.userId, preferences);
+          }
+        } catch (planetscaleErr) {
+          console.error('[CEDA-81] PlanetScale preferences fetch failed:', planetscaleErr);
+        }
+
+        // Fall back to Upstash if PlanetScale returned empty
+        if (Object.keys(preferences).length === 0 && upstashRedis.isEnabled()) {
+          const upstashPrefs = await upstashRedis.getUserPreferences(userInfo.userId);
+          if (upstashPrefs && Object.keys(upstashPrefs).length > 0) {
+            preferences = upstashPrefs;
             userPreferences.set(userInfo.userId, preferences);
           }
         }
-        preferences = preferences || {};
+
+        // Fall back to memory cache
+        if (Object.keys(preferences).length === 0) {
+          preferences = userPreferences.get(userInfo.userId) || {};
+        }
 
         // Build profile response
         const profileResponse = {
@@ -5165,12 +5246,21 @@ async function handleRequest(
           customTags?: string[];
         }>(req);
 
-        // Get existing preferences (from memory or Upstash) and merge with new ones
-        let existingPrefs = userPreferences.get(userInfo.userId);
-        if (!existingPrefs && upstashRedis.isEnabled()) {
+        // CEDA-42: Get existing preferences - PlanetScale first, then Upstash, then memory
+        let existingPrefs = {};
+        try {
+          existingPrefs = await db.users.getPreferences(userInfo.userId);
+        } catch (planetscaleErr) {
+          console.error('[CEDA-81] PlanetScale preferences fetch failed:', planetscaleErr);
+        }
+        
+        if (Object.keys(existingPrefs).length === 0 && upstashRedis.isEnabled()) {
           existingPrefs = await upstashRedis.getUserPreferences(userInfo.userId) || {};
         }
-        existingPrefs = existingPrefs || {};
+        
+        if (Object.keys(existingPrefs).length === 0) {
+          existingPrefs = userPreferences.get(userInfo.userId) || {};
+        }
 
         const updatedPrefs = {
           ...existingPrefs,
@@ -5183,7 +5273,15 @@ async function handleRequest(
         // Store updated preferences - dual write to memory and Upstash
         userPreferences.set(userInfo.userId, updatedPrefs);
 
-        // CEDA-42: Persist to Upstash for durability across redeploys
+        // CEDA-42: Persist to PlanetScale (source of truth)
+        try {
+          await db.users.setPreferences(userInfo.userId, updatedPrefs);
+          console.log(`[CEDA-81] Preferences persisted to PlanetScale for user ${userInfo.userId}`);
+        } catch (planetscaleErr) {
+          console.error(`[CEDA-81] PlanetScale preferences write failed for user ${userInfo.userId}:`, planetscaleErr);
+        }
+
+        // CEDA-42: Also persist to Upstash (cache layer)
         if (upstashRedis.isEnabled()) {
           await upstashRedis.setUserPreferences(userInfo.userId, updatedPrefs);
           console.log(`[CEDA-81] Preferences persisted to Upstash for user ${userInfo.userId}`);

@@ -285,3 +285,64 @@ export async function countActiveUsers(days: number = 30): Promise<number> {
   );
   return parseInt(result.rows[0].count, 10);
 }
+
+/**
+ * User preferences type
+ */
+export interface UserPreferences {
+  defaultOrg?: string;
+  defaultProject?: string;
+  selectedRepos?: string[];
+  customTags?: string[];
+  [key: string]: unknown;
+}
+
+/**
+ * Get user preferences from PlanetScale (CEDA-42)
+ */
+export async function getPreferences(userId: string): Promise<UserPreferences> {
+  try {
+    const result = await query<{ preferences: UserPreferences | string | null }>(
+      'SELECT preferences FROM users WHERE id = $1',
+      [userId]
+    );
+    
+    const prefs = result.rows[0]?.preferences;
+    if (!prefs) return {};
+    
+    // Handle both JSON object and string (depending on DB driver)
+    if (typeof prefs === 'string') {
+      try {
+        return JSON.parse(prefs);
+      } catch {
+        return {};
+      }
+    }
+    
+    return prefs;
+  } catch (err) {
+    console.error('[DB:Users] GetPreferences error:', err);
+    return {};
+  }
+}
+
+/**
+ * Set user preferences in PlanetScale (CEDA-42)
+ */
+export async function setPreferences(userId: string, preferences: UserPreferences): Promise<boolean> {
+  try {
+    const result = await query(
+      `UPDATE users SET preferences = $1, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify(preferences), userId]
+    );
+    
+    const updated = (result.rowCount ?? 0) > 0;
+    if (updated) {
+      console.log(`[DB:Users] Updated preferences for user ${userId}`);
+    }
+    return updated;
+  } catch (err) {
+    console.error('[DB:Users] SetPreferences error:', err);
+    return false;
+  }
+}
