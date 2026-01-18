@@ -2,21 +2,23 @@
  * CEDA Usage Repository
  *
  * Tracks usage metrics for billing, analytics, and rate limiting.
- * Metrics are recorded per company (tenant).
+ * Metrics are recorded per org (tenant).
  */
 
 import { query } from './index';
-import * as companies from './orgs';
+import * as orgs from './orgs';
 
 /**
  * Usage record as stored in the database
  */
 export interface DbUsageRecord {
   id: number;
-  company_id: string; // UUID FK to companies
+  org_id: string; // UUID FK to orgs
   metric: string;
   count: number;
-  recorded_at: Date;
+  period_start: Date;
+  period_end: Date;
+  created_at: Date;
 }
 
 /**
@@ -31,29 +33,33 @@ export type UsageMetric =
   | 'tokens_used';      // LLM tokens (for simulation)
 
 /**
- * Record a usage event by company ID
+ * Record a usage event by org ID
  */
 export async function record(
-  companyId: string,
+  orgId: string,
   metric: UsageMetric,
   count: number = 1
 ): Promise<void> {
+  const now = new Date();
+  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1); // Start of month
+  const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0); // End of month
+
   await query(
-    `INSERT INTO usage_records (company_id, metric, count, recorded_at)
-     VALUES ($1, $2, $3, NOW())`,
-    [companyId, metric, count]
+    `INSERT INTO usage_records (org_id, metric, count, period_start, period_end)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [orgId, metric, count, periodStart, periodEnd]
   );
 }
 
 /**
- * Record usage by company slug (convenience method)
+ * Record usage by org slug (convenience method)
  */
 export async function recordBySlug(
-  companySlug: string,
+  orgSlug: string,
   metric: UsageMetric,
   count: number = 1
 ): Promise<void> {
-  const { org } = await companies.upsertBySlug(companySlug);
+  const { org } = await orgs.upsertBySlug(orgSlug);
   await record(org.id, metric, count);
 }
 
@@ -61,31 +67,35 @@ export async function recordBySlug(
  * Record multiple usage events in batch
  */
 export async function recordBatch(
-  events: Array<{ companyId: string; metric: UsageMetric; count?: number }>
+  events: Array<{ orgId: string; metric: UsageMetric; count?: number }>
 ): Promise<void> {
   if (events.length === 0) return;
+
+  const now = new Date();
+  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
   const values: any[] = [];
   const placeholders: string[] = [];
 
   events.forEach((event, i) => {
-    const offset = i * 3;
-    placeholders.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, NOW())`);
-    values.push(event.companyId, event.metric, event.count || 1);
+    const offset = i * 5;
+    placeholders.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5})`);
+    values.push(event.orgId, event.metric, event.count || 1, periodStart, periodEnd);
   });
 
   await query(
-    `INSERT INTO usage_records (company_id, metric, count, recorded_at)
+    `INSERT INTO usage_records (org_id, metric, count, period_start, period_end)
      VALUES ${placeholders.join(', ')}`,
     values
   );
 }
 
 /**
- * Get usage for a company in a time period
+ * Get usage for an org in a time period
  */
 export async function getUsage(
-  companyId: string,
+  orgId: string,
   metric: UsageMetric,
   startDate: Date,
   endDate: Date = new Date()
@@ -93,28 +103,28 @@ export async function getUsage(
   const result = await query<{ total: string }>(
     `SELECT COALESCE(SUM(count), 0) as total
      FROM usage_records
-     WHERE company_id = $1 AND metric = $2
-     AND recorded_at >= $3 AND recorded_at <= $4`,
-    [companyId, metric, startDate, endDate]
+     WHERE org_id = $1 AND metric = $2
+     AND created_at >= $3 AND created_at <= $4`,
+    [orgId, metric, startDate, endDate]
   );
   return parseInt(result.rows[0].total, 10);
 }
 
 /**
- * Get all usage metrics for a company in a time period
+ * Get all usage metrics for an org in a time period
  */
 export async function getUsageSummary(
-  companyId: string,
+  orgId: string,
   startDate: Date,
   endDate: Date = new Date()
 ): Promise<Record<string, number>> {
   const result = await query<{ metric: string; total: string }>(
     `SELECT metric, COALESCE(SUM(count), 0) as total
      FROM usage_records
-     WHERE company_id = $1
-     AND recorded_at >= $2 AND recorded_at <= $3
+     WHERE org_id = $1
+     AND created_at >= $2 AND created_at <= $3
      GROUP BY metric`,
-    [companyId, startDate, endDate]
+    [orgId, startDate, endDate]
   );
 
   const summary: Record<string, number> = {};
@@ -128,18 +138,18 @@ export async function getUsageSummary(
  * Get daily usage breakdown for charts
  */
 export async function getDailyUsage(
-  companyId: string,
+  orgId: string,
   metric: UsageMetric,
   days: number = 30
 ): Promise<Array<{ date: string; count: number }>> {
   const result = await query<{ date: string; count: string }>(
-    `SELECT DATE(recorded_at) as date, COALESCE(SUM(count), 0) as count
+    `SELECT DATE(created_at) as date, COALESCE(SUM(count), 0) as count
      FROM usage_records
-     WHERE company_id = $1 AND metric = $2
-     AND recorded_at >= NOW() - INTERVAL '1 day' * $3
-     GROUP BY DATE(recorded_at)
+     WHERE org_id = $1 AND metric = $2
+     AND created_at >= NOW() - INTERVAL '1 day' * $3
+     GROUP BY DATE(created_at)
      ORDER BY date`,
-    [companyId, metric, days]
+    [orgId, metric, days]
   );
 
   return result.rows.map((row) => ({
@@ -149,7 +159,7 @@ export async function getDailyUsage(
 }
 
 /**
- * Get usage across all companies (for admin/analytics)
+ * Get usage across all orgs (for admin/analytics)
  */
 export async function getGlobalUsage(
   metric: UsageMetric,
@@ -160,42 +170,45 @@ export async function getGlobalUsage(
     `SELECT COALESCE(SUM(count), 0) as total
      FROM usage_records
      WHERE metric = $1
-     AND recorded_at >= $2 AND recorded_at <= $3`,
+     AND created_at >= $2 AND created_at <= $3`,
     [metric, startDate, endDate]
   );
   return parseInt(result.rows[0].total, 10);
 }
 
 /**
- * Get top companies by usage
+ * Get top orgs by usage
  */
-export async function getTopCompanies(
+export async function getTopOrgs(
   metric: UsageMetric,
   limit: number = 10,
   days: number = 30
-): Promise<Array<{ companyId: string; count: number }>> {
-  const result = await query<{ company_id: string; count: string }>(
-    `SELECT company_id, COALESCE(SUM(count), 0) as count
+): Promise<Array<{ orgId: string; count: number }>> {
+  const result = await query<{ org_id: string; count: string }>(
+    `SELECT org_id, COALESCE(SUM(count), 0) as count
      FROM usage_records
      WHERE metric = $1
-     AND recorded_at >= NOW() - INTERVAL '1 day' * $2
-     GROUP BY company_id
+     AND created_at >= NOW() - INTERVAL '1 day' * $2
+     GROUP BY org_id
      ORDER BY count DESC
      LIMIT $3`,
     [metric, days, limit]
   );
 
   return result.rows.map((row) => ({
-    companyId: row.company_id,
+    orgId: row.org_id,
     count: parseInt(row.count, 10),
   }));
 }
 
+/** @deprecated Use getTopOrgs instead */
+export const getTopCompanies = getTopOrgs;
+
 /**
- * Check if company is within usage limits
+ * Check if org is within usage limits
  */
 export async function checkQuota(
-  companyId: string,
+  orgId: string,
   metric: UsageMetric,
   limit: number,
   periodDays: number = 30
@@ -203,7 +216,7 @@ export async function checkQuota(
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - periodDays);
 
-  const used = await getUsage(companyId, metric, startDate);
+  const used = await getUsage(orgId, metric, startDate);
   const remaining = Math.max(0, limit - used);
 
   return { remaining, used, limit };
@@ -215,7 +228,7 @@ export async function checkQuota(
 export async function cleanupOldRecords(retentionDays: number = 90): Promise<number> {
   const result = await query(
     `DELETE FROM usage_records
-     WHERE recorded_at < NOW() - INTERVAL '1 day' * $1`,
+     WHERE created_at < NOW() - INTERVAL '1 day' * $1`,
     [retentionDays]
   );
   return result.rowCount || 0;
@@ -226,24 +239,24 @@ export async function cleanupOldRecords(retentionDays: number = 90): Promise<num
  */
 export async function getStats(): Promise<{
   totalRecords: number;
-  uniqueCompanies: number;
+  uniqueOrgs: number;
   todayRecords: number;
 }> {
   const result = await query<{
     total: string;
-    companies: string;
+    orgs: string;
     today: string;
   }>(
     `SELECT
       COUNT(*) as total,
-      COUNT(DISTINCT company_id) as companies,
-      COUNT(*) FILTER (WHERE recorded_at >= CURRENT_DATE) as today
+      COUNT(DISTINCT org_id) as orgs,
+      COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) as today
      FROM usage_records`
   );
 
   return {
     totalRecords: parseInt(result.rows[0].total, 10),
-    uniqueCompanies: parseInt(result.rows[0].companies, 10),
+    uniqueOrgs: parseInt(result.rows[0].orgs, 10),
     todayRecords: parseInt(result.rows[0].today, 10),
   };
 }
