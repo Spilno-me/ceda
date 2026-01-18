@@ -30,9 +30,29 @@ herald.gotStuck('What failed');
 
 ## Quick Start
 
+### MCP Server (for AI agents like Claude)
+
 ```bash
 cd your-project
 npx @spilno/herald-mcp init
+```
+
+### SDK (for programmatic access)
+
+```typescript
+import { herald } from '@spilno/herald-mcp';
+
+// Capture a pattern (something that worked)
+await herald.learned('Always run tests before committing');
+
+// Capture an antipattern (something that failed)
+await herald.gotStuck('Forgot to check existing tests before refactoring');
+
+// Query patterns
+const patterns = await herald.recall();
+
+// Configure (optional - uses git context by default)
+herald.configure({ baseUrl: 'https://custom.ceda.com', token: 'your-token' });
 ```
 
 **What this does:**
@@ -223,6 +243,82 @@ CEDA (Cognitive Event-Driven Architecture) is pattern memory for AI:
 
 Unlike RAG (retrieves content), CEDA retrieves **what worked**.
 
+## SDK API
+
+The SDK provides programmatic access to CEDA pattern memory for use in your own applications.
+
+### Installation
+
+```bash
+npm install @spilno/herald-mcp
+```
+
+### API Reference
+
+#### `herald.learned(insight, context?)`
+
+Capture a pattern (something that worked).
+
+```typescript
+await herald.learned('Always run tests before committing');
+await herald.learned('Use feature flags for gradual rollouts', 'deployment pipeline');
+```
+
+#### `herald.gotStuck(insight, context?)`
+
+Capture an antipattern (something that failed).
+
+```typescript
+await herald.gotStuck('Forgot to check existing tests before refactoring');
+await herald.gotStuck('Deployed without running migrations', 'production incident');
+```
+
+#### `herald.recall(topic?)`
+
+Query learned patterns and antipatterns.
+
+```typescript
+const patterns = await herald.recall();
+const deployPatterns = await herald.recall('deployment');
+```
+
+Returns an array of `Pattern` objects:
+
+```typescript
+interface Pattern {
+  insight: string;
+  feeling: 'success' | 'stuck';
+  signal?: string;
+  reinforcement?: string;
+  warning?: string;
+  scope?: string;
+}
+```
+
+#### `herald.configure(opts)`
+
+Configure the SDK (optional - uses git context by default).
+
+```typescript
+herald.configure({
+  baseUrl: 'https://custom.ceda.com',
+  token: 'your-api-token',
+  company: 'acme',
+  project: 'backend',
+  user: 'developer'
+});
+```
+
+### Context Detection
+
+By default, the SDK automatically derives context from:
+
+1. **Git remote** - Organization and repository name from git origin
+2. **Git user** - User name from git config
+3. **Path** - Falls back to folder names if not in a git repo
+
+This means you can use the SDK without any configuration in most projects.
+
 ## Links
 
 - **CEDA**: https://getceda.com
@@ -235,4 +331,4 @@ MIT
 
 ---
 
-*Herald v1.25.0 — Pattern memory for AI agents*
+*Herald v1.33.0 — Pattern memory for AI agents*
