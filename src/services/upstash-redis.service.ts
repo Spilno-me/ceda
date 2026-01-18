@@ -30,9 +30,9 @@ export interface PatternAdaptiveState {
   feedbackCount: number;    // Times reinforced
   lastUsed: string;         // ISO timestamp
   decayFactor: number;      // Current decay multiplier
-  level: 'user' | 'project' | 'company' | 'global';
+  level: 'user' | 'project' | 'org' | 'global';
   graduationStatus: 'active' | 'candidate' | 'graduated' | 'demoted';
-  company: string;
+  org: string;
   project: string;
   user: string;
   createdAt: string;
@@ -141,7 +141,7 @@ class UpstashRedisService {
       decayFactor: parseFloat(result.decayFactor) || 1.0,
       level: (result.level as PatternAdaptiveState['level']) || 'user',
       graduationStatus: (result.graduationStatus as PatternAdaptiveState['graduationStatus']) || 'active',
-      company: result.company || 'unknown',
+      org: result.org || result.company || 'unknown',
       project: result.project || 'default',
       user: result.user || 'default',
       createdAt: result.createdAt || new Date().toISOString(),
@@ -163,16 +163,16 @@ class UpstashRedisService {
       'decayFactor', state.decayFactor.toString(),
       'level', state.level,
       'graduationStatus', state.graduationStatus,
-      'company', state.company,
+      'org', state.org,
       'project', state.project,
       'user', state.user,
       'createdAt', state.createdAt || now,
       'updatedAt', now,
     ]);
 
-    // Add to company index for queries
-    await this.execute(['SADD', `company:${state.company}:patterns`, state.patternId]);
-    await this.execute(['SADD', `project:${state.company}:${state.project}:patterns`, state.patternId]);
+    // Add to org index for queries
+    await this.execute(['SADD', `org:${state.org}:patterns`, state.patternId]);
+    await this.execute(['SADD', `project:${state.org}:${state.project}:patterns`, state.patternId]);
 
     return result !== null;
   }
@@ -230,18 +230,24 @@ class UpstashRedisService {
   }
 
   /**
-   * Get all patterns for a company
+   * Get all patterns for an org
    */
-  async getCompanyPatterns(company: string): Promise<string[]> {
-    const result = await this.execute<string[]>(['SMEMBERS', `company:${company}:patterns`]);
+  async getOrgPatterns(org: string): Promise<string[]> {
+    // Try new key first, fall back to old key for backwards compatibility
+    let result = await this.execute<string[]>(['SMEMBERS', `org:${org}:patterns`]);
+    if (!result || result.length === 0) {
+      result = await this.execute<string[]>(['SMEMBERS', `company:${org}:patterns`]);
+    }
     return result || [];
   }
 
   /**
    * Get all patterns for a project
+   * Note: The key format project:${org}:${project}:patterns is unchanged,
+   * only the parameter name changed from company to org
    */
-  async getProjectPatterns(company: string, project: string): Promise<string[]> {
-    const result = await this.execute<string[]>(['SMEMBERS', `project:${company}:${project}:patterns`]);
+  async getProjectPatterns(org: string, project: string): Promise<string[]> {
+    const result = await this.execute<string[]>(['SMEMBERS', `project:${org}:${project}:patterns`]);
     return result || [];
   }
 
@@ -268,7 +274,7 @@ class UpstashRedisService {
           decayFactor: parseFloat(result.decayFactor) || 1.0,
           level: (result.level as PatternAdaptiveState['level']) || 'user',
           graduationStatus: (result.graduationStatus as PatternAdaptiveState['graduationStatus']) || 'active',
-          company: result.company || 'unknown',
+          org: result.org || result.company || 'unknown',
           project: result.project || 'default',
           user: result.user || 'default',
           createdAt: result.createdAt || new Date().toISOString(),
@@ -420,7 +426,7 @@ class UpstashRedisService {
     outcome?: string;
     reinforcement?: string;
     warning?: string;
-    company: string;
+    org: string;
     project: string;
     user: string;
     vault?: string;
@@ -429,40 +435,47 @@ class UpstashRedisService {
     const key = `reflection:${reflection.id}`;
     const result = await this.execute(['SET', key, JSON.stringify(reflection)]);
 
-    // Add to company index
+    // Add to org index
     if (result !== null) {
-      await this.execute(['SADD', `company:${reflection.company}:reflections`, reflection.id]);
-      await this.execute(['SADD', `project:${reflection.company}:${reflection.project}:reflections`, reflection.id]);
+      await this.execute(['SADD', `org:${reflection.org}:reflections`, reflection.id]);
+      await this.execute(['SADD', `project:${reflection.org}:${reflection.project}:reflections`, reflection.id]);
 
       // Add to type index (pattern vs antipattern)
       const type = reflection.feeling === 'stuck' ? 'antipattern' : 'pattern';
-      await this.execute(['SADD', `company:${reflection.company}:${type}s`, reflection.id]);
+      await this.execute(['SADD', `org:${reflection.org}:${type}s`, reflection.id]);
     }
 
     return result !== null;
   }
 
   /**
-   * Get all reflections for a company
+   * Get all reflections for an org
    */
-  async getReflections(company: string, options?: {
+  async getReflections(org: string, options?: {
     project?: string;
     feeling?: 'stuck' | 'success';
     limit?: number;
   }): Promise<unknown[]> {
-    // Get reflection IDs from index
-    let setKey = `company:${company}:reflections`;
+    // Get reflection IDs from index - try new keys first, fall back to old keys
+    let setKey = `org:${org}:reflections`;
+    let fallbackKey = `company:${org}:reflections`;
 
     if (options?.project) {
-      setKey = `project:${company}:${options.project}:reflections`;
+      setKey = `project:${org}:${options.project}:reflections`;
+      fallbackKey = `project:${org}:${options.project}:reflections`;
     }
 
     if (options?.feeling) {
       const type = options.feeling === 'stuck' ? 'antipattern' : 'pattern';
-      setKey = `company:${company}:${type}s`;
+      setKey = `org:${org}:${type}s`;
+      fallbackKey = `company:${org}:${type}s`;
     }
 
-    const ids = await this.execute<string[]>(['SMEMBERS', setKey]);
+    let ids = await this.execute<string[]>(['SMEMBERS', setKey]);
+    // Fall back to old key format for backwards compatibility
+    if (!ids || ids.length === 0) {
+      ids = await this.execute<string[]>(['SMEMBERS', fallbackKey]);
+    }
     if (!ids || ids.length === 0) return [];
 
     // Fetch all reflections
@@ -493,7 +506,7 @@ class UpstashRedisService {
   /**
    * Delete a reflection (GDPR Art 17)
    */
-  async deleteReflection(id: string, company: string, project: string): Promise<boolean> {
+  async deleteReflection(id: string, org: string, project: string): Promise<boolean> {
     // Get the reflection first to know its type
     const data = await this.execute<string>(['GET', `reflection:${id}`]);
     if (!data) return false;
@@ -502,10 +515,12 @@ class UpstashRedisService {
       const reflection = JSON.parse(data);
       const type = reflection.feeling === 'stuck' ? 'antipattern' : 'pattern';
 
-      // Remove from all indexes
-      await this.execute(['SREM', `company:${company}:reflections`, id]);
-      await this.execute(['SREM', `project:${company}:${project}:reflections`, id]);
-      await this.execute(['SREM', `company:${company}:${type}s`, id]);
+      // Remove from all indexes (both new and old key formats for backwards compatibility)
+      await this.execute(['SREM', `org:${org}:reflections`, id]);
+      await this.execute(['SREM', `company:${org}:reflections`, id]);
+      await this.execute(['SREM', `project:${org}:${project}:reflections`, id]);
+      await this.execute(['SREM', `org:${org}:${type}s`, id]);
+      await this.execute(['SREM', `company:${org}:${type}s`, id]);
 
       // Delete the reflection itself
       const result = await this.execute(['DEL', `reflection:${id}`]);
@@ -572,11 +587,18 @@ class UpstashRedisService {
   }
 
   /**
-   * Count reflections for a company
+   * Count reflections for an org
    */
-  async countReflections(company: string): Promise<{ patterns: number; antipatterns: number }> {
-    const patterns = await this.execute<number>(['SCARD', `company:${company}:patterns`]) || 0;
-    const antipatterns = await this.execute<number>(['SCARD', `company:${company}:antipatterns`]) || 0;
+  async countReflections(org: string): Promise<{ patterns: number; antipatterns: number }> {
+    // Try new keys first, fall back to old keys for backwards compatibility
+    let patterns = await this.execute<number>(['SCARD', `org:${org}:patterns`]) || 0;
+    if (patterns === 0) {
+      patterns = await this.execute<number>(['SCARD', `company:${org}:patterns`]) || 0;
+    }
+    let antipatterns = await this.execute<number>(['SCARD', `org:${org}:antipatterns`]) || 0;
+    if (antipatterns === 0) {
+      antipatterns = await this.execute<number>(['SCARD', `company:${org}:antipatterns`]) || 0;
+    }
     return { patterns, antipatterns };
   }
 
@@ -625,6 +647,68 @@ class UpstashRedisService {
     const key = `user:${userId}:preferences`;
     const result = await this.execute(['DEL', key]);
     return result !== null;
+  }
+
+  // ============================================
+  // MIGRATION HELPERS (CEDA-97)
+  // ============================================
+
+  /**
+   * Migrate keys from company to org naming convention
+   * This helper migrates data from old company:* keys to new org:* keys
+   */
+  async migrateCompanyToOrg(orgId: string): Promise<{
+    migratedPatterns: number;
+    migratedReflections: number;
+    migratedAntipatterns: number;
+  }> {
+    let migratedPatterns = 0;
+    let migratedReflections = 0;
+    let migratedAntipatterns = 0;
+
+    // Migrate patterns set
+    const oldPatternIds = await this.execute<string[]>(['SMEMBERS', `company:${orgId}:patterns`]);
+    if (oldPatternIds && oldPatternIds.length > 0) {
+      for (const patternId of oldPatternIds) {
+        await this.execute(['SADD', `org:${orgId}:patterns`, patternId]);
+        migratedPatterns++;
+      }
+      // Optionally delete old key after migration
+      // await this.execute(['DEL', `company:${orgId}:patterns`]);
+    }
+
+    // Migrate reflections set
+    const oldReflectionIds = await this.execute<string[]>(['SMEMBERS', `company:${orgId}:reflections`]);
+    if (oldReflectionIds && oldReflectionIds.length > 0) {
+      for (const reflectionId of oldReflectionIds) {
+        await this.execute(['SADD', `org:${orgId}:reflections`, reflectionId]);
+        migratedReflections++;
+      }
+      // Optionally delete old key after migration
+      // await this.execute(['DEL', `company:${orgId}:reflections`]);
+    }
+
+    // Migrate antipatterns set
+    const oldAntipatternIds = await this.execute<string[]>(['SMEMBERS', `company:${orgId}:antipatterns`]);
+    if (oldAntipatternIds && oldAntipatternIds.length > 0) {
+      for (const antipatternId of oldAntipatternIds) {
+        await this.execute(['SADD', `org:${orgId}:antipatterns`, antipatternId]);
+        migratedAntipatterns++;
+      }
+      // Optionally delete old key after migration
+      // await this.execute(['DEL', `company:${orgId}:antipatterns`]);
+    }
+
+    // Migrate pattern state records (update company field to org)
+    const allPatternIds = [...new Set([...(oldPatternIds || []), ...(await this.execute<string[]>(['SMEMBERS', `org:${orgId}:patterns`]) || [])])];
+    for (const patternId of allPatternIds) {
+      const state = await this.execute<Record<string, string>>(['HGETALL', `pattern:${patternId}:state`]);
+      if (state && state.company && !state.org) {
+        await this.execute(['HSET', `pattern:${patternId}:state`, 'org', state.company]);
+      }
+    }
+
+    return { migratedPatterns, migratedReflections, migratedAntipatterns };
   }
 
   // ============================================

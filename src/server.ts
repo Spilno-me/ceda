@@ -1957,7 +1957,7 @@ async function handleRequest(
           outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
           reinforcement: sanitizedReinforcement,
           warning: sanitizedWarning,
-          company: body.company || 'default',
+          org: body.company || 'default',
           project: body.project || 'default',
           user: body.user || 'default',
           vault: body.vault,

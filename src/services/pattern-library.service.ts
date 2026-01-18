@@ -504,7 +504,7 @@ export class PatternLibraryService {
         decayFactor: 1.0,
         level: 'user',
         graduationStatus: 'active',
-        company: pattern.company || 'unknown',
+        org: pattern.company || 'unknown',
         project: pattern.project || 'default',
         user: pattern.user_id || 'default',
         createdAt: new Date().toISOString(),
