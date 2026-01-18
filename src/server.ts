@@ -2326,9 +2326,13 @@ async function handleRequest(
       // Increment query count
       await usageService.incrementQueries(userId);
       const company = urlObj.searchParams.get('company');
-      const project = urlObj.searchParams.get('project');
+      const rawProject = urlObj.searchParams.get('project');
       const feeling = urlObj.searchParams.get('feeling'); // 'stuck' or 'success'
       const limit = parseInt(urlObj.searchParams.get('limit') || '20', 10);
+
+      // CEDA-42: Normalize project name - strip org prefix if present
+      // Dashboard sends "org/project" but Herald MCP sends just "project"
+      const project = rawProject?.includes('/') ? rawProject.split('/').pop() : rawProject;
 
       // CEDA-42: Query from Upstash first (persistent), fall back to file storage
       let reflections: HeraldReflection[] = [];
