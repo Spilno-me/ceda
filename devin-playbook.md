@@ -82,11 +82,11 @@ Call `herald_context(refresh=true)` after cloning to update context:
 ```
 1. Clone repo: git clone https://github.com/org/repo
 2. cd repo
-3. herald_context(refresh=true)  # Now context is: company=org, project=repo
+3. herald_context(refresh=true)  # Now context is: org=github-org, project=repo
 ```
 
 Context is derived from git (trusted, immutable):
-- **company**: GitHub org from remote
+- **org**: GitHub org from remote
 - **project**: Repo name from remote
 - **user**: git config user.name
 

@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1768723178839,
+      "tag": "0000_init_git_native_schema",
+      "breakpoints": true
+    }
+  ]
+}
