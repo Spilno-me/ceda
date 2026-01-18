@@ -6,7 +6,7 @@
  */
 
 import { query, transaction } from './index';
-import * as companies from './companies';
+import * as companies from './orgs';
 
 /**
  * Subscription as stored in the database

@@ -6,7 +6,7 @@
  */
 
 import { query } from './index';
-import * as companies from './companies';
+import * as companies from './orgs';
 
 /**
  * Usage record as stored in the database

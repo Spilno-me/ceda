@@ -14,9 +14,11 @@ export {
   closePool,
 } from './index';
 
-// Company repository (tenants)
-export * as companies from './companies';
-export type { DbCompany } from './companies';
+// Org repository (tenants) - Git-native naming
+export * as orgs from './orgs';
+export type { DbOrg, DbCompany } from './orgs';
+/** @deprecated Use orgs instead */
+export * as companies from './orgs';
 
 // User repository
 export * as users from './users';

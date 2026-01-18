@@ -7,7 +7,7 @@
  */
 
 import { query, transaction } from './index';
-import * as companies from './companies';
+import * as companies from './orgs';
 
 // Encryption key from environment - MUST be set in production
 const ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY || 'ceda-dev-key-change-in-prod';
@@ -21,12 +21,15 @@ export interface DbUser {
   github_login: string;
   email: string | null;
   avatar_url: string | null;
-  company_id: string | null; // UUID FK to companies
-  roles: string[];
-  is_active: boolean;
+  primary_org_id: string | null; // UUID FK to orgs
   created_at: Date;
   updated_at: Date;
   last_login_at: Date;
+}
+
+/** @deprecated Use DbUser with primary_org_id */
+export interface DbUserLegacy extends DbUser {
+  company_id?: string | null;
 }
 
 /**
@@ -63,7 +66,7 @@ export interface GitHubUserInput {
  */
 export async function findByGitHubId(githubId: number): Promise<DbUser | null> {
   const result = await query<DbUser>(
-    'SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at FROM users WHERE github_id = $1',
+    'SELECT id, github_id, github_login, email, avatar_url, primary_org_id, created_at, updated_at, last_login_at FROM users WHERE github_id = $1',
     [githubId]
   );
   return result.rows[0] || null;
@@ -74,7 +77,7 @@ export async function findByGitHubId(githubId: number): Promise<DbUser | null> {
  */
 export async function findById(id: string): Promise<DbUser | null> {
   const result = await query<DbUser>(
-    'SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at FROM users WHERE id = $1',
+    'SELECT id, github_id, github_login, email, avatar_url, primary_org_id, created_at, updated_at, last_login_at FROM users WHERE id = $1',
     [id]
   );
   return result.rows[0] || null;
@@ -85,7 +88,7 @@ export async function findById(id: string): Promise<DbUser | null> {
  */
 export async function findByGitHubLogin(login: string): Promise<DbUser | null> {
   const result = await query<DbUser>(
-    'SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at FROM users WHERE github_login = $1',
+    'SELECT id, github_id, github_login, email, avatar_url, primary_org_id, created_at, updated_at, last_login_at FROM users WHERE github_login = $1',
     [login]
   );
   return result.rows[0] || null;
@@ -96,7 +99,7 @@ export async function findByGitHubLogin(login: string): Promise<DbUser | null> {
  */
 export async function findByEmail(email: string): Promise<DbUser | null> {
   const result = await query<DbUser>(
-    'SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at FROM users WHERE email = $1',
+    'SELECT id, github_id, github_login, email, avatar_url, primary_org_id, created_at, updated_at, last_login_at FROM users WHERE email = $1',
     [email]
   );
   return result.rows[0] || null;
@@ -106,12 +109,12 @@ export async function findByEmail(email: string): Promise<DbUser | null> {
  * Get user's decrypted access token (use sparingly)
  */
 export async function getAccessToken(userId: string): Promise<string | null> {
-  const result = await query<{ token: string | null }>(
-    `SELECT pgp_sym_decrypt(access_token_encrypted, $1) as token
-     FROM users WHERE id = $2`,
-    [ENCRYPTION_KEY, userId]
+  // Note: access_token_enc stores plain text for now (encrypted later if needed)
+  const result = await query<{ access_token_enc: string | null }>(
+    `SELECT access_token_enc FROM users WHERE id = $1`,
+    [userId]
   );
-  return result.rows[0]?.token || null;
+  return result.rows[0]?.access_token_enc || null;
 }
 
 /**
@@ -125,8 +128,8 @@ export async function upsertFromGitHub(
     // Determine company from first org or username
     const companySlug = input.organizations?.[0]?.login || input.githubLogin;
 
-    // Ensure company exists
-    const { company } = await companies.upsertBySlug(companySlug);
+    // Ensure org exists
+    const { org } = await companies.upsertBySlug(companySlug);
 
     // Check if user exists
     const existing = await client.query<DbUser>(
@@ -141,48 +144,42 @@ export async function upsertFromGitHub(
       // Create new user with encrypted token
       const result = await client.query<DbUser>(
         `INSERT INTO users (
-          github_id, github_login, email, avatar_url, company_id,
-          access_token_encrypted, roles, is_active
+          github_id, github_login, email, avatar_url, primary_org_id,
+          access_token_enc
         ) VALUES (
-          $1, $2, $3, $4, $5,
-          pgp_sym_encrypt($6, $7),
-          $8, $9
+          $1, $2, $3, $4, $5, $6
         )
-        RETURNING id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at`,
+        RETURNING id, github_id, github_login, email, avatar_url, primary_org_id, created_at, updated_at, last_login_at`,
         [
           input.githubId,
           input.githubLogin,
           input.email || null,
           input.avatarUrl || null,
-          company.id,
-          input.accessToken,
-          ENCRYPTION_KEY,
-          ['contributor'],
-          true,
+          org.id,
+          input.accessToken, // Store plain for now, encrypt later if needed
         ]
       );
       user = result.rows[0];
 
-      console.log(`[DB:Users] Created new user: ${input.githubLogin} (company: ${companySlug})`);
+      console.log(`[DB:Users] Created new user: ${input.githubLogin} (org: ${companySlug})`);
     } else {
-      // Update existing user with new encrypted token
+      // Update existing user
       const result = await client.query<DbUser>(
         `UPDATE users SET
           github_login = $2,
           email = COALESCE($3, email),
           avatar_url = COALESCE($4, avatar_url),
-          access_token_encrypted = pgp_sym_encrypt($5, $6),
+          access_token_enc = $5,
           updated_at = NOW(),
           last_login_at = NOW()
         WHERE github_id = $1
-        RETURNING id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at`,
+        RETURNING id, github_id, github_login, email, avatar_url, primary_org_id, created_at, updated_at, last_login_at`,
         [
           input.githubId,
           input.githubLogin,
           input.email || null,
           input.avatarUrl || null,
           input.accessToken,
-          ENCRYPTION_KEY,
         ]
       );
       user = result.rows[0];
@@ -190,20 +187,23 @@ export async function upsertFromGitHub(
       console.log(`[DB:Users] Updated user: ${input.githubLogin}`);
     }
 
-    // Sync organizations
+    // Sync organizations using user_orgs junction table
     if (input.organizations && input.organizations.length > 0) {
-      // Remove old orgs
+      // Remove old org memberships
       await client.query(
-        'DELETE FROM user_organizations WHERE user_id = $1',
+        'DELETE FROM user_orgs WHERE user_id = $1',
         [user.id]
       );
 
-      // Insert new orgs
-      for (const org of input.organizations) {
+      // Insert new org memberships
+      for (const ghOrg of input.organizations) {
+        // Ensure org exists
+        const { org: cedaOrg } = await companies.upsertBySlug(ghOrg.login);
         await client.query(
-          `INSERT INTO user_organizations (user_id, org_login, org_id, role)
-           VALUES ($1, $2, $3, $4)`,
-          [user.id, org.login, org.id, 'member']
+          `INSERT INTO user_orgs (user_id, org_id, role)
+           VALUES ($1, $2, $3)
+           ON CONFLICT DO NOTHING`,
+          [user.id, cedaOrg.id, 'member']
         );
       }
     }
@@ -224,46 +224,34 @@ export async function getUserOrganizations(userId: string): Promise<DbUserOrg[]>
 }
 
 /**
- * Update user's company
+ * Update user's primary org
  */
-export async function updateCompany(userId: string, companyId: string): Promise<void> {
+export async function updatePrimaryOrg(userId: string, orgId: string): Promise<void> {
   await query(
-    'UPDATE users SET company_id = $1, updated_at = NOW() WHERE id = $2',
-    [companyId, userId]
+    'UPDATE users SET primary_org_id = $1, updated_at = NOW() WHERE id = $2',
+    [orgId, userId]
   );
 }
 
-/**
- * Update user's roles
- */
-export async function updateRoles(userId: string, roles: string[]): Promise<void> {
-  await query(
-    'UPDATE users SET roles = $1, updated_at = NOW() WHERE id = $2',
-    [roles, userId]
-  );
-}
+/** @deprecated Use updatePrimaryOrg instead */
+export const updateCompany = updatePrimaryOrg;
+
+// Note: roles and is_active removed from schema - use user_orgs for role management
 
 /**
- * Deactivate user
+ * Get users by org
  */
-export async function deactivate(userId: string): Promise<void> {
-  await query(
-    'UPDATE users SET is_active = false, updated_at = NOW() WHERE id = $1',
-    [userId]
-  );
-}
-
-/**
- * Get users by company
- */
-export async function findByCompanyId(companyId: string): Promise<DbUser[]> {
+export async function findByOrgId(orgId: string): Promise<DbUser[]> {
   const result = await query<DbUser>(
-    `SELECT id, github_id, github_login, email, avatar_url, company_id, roles, is_active, created_at, updated_at, last_login_at
-     FROM users WHERE company_id = $1 AND is_active = true ORDER BY created_at`,
-    [companyId]
+    `SELECT id, github_id, github_login, email, avatar_url, primary_org_id, created_at, updated_at, last_login_at
+     FROM users WHERE primary_org_id = $1 ORDER BY created_at`,
+    [orgId]
   );
   return result.rows;
 }
+
+/** @deprecated Use findByOrgId instead */
+export const findByCompanyId = findByOrgId;
 
 /**
  * Count total users
@@ -279,8 +267,7 @@ export async function countUsers(): Promise<number> {
 export async function countActiveUsers(days: number = 30): Promise<number> {
   const result = await query<{ count: string }>(
     `SELECT COUNT(*) FROM users
-     WHERE last_login_at > NOW() - INTERVAL '1 day' * $1
-     AND is_active = true`,
+     WHERE last_login_at > NOW() - INTERVAL '1 day' * $1`,
     [days]
   );
   return parseInt(result.rows[0].count, 10);

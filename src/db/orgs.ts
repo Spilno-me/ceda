@@ -1,18 +1,17 @@
 /**
- * CEDA Orgs Repository (formerly Companies)
+ * CEDA Orgs Repository
  *
  * Orgs are tenants in the multi-tenant model.
  * Git-native naming: org = GitHub organization
  * Each user belongs to an org, subscriptions are per-org.
  */
 
-import { query, transaction } from './index';
+import { query } from './index';
 
 /**
  * Org record as stored in the database
- * @deprecated Use DbCompany for backwards compat, but table is now 'orgs'
  */
-export interface DbCompany {
+export interface DbOrg {
   id: string; // UUID
   name: string;
   slug: string;
@@ -21,11 +20,14 @@ export interface DbCompany {
   updated_at: Date;
 }
 
+/** @deprecated Use DbOrg instead */
+export type DbCompany = DbOrg;
+
 /**
  * Find org by ID
  */
-export async function findById(id: string): Promise<DbCompany | null> {
-  const result = await query<DbCompany>(
+export async function findById(id: string): Promise<DbOrg | null> {
+  const result = await query<DbOrg>(
     'SELECT * FROM orgs WHERE id = $1',
     [id]
   );
@@ -35,8 +37,8 @@ export async function findById(id: string): Promise<DbCompany | null> {
 /**
  * Find org by slug
  */
-export async function findBySlug(slug: string): Promise<DbCompany | null> {
-  const result = await query<DbCompany>(
+export async function findBySlug(slug: string): Promise<DbOrg | null> {
+  const result = await query<DbOrg>(
     'SELECT * FROM orgs WHERE slug = $1',
     [slug]
   );
@@ -46,8 +48,8 @@ export async function findBySlug(slug: string): Promise<DbCompany | null> {
 /**
  * Find org by Stripe customer ID
  */
-export async function findByStripeCustomerId(customerId: string): Promise<DbCompany | null> {
-  const result = await query<DbCompany>(
+export async function findByStripeCustomerId(customerId: string): Promise<DbOrg | null> {
+  const result = await query<DbOrg>(
     'SELECT * FROM orgs WHERE stripe_customer_id = $1',
     [customerId]
   );
@@ -61,15 +63,15 @@ export async function findByStripeCustomerId(customerId: string): Promise<DbComp
 export async function upsertBySlug(
   slug: string,
   name?: string
-): Promise<{ company: DbCompany; isNew: boolean }> {
+): Promise<{ org: DbOrg; isNew: boolean }> {
   // Check if exists
   const existing = await findBySlug(slug);
   if (existing) {
-    return { company: existing, isNew: false };
+    return { org: existing, isNew: false };
   }
 
   // Create new
-  const result = await query<DbCompany>(
+  const result = await query<DbOrg>(
     `INSERT INTO orgs (name, slug)
      VALUES ($1, $2)
      RETURNING *`,
@@ -77,7 +79,7 @@ export async function upsertBySlug(
   );
 
   console.log(`[DB:Orgs] Created org: ${slug}`);
-  return { company: result.rows[0], isNew: true };
+  return { org: result.rows[0], isNew: true };
 }
 
 /**
@@ -106,8 +108,8 @@ export async function updateName(orgId: string, name: string): Promise<void> {
 /**
  * List all orgs
  */
-export async function listAll(limit: number = 100): Promise<DbCompany[]> {
-  const result = await query<DbCompany>(
+export async function listAll(limit: number = 100): Promise<DbOrg[]> {
+  const result = await query<DbOrg>(
     'SELECT * FROM orgs ORDER BY created_at DESC LIMIT $1',
     [limit]
   );

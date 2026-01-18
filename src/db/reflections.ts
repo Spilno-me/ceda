@@ -3,7 +3,9 @@
  *
  * Handles all reflection-related database operations.
  * Reflections are patterns/antipatterns captured from Herald sessions.
- * PlanetScale is the source of truth, Upstash is the cache layer.
+ * PostgreSQL is the source of truth, Upstash is the cache layer.
+ *
+ * Git-native model: user → project → org → orgs → global
  */
 
 import { query } from './index';
@@ -21,10 +23,13 @@ export interface DbReflection {
   outcome: 'pattern' | 'antipattern' | null;
   reinforcement: string | null;
   warning: string | null;
-  company: string;
+  org: string;
   project: string;
   user_id: string;
   vault: string | null;
+  level: number;
+  helpful_count: number;
+  unhelpful_count: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -42,11 +47,12 @@ export interface CreateReflectionInput {
   outcome?: 'pattern' | 'antipattern';
   reinforcement?: string;
   warning?: string;
-  company?: string;
+  org?: string;
   project?: string;
   user?: string;
   vault?: string;
   timestamp?: string;
+  level?: number;
 }
 
 /**
@@ -56,6 +62,7 @@ export interface FindReflectionsOptions {
   project?: string;
   feeling?: 'stuck' | 'success';
   user?: string;
+  minLevel?: number;
   limit?: number;
   offset?: number;
 }
@@ -68,9 +75,9 @@ export async function insert(input: CreateReflectionInput): Promise<DbReflection
     const result = await query<DbReflection>(
       `INSERT INTO reflections (
         id, session, feeling, insight, method, signal, outcome,
-        reinforcement, warning, company, project, user_id, vault, created_at
+        reinforcement, warning, org, project, user_id, vault, level, created_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
       )
       RETURNING *`,
       [
@@ -83,15 +90,16 @@ export async function insert(input: CreateReflectionInput): Promise<DbReflection
         input.outcome || (input.feeling === 'stuck' ? 'antipattern' : 'pattern'),
         input.reinforcement || null,
         input.warning || null,
-        input.company || 'default',
+        input.org || 'default',
         input.project || 'default',
         input.user || 'default',
         input.vault || null,
+        input.level || 0,
         input.timestamp ? new Date(input.timestamp) : new Date(),
       ]
     );
-    
-    console.log(`[DB:Reflections] Inserted reflection ${input.id} for ${input.company}/${input.project}`);
+
+    console.log(`[DB:Reflections] Inserted reflection ${input.id} for ${input.org}/${input.project}`);
     return result.rows[0] || null;
   } catch (err) {
     console.error('[DB:Reflections] Insert error:', err);
@@ -100,18 +108,18 @@ export async function insert(input: CreateReflectionInput): Promise<DbReflection
 }
 
 /**
- * Find reflections by company with optional filters
+ * Find reflections by org with optional filters
  */
-export async function findByCompany(
-  company: string,
+export async function findByOrg(
+  org: string,
   options?: FindReflectionsOptions
 ): Promise<DbReflection[]> {
   try {
     let sql = `
       SELECT * FROM reflections
-      WHERE company = $1
+      WHERE org = $1
     `;
-    const params: (string | number)[] = [company];
+    const params: (string | number)[] = [org];
     let paramIndex = 2;
 
     if (options?.project) {
@@ -132,6 +140,12 @@ export async function findByCompany(
       paramIndex++;
     }
 
+    if (options?.minLevel !== undefined) {
+      sql += ` AND level >= $${paramIndex}`;
+      params.push(options.minLevel);
+      paramIndex++;
+    }
+
     sql += ` ORDER BY created_at DESC`;
 
     if (options?.limit) {
@@ -148,9 +162,19 @@ export async function findByCompany(
     const result = await query<DbReflection>(sql, params);
     return result.rows;
   } catch (err) {
-    console.error('[DB:Reflections] FindByCompany error:', err);
+    console.error('[DB:Reflections] FindByOrg error:', err);
     return [];
   }
+}
+
+/**
+ * @deprecated Use findByOrg instead. Kept for backwards compatibility during migration.
+ */
+export async function findByCompany(
+  company: string,
+  options?: FindReflectionsOptions
+): Promise<DbReflection[]> {
+  return findByOrg(company, options);
 }
 
 /**
@@ -193,14 +217,14 @@ export async function deleteById(id: string): Promise<boolean> {
  * Delete all reflections for a user (GDPR bulk erasure)
  */
 export async function deleteByUser(
-  company: string,
+  org: string,
   project: string,
   userId: string
 ): Promise<number> {
   try {
     const result = await query(
-      'DELETE FROM reflections WHERE company = $1 AND project = $2 AND user_id = $3',
-      [company, project, userId]
+      'DELETE FROM reflections WHERE org = $1 AND project = $2 AND user_id = $3',
+      [org, project, userId]
     );
     const count = result.rowCount ?? 0;
     console.log(`[DB:Reflections] Deleted ${count} reflections for user ${userId} (GDPR erasure)`);
@@ -230,37 +254,80 @@ export async function deleteBySession(sessionId: string): Promise<number> {
 }
 
 /**
- * Count reflections by company
+ * Count reflections by org
  */
-export async function countByCompany(company: string): Promise<number> {
+export async function countByOrg(org: string): Promise<number> {
   try {
     const result = await query<{ count: string }>(
-      'SELECT COUNT(*) FROM reflections WHERE company = $1',
-      [company]
+      'SELECT COUNT(*) FROM reflections WHERE org = $1',
+      [org]
     );
     return parseInt(result.rows[0]?.count || '0', 10);
   } catch (err) {
-    console.error('[DB:Reflections] CountByCompany error:', err);
+    console.error('[DB:Reflections] CountByOrg error:', err);
     return 0;
   }
 }
 
 /**
- * Get patterns (success reflections) for a company
+ * @deprecated Use countByOrg instead
  */
-export async function getPatterns(
-  company: string,
-  options?: Omit<FindReflectionsOptions, 'feeling'>
-): Promise<DbReflection[]> {
-  return findByCompany(company, { ...options, feeling: 'success' });
+export async function countByCompany(company: string): Promise<number> {
+  return countByOrg(company);
 }
 
 /**
- * Get antipatterns (stuck reflections) for a company
+ * Get patterns (success reflections) for an org
  */
-export async function getAntipatterns(
-  company: string,
+export async function getPatterns(
+  org: string,
   options?: Omit<FindReflectionsOptions, 'feeling'>
 ): Promise<DbReflection[]> {
-  return findByCompany(company, { ...options, feeling: 'stuck' });
+  return findByOrg(org, { ...options, feeling: 'success' });
+}
+
+/**
+ * Get antipatterns (stuck reflections) for an org
+ */
+export async function getAntipatterns(
+  org: string,
+  options?: Omit<FindReflectionsOptions, 'feeling'>
+): Promise<DbReflection[]> {
+  return findByOrg(org, { ...options, feeling: 'stuck' });
+}
+
+/**
+ * Update helpful/unhelpful counts for a reflection
+ */
+export async function updateFeedback(
+  id: string,
+  helped: boolean
+): Promise<boolean> {
+  try {
+    const column = helped ? 'helpful_count' : 'unhelpful_count';
+    const result = await query(
+      `UPDATE reflections SET ${column} = ${column} + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [id]
+    );
+    return (result.rowCount ?? 0) > 0;
+  } catch (err) {
+    console.error('[DB:Reflections] UpdateFeedback error:', err);
+    return false;
+  }
+}
+
+/**
+ * Update the graduation level of a reflection
+ */
+export async function updateLevel(id: string, level: number): Promise<boolean> {
+  try {
+    const result = await query(
+      'UPDATE reflections SET level = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [level, id]
+    );
+    return (result.rowCount ?? 0) > 0;
+  } catch (err) {
+    console.error('[DB:Reflections] UpdateLevel error:', err);
+    return false;
+  }
 }
