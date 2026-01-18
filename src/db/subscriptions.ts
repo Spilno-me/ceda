@@ -2,7 +2,7 @@
  * CEDA Subscriptions Repository
  *
  * Handles Stripe subscription persistence and webhook idempotency.
- * Subscriptions are linked to companies (tenants).
+ * Subscriptions are linked to orgs (tenants).
  */
 
 import { query, transaction } from './index';
@@ -15,7 +15,7 @@ export interface DbSubscription {
   id: string; // UUID
   stripe_subscription_id: string;
   stripe_customer_id: string;
-  company_id: string; // UUID FK to companies
+  org_id: string; // UUID FK to orgs
   status: SubscriptionStatus;
   plan: string;
   current_period_start: Date | null;
@@ -95,7 +95,7 @@ export async function findByStripeId(stripeSubscriptionId: string): Promise<DbSu
 export async function findByCompanyId(companyId: string): Promise<DbSubscription | null> {
   const result = await query<DbSubscription>(
     `SELECT * FROM subscriptions
-     WHERE company_id = $1 AND status IN ('active', 'trialing', 'past_due')
+     WHERE org_id = $1 AND status IN ('active', 'trialing', 'past_due')
      ORDER BY created_at DESC
      LIMIT 1`,
     [companyId]
@@ -160,7 +160,7 @@ export async function upsertFromStripe(
     // Create new
     const result = await query<DbSubscription>(
       `INSERT INTO subscriptions (
-        stripe_subscription_id, stripe_customer_id, company_id,
+        stripe_subscription_id, stripe_customer_id, org_id,
         status, plan, current_period_start, current_period_end
       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *`,
@@ -243,7 +243,7 @@ export async function processWebhookEvent<T>(
 export async function hasActiveSubscription(companyId: string): Promise<boolean> {
   const result = await query<{ count: string }>(
     `SELECT COUNT(*) FROM subscriptions
-     WHERE company_id = $1 AND status IN ('active', 'trialing')`,
+     WHERE org_id = $1 AND status IN ('active', 'trialing')`,
     [companyId]
   );
   return parseInt(result.rows[0].count, 10) > 0;
