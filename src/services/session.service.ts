@@ -244,9 +244,10 @@ export class SessionService {
     const ttl = request.ttlMs || this.defaultTTL;
     const sessionId = request.id || this.generateId();
 
+    // CEDA-96: Use org instead of company
     const session: Session = {
       id: sessionId,
-      company: request.company,
+      org: request.org,
       project: request.project || 'default',
       user: request.user || 'unknown',
       context: request.context || [],
@@ -264,22 +265,23 @@ export class SessionService {
     await this.storeInQdrant(session);
     this.cleanup();
 
-    console.log(`[SessionService] Created session: ${sessionId} (company: ${session.company}, expires: ${session.expiresAt.toISOString()})`);
+    console.log(`[SessionService] Created session: ${sessionId} (org: ${session.org}, expires: ${session.expiresAt.toISOString()})`);
 
     return session;
   }
 
   /**
    * Get or create a session (backward compatibility)
+   * CEDA-96: Renamed company parameter to org
    */
-  getOrCreate(sessionId: string, originalSignal?: string, company?: string): Session {
+  getOrCreate(sessionId: string, originalSignal?: string, org?: string): Session {
     let session = this.sessions.get(sessionId);
 
     if (!session) {
       const now = new Date();
       session = {
         id: sessionId,
-        company: company || 'unknown',
+        org: org || 'unknown',
         project: 'default',
         user: 'unknown',
         context: [],
@@ -610,12 +612,13 @@ export class SessionService {
     }
 
     try {
+      // CEDA-96: Store org as 'company' in Qdrant for backwards compatibility with existing data
       const point: SessionVector = {
         id: this.hashSessionId(session.id),
         vector: this.generateDummyVector(),
         payload: {
           sessionId: session.id,
-          company: session.company,
+          company: session.org,
           project: session.project,
           user: session.user,
           context: JSON.stringify(session.context),
@@ -672,11 +675,12 @@ export class SessionService {
 
   /**
    * Reconstruct session from Qdrant payload
+   * CEDA-96: Map Qdrant 'company' field to Session 'org' field
    */
   private reconstructSessionFromPayload(payload: SessionVector['payload']): Session {
     return {
       id: payload.sessionId,
-      company: payload.company,
+      org: payload.company,
       project: payload.project,
       user: payload.user,
       context: JSON.parse(payload.context),
@@ -693,14 +697,15 @@ export class SessionService {
 
   /**
    * Build Qdrant filter from list filter
+   * CEDA-96: Use org from filter but query 'company' field in Qdrant for backwards compatibility
    */
   private buildQdrantFilter(filter?: SessionListFilter): QdrantFilter | undefined {
     if (!filter) return undefined;
 
     const conditions: QdrantCondition[] = [];
 
-    if (filter.company) {
-      conditions.push({ key: 'company', match: { value: filter.company } });
+    if (filter.org) {
+      conditions.push({ key: 'company', match: { value: filter.org } });
     }
     if (filter.project) {
       conditions.push({ key: 'project', match: { value: filter.project } });
@@ -719,13 +724,14 @@ export class SessionService {
 
   /**
    * List sessions from memory (fallback)
+   * CEDA-96: Use org instead of company for filtering
    */
   private listFromMemory(filter?: SessionListFilter): Session[] {
     const results: Session[] = [];
     const limit = filter?.limit || 100;
 
     for (const session of this.sessions.values()) {
-      if (filter?.company && session.company !== filter.company) continue;
+      if (filter?.org && session.org !== filter.org) continue;
       if (filter?.project && session.project !== filter.project) continue;
       if (filter?.user && session.user !== filter.user) continue;
       if (filter?.status && session.status !== filter.status) continue;

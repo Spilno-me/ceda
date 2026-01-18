@@ -90,8 +90,8 @@ interface HeraldReflection {
   outcome?: 'pattern' | 'antipattern';
   reinforcement?: string;
   warning?: string;
-  // Context
-  company: string;
+  // Context (CEDA-96: renamed from company to org for Git-native naming)
+  org: string;
   project: string;
   user: string;
   // Tracking
@@ -449,7 +449,9 @@ interface PredictRequest {
   sessionId?: string;
   /** Participant identifier (for 5 hats model) */
   participant?: string;
-  /** Company identifier for multi-tenant pattern isolation */
+  /** Org identifier for multi-tenant pattern isolation (CEDA-96: Git-native naming) */
+  org?: string;
+  /** @deprecated Use org instead. Kept for backwards compatibility */
   company?: string;
   /** Project identifier for multi-tenant pattern isolation */
   project?: string;
@@ -466,7 +468,9 @@ interface RefineRequest {
   context?: Array<{ type: string; value: unknown; source: string }>;
   /** Participant identifier */
   participant?: string;
-  /** Company identifier for multi-tenant pattern isolation */
+  /** Org identifier for multi-tenant pattern isolation (CEDA-96: Git-native naming) */
+  org?: string;
+  /** @deprecated Use org instead. Kept for backwards compatibility */
   company?: string;
   /** Project identifier for multi-tenant pattern isolation */
   project?: string;
@@ -506,16 +510,16 @@ function sendJson(res: http.ServerResponse, status: number, data: unknown): void
 const API_ENDPOINTS = [
   { method: 'GET', path: '/health', description: 'Health check' },
   { method: 'GET', path: '/docs', description: 'API documentation (this page)' },
-  { method: 'POST', path: '/api/predict', description: 'Generate structure prediction', params: 'company (required)' },
+  { method: 'POST', path: '/api/predict', description: 'Generate structure prediction', params: 'org (required, or company for backwards compat)' },
   { method: 'POST', path: '/api/refine', description: 'Refine existing prediction' },
   { method: 'GET', path: '/api/session/:id', description: 'Get session by ID' },
   { method: 'PUT', path: '/api/session/:id', description: 'Update session', ticket: 'CEDA-34' },
   { method: 'DELETE', path: '/api/session/:id', description: 'Delete session', ticket: 'CEDA-34' },
-  { method: 'GET', path: '/api/sessions', description: 'List sessions with filters', params: 'company, limit', ticket: 'CEDA-45' },
+  { method: 'GET', path: '/api/sessions', description: 'List sessions with filters', params: 'org (or company), limit', ticket: 'CEDA-45' },
   { method: 'POST', path: '/api/sessions/cleanup', description: 'Trigger session cleanup/expiration', ticket: 'CEDA-45' },
   { method: 'POST', path: '/api/feedback', description: 'Submit feedback on prediction' },
   { method: 'GET', path: '/api/stats', description: 'Get system statistics' },
-  { method: 'GET', path: '/api/patterns', description: 'Get patterns', params: 'user, company, project' },
+  { method: 'GET', path: '/api/patterns', description: 'Get patterns', params: 'user, org (or company), project' },
   { method: 'GET', path: '/api/patterns/:id', description: 'Get pattern by ID', params: 'user' },
   { method: 'GET', path: '/api/patterns/:id/confidence', description: 'Get pattern confidence with decay', ticket: 'CEDA-32' },
   { method: 'GET', path: '/api/patterns/:id/graduation', description: 'Get graduation status', ticket: 'CEDA-36' },
@@ -524,12 +528,12 @@ const API_ENDPOINTS = [
   { method: 'GET', path: '/api/patterns/graduation-candidates', description: 'List graduation candidates', ticket: 'CEDA-36' },
   { method: 'POST', path: '/api/graduation/check-all', description: 'Run daily graduation check', ticket: 'CEDA-36' },
   { method: 'GET', path: '/api/graduation/pending', description: 'Get pending approvals', ticket: 'CEDA-36' },
-  { method: 'POST', path: '/api/patterns', description: 'Create pattern with company scope', ticket: 'CEDA-30' },
+  { method: 'POST', path: '/api/patterns', description: 'Create pattern with org scope', ticket: 'CEDA-30' },
   { method: 'PUT', path: '/api/patterns/:id', description: 'Update pattern', ticket: 'CEDA-30' },
-  { method: 'DELETE', path: '/api/patterns/:id', description: 'Delete pattern', params: 'company, user', ticket: 'CEDA-30' },
+  { method: 'DELETE', path: '/api/patterns/:id', description: 'Delete pattern', params: 'org (or company), user', ticket: 'CEDA-30' },
   { method: 'POST', path: '/api/ground', description: 'Receive execution feedback for grounding loop', ticket: 'CEDA-32' },
   { method: 'POST', path: '/api/observe', description: 'Capture pattern observation', ticket: 'CEDA-35' },
-  { method: 'GET', path: '/api/observations/similar', description: 'Find similar observations', params: 'input, company', ticket: 'CEDA-35' },
+  { method: 'GET', path: '/api/observations/similar', description: 'Find similar observations', params: 'input, org (or company)', ticket: 'CEDA-35' },
   { method: 'GET', path: '/api/observations/pattern/:id/stats', description: 'Pattern observation statistics', ticket: 'CEDA-35' },
   { method: 'GET', path: '/api/observations/:id', description: 'Get observation by ID', ticket: 'CEDA-35' },
   { method: 'GET', path: '/api/abstractions/suggest', description: 'Suggest abstractions for pattern', params: 'patternId', ticket: 'CEDA-37' },
@@ -544,7 +548,7 @@ const API_ENDPOINTS = [
   { method: 'GET', path: '/api/abstractions/audit', description: 'Get audit log', ticket: 'CEDA-37' },
   { method: 'GET', path: '/api/abstractions/safety', description: 'Get safety settings', ticket: 'CEDA-37' },
   { method: 'PUT', path: '/api/abstractions/safety', description: 'Update safety settings', ticket: 'CEDA-37' },
-  { method: 'POST', path: '/api/clustering/check', description: 'Trigger clustering for company', ticket: 'CEDA-41' },
+  { method: 'POST', path: '/api/clustering/check', description: 'Trigger clustering for org', ticket: 'CEDA-41' },
   { method: 'GET', path: '/api/clustering/orphans', description: 'Get orphan observations', ticket: 'CEDA-41' },
   { method: 'GET', path: '/api/clustering/config', description: 'Get clustering configuration', ticket: 'CEDA-41' },
   { method: 'POST', path: '/api/linking/wrap/:type/:id', description: 'Wrap pattern/observation as linkable node', ticket: 'CEDA-48' },
@@ -552,11 +556,11 @@ const API_ENDPOINTS = [
   { method: 'GET', path: '/api/patterns/:id/network', description: 'Get pattern network graph', ticket: 'CEDA-48' },
   { method: 'GET', path: '/api/patterns/:id/related', description: 'Get related patterns', ticket: 'CEDA-48' },
   { method: 'GET', path: '/api/linking/stats', description: 'Get linking service statistics', ticket: 'CEDA-48' },
-  { method: 'GET', path: '/api/analytics', description: 'Full analytics dashboard', params: 'company, period (day|week|month)', ticket: 'CEDA-50' },
-  { method: 'GET', path: '/api/analytics/metrics', description: 'Core metrics', params: 'company, period', ticket: 'CEDA-50' },
-  { method: 'GET', path: '/api/analytics/trends', description: 'Trend data', params: 'company, period', ticket: 'CEDA-50' },
-  { method: 'GET', path: '/api/analytics/patterns', description: 'Top patterns', params: 'company, period', ticket: 'CEDA-50' },
-  { method: 'GET', path: '/api/analytics/users', description: 'Active users', params: 'company, period', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics', description: 'Full analytics dashboard', params: 'org (or company), period (day|week|month)', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics/metrics', description: 'Core metrics', params: 'org (or company), period', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics/trends', description: 'Trend data', params: 'org (or company), period', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics/patterns', description: 'Top patterns', params: 'org (or company), period', ticket: 'CEDA-50' },
+  { method: 'GET', path: '/api/analytics/users', description: 'Active users', params: 'org (or company), period', ticket: 'CEDA-50' },
   { method: 'GET', path: '/api/analytics/system', description: 'System-wide analytics (admin only)', ticket: 'CEDA-50' },
   { method: 'POST', path: '/api/herald/heartbeat', description: 'Herald context heartbeat' },
   { method: 'GET', path: '/api/herald/contexts', description: 'Get Herald contexts' },
@@ -725,12 +729,13 @@ function getClientIp(req: http.IncomingMessage): string {
 /**
  * CEDA-43: Check rate limit and send 429 response if exceeded
  * Returns true if request should be blocked
+ * CEDA-96: Renamed parameter from company to org for Git-native naming
  */
 async function checkRateLimitAndRespond(
-  company: string,
+  org: string,
   res: http.ServerResponse,
 ): Promise<boolean> {
-  const result = await rateLimiterService.checkRateLimit(company);
+  const result = await rateLimiterService.checkRateLimit(org);
   if (!result.allowed) {
     res.writeHead(429, {
       'Content-Type': 'application/json',
@@ -738,7 +743,7 @@ async function checkRateLimitAndRespond(
     });
     res.end(JSON.stringify({
       error: 'Too Many Requests',
-      message: `Rate limit exceeded for company: ${company}`,
+      message: `Rate limit exceeded for org: ${org}`,
       retryAfter: result.retryAfter,
       limit: rateLimiterService.getConfig().maxRequests,
       windowMs: rateLimiterService.getConfig().windowMs,
@@ -805,8 +810,9 @@ function serveStaticFile(filePath: string, res: http.ServerResponse): boolean {
 
 /**
  * CEDA-81: Extract user ID from JWT token in Authorization header
+ * CEDA-96: Renamed company to org for Git-native naming
  */
-function extractUserFromToken(req: http.IncomingMessage): { userId: string; email: string; company: string } | null {
+function extractUserFromToken(req: http.IncomingMessage): { userId: string; email: string; org: string } | null {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return null;
@@ -822,7 +828,7 @@ function extractUserFromToken(req: http.IncomingMessage): { userId: string; emai
   return {
     userId: payload.sub,
     email: payload.email,
-    company: payload.company,
+    org: payload.company, // Note: JWT payload still uses 'company' for backwards compat
   };
 }
 
@@ -1002,17 +1008,19 @@ async function handleRequest(
         return;
       }
 
-      // CEDA-30: Company is required for multi-tenant pattern isolation
-      if (!body.company) {
+      // CEDA-30: Org is required for multi-tenant pattern isolation
+      // CEDA-96: Accept both org and company for backwards compatibility
+      const org = body.org || body.company;
+      if (!org) {
         sendJson(res, 400, { 
-          error: 'Missing required field: company',
-          message: 'Multi-tenant pattern isolation requires company context',
+          error: 'Missing required field: org',
+          message: 'Multi-tenant pattern isolation requires org context',
         });
         return;
       }
 
       // CEDA-43: Rate limiting check
-      if (await checkRateLimitAndRespond(body.company, res)) {
+      if (await checkRateLimitAndRespond(org, res)) {
         return;
       }
 
@@ -1041,8 +1049,9 @@ async function handleRequest(
       const startTime = Date.now();
 
       // Build tenant context from request body for multi-tenant pattern isolation
-      const tenantContext = (body.company || body.project || body.user)
-        ? { company: body.company, project: body.project, user: body.user }
+      // CEDA-96: Use org instead of company for Git-native naming
+      const tenantContext = (org || body.project || body.user)
+        ? { org, project: body.project, user: body.user }
         : undefined;
 
       const result = await orchestrator.execute(effectiveSignal, accumulatedContext, body.config, tenantContext);
@@ -1251,8 +1260,10 @@ async function handleRequest(
       const startTime = Date.now();
 
       // Build tenant context from request body for multi-tenant pattern isolation
-      const tenantContext = (body.company || body.project || body.user)
-        ? { company: body.company, project: body.project, user: body.user }
+      // CEDA-96: Accept both org and company for backwards compatibility
+      const org = body.org || body.company;
+      const tenantContext = (org || body.project || body.user)
+        ? { org, project: body.project, user: body.user }
         : undefined;
 
       const result = await orchestrator.execute(combinedSignal, accumulatedContext, {}, tenantContext);
@@ -1377,7 +1388,8 @@ async function handleRequest(
     // GET /api/sessions - List sessions with optional filters
     if (url?.startsWith('/api/sessions') && method === 'GET' && !url.includes('/cleanup')) {
       const urlObj = new URL(url, `http://localhost:${PORT}`);
-      const company = urlObj.searchParams.get('company') || undefined;
+      // CEDA-96: Accept both org and company for backwards compatibility
+      const org = urlObj.searchParams.get('org') || urlObj.searchParams.get('company') || undefined;
       const project = urlObj.searchParams.get('project') || undefined;
       const user = urlObj.searchParams.get('user') || undefined;
       const status = urlObj.searchParams.get('status') as 'active' | 'archived' | 'expired' | undefined;
@@ -1386,7 +1398,7 @@ async function handleRequest(
 
       try {
         const sessions = await sessionService.list({
-          company,
+          org,
           project,
           user,
           status,
@@ -1396,7 +1408,7 @@ async function handleRequest(
         sendJson(res, 200, {
           sessions: sessions.map(s => ({
             id: s.id,
-            company: s.company,
+            org: s.org,
             project: s.project,
             user: s.user,
             status: s.status,
@@ -1408,7 +1420,7 @@ async function handleRequest(
             expiresAt: s.expiresAt,
           })),
           count: sessions.length,
-          filter: { company, project, user, status, limit },
+          filter: { org, project, user, status, limit },
           timestamp: new Date().toISOString(),
         });
       } catch (error) {
@@ -1799,7 +1811,8 @@ async function handleRequest(
         outcome?: 'pattern' | 'antipattern';
         reinforcement?: string;
         warning?: string;
-        // Context
+        // Context - CEDA-96: Accept both org and company for backwards compatibility
+        org?: string;
         company?: string;
         project?: string;
         user?: string;
@@ -1923,6 +1936,8 @@ async function handleRequest(
 
       // Store reflection with method tracking (meta-learning) - using sanitized values
       const reflections = heraldStorage.loadReflections();
+      // CEDA-96: Accept both org and company for backwards compatibility
+      const reflectionOrg = body.org || body.company || 'default';
       const reflection: HeraldReflection = {
         id: reflectionId,
         session: sanitizedSession,
@@ -1934,8 +1949,8 @@ async function handleRequest(
         outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
         reinforcement: sanitizedReinforcement,
         warning: sanitizedWarning,
-        // Context
-        company: body.company || 'default',
+        // Context (CEDA-96: renamed from company to org)
+        org: reflectionOrg,
         project: body.project || 'default',
         user: body.user || 'default',
         // Tracking
@@ -2005,7 +2020,7 @@ async function handleRequest(
               ? 'Friction recorded. Signal→antipattern mapping queued for analysis.'
               : 'Success recorded. Signal→pattern mapping queued for reinforcement.'),
         context: {
-          company: body.company || 'default',
+          org: reflectionOrg,
           project: body.project || 'default',
           user: body.user || 'default',
         },
@@ -2097,10 +2112,12 @@ async function handleRequest(
 
     // CEDA-65: GDPR Article 17 - Right to Erasure (herald_forget)
     if (url === '/api/herald/forget' && method === 'DELETE') {
+      // CEDA-96: Accept both org and company for backwards compatibility
       const body = await parseBody<{
         patternId?: string;
         sessionId?: string;
         all?: boolean;
+        org?: string;
         company?: string;
         project?: string;
         user?: string;
@@ -2130,8 +2147,10 @@ async function handleRequest(
         deletedCount = originalCount - reflections.length;
       } else if (body.all) {
         // Delete all patterns for this context
+        // CEDA-96: Use org instead of company
+        const org = body.org || body.company || 'default';
         reflections = reflections.filter(r =>
-          !(r.company === company && r.project === project && r.user === user)
+          !(r.org === org && r.project === project && r.user === user)
         );
         deletedCount = originalCount - reflections.length;
       }
@@ -2181,7 +2200,8 @@ async function handleRequest(
     // CEDA-65: GDPR Article 20 - Right to Data Portability (herald_export)
     if (url?.startsWith('/api/herald/export') && method === 'GET') {
       const urlObj = new URL(url, `http://localhost:${PORT}`);
-      const company = urlObj.searchParams.get('company') || 'default';
+      // CEDA-96: Accept both org and company for backwards compatibility
+      const org = urlObj.searchParams.get('org') || urlObj.searchParams.get('company') || 'default';
       const project = urlObj.searchParams.get('project') || 'default';
       const user = urlObj.searchParams.get('user') || 'default';
       const format = urlObj.searchParams.get('format') || 'json';
@@ -2190,7 +2210,7 @@ async function handleRequest(
       // Get all reflections for this context
       let reflections = heraldStorage.loadReflections();
       reflections = reflections.filter(r =>
-        r.company === company && r.project === project && r.user === user
+        r.org === org && r.project === project && r.user === user
       );
 
       // Get all insights for this context
@@ -2200,7 +2220,7 @@ async function handleRequest(
       const exportData = {
         exportedAt: new Date().toISOString(),
         gdprArticle: 'Article 20 - Right to Data Portability',
-        context: { company, project, user },
+        context: { org, project, user },
         data: {
           reflections: reflections.map(r => ({
             id: r.id,
@@ -2230,7 +2250,7 @@ async function handleRequest(
 
       // Log GDPR export audit event
       await auditService.logDataExport(
-        company,
+        org,
         user,
         format,
         exportData.counts.total,
@@ -2254,7 +2274,7 @@ async function handleRequest(
 
         res.writeHead(200, {
           'Content-Type': 'text/csv',
-          'Content-Disposition': `attachment; filename="ceda-export-${company}-${user}.csv"`,
+          'Content-Disposition': `attachment; filename="ceda-export-${org}-${user}.csv"`,
         });
         res.end(csvLines.join('\n'));
         return;
@@ -2406,6 +2426,7 @@ async function handleRequest(
             limit,
           });
           // Convert DbReflection to HeraldReflection format
+          // CEDA-96: Map database 'company' field to interface 'org' field
           reflections = planetscaleReflections.map(r => ({
             id: r.id,
             session: r.session,
@@ -2416,7 +2437,7 @@ async function handleRequest(
             outcome: r.outcome || undefined,
             reinforcement: r.reinforcement || undefined,
             warning: r.warning || undefined,
-            company: r.company,
+            org: r.company,
             project: r.project,
             user: r.user_id,
             applications: [],
@@ -2454,9 +2475,10 @@ async function handleRequest(
       const fileReflections = heraldStorage.loadReflections();
 
       // Filter file reflections
+      // CEDA-96: Use org instead of company for filtering
       let filteredFileReflections = fileReflections;
       if (company) {
-        filteredFileReflections = filteredFileReflections.filter(r => r.company === company);
+        filteredFileReflections = filteredFileReflections.filter(r => r.org === company);
       }
       if (project) {
         filteredFileReflections = filteredFileReflections.filter(r => r.project === project);
@@ -5236,12 +5258,13 @@ async function handleRequest(
         }
 
         // Build profile response
+        // CEDA-96: Use org instead of company (backwards compat: keep 'company' in response for API consumers)
         const profileResponse = {
           id: dbUser.id,
           email: dbUser.email || userInfo.email,
           githubLogin: dbUser.github_login,
           avatarUrl: dbUser.avatar_url || `https://github.com/${dbUser.github_login}.png`,
-          company: userInfo.company,
+          company: userInfo.org,
           gitIdentity: gitIdentity ? {
             organizations: gitIdentity.organizations.map((org: { login: string; role?: string }) => ({
               login: org.login,

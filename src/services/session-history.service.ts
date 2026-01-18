@@ -333,8 +333,9 @@ export class SessionHistoryService {
     const changes: SessionFieldChange[] = [];
     const changedFields: string[] = [];
 
+    // CEDA-96: Use org instead of company
     const fieldsToCompare: (keyof Session)[] = [
-      'company',
+      'org',
       'project',
       'user',
       'context',
@@ -549,9 +550,11 @@ export class SessionHistoryService {
       timestamp: new Date(c.timestamp as string),
     }));
 
+    // CEDA-96: Map stored 'company' field to Session 'org' field
+    // Support both old data (company) and new data (org)
     return {
       id: data.id as string,
-      company: data.company as string,
+      org: (data.org || data.company) as string,
       project: data.project as string,
       user: data.user as string,
       context: context as Session['context'],
