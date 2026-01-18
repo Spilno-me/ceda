@@ -32,6 +32,12 @@ export function isEnabled(): boolean {
   return !!process.env.DATABASE_URL;
 }
 
+// UUID validation - org_id is UUID type
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isValidUUID(str: string): boolean {
+  return UUID_REGEX.test(str);
+}
+
 export interface SubscriptionRow {
   id: string;
   stripe_customer_id: string | null;
@@ -47,6 +53,8 @@ export interface SubscriptionRow {
 
 export async function getSubscriptionByUserId(userId: string): Promise<SubscriptionRow | null> {
   if (!isEnabled()) return null;
+  // Validate UUID to prevent "invalid input syntax" errors
+  if (!isValidUUID(userId)) return null;
 
   const result = await getPool().query<SubscriptionRow>(
     'SELECT * FROM subscriptions WHERE org_id = $1',
