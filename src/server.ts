@@ -2380,7 +2380,7 @@ async function handleRequest(
         signal: r.signal,
         reinforcement: r.reinforcement,
         method: r.method,
-        applications: r.applications.length,
+        applications: (r.applications || []).length,
         timestamp: r.timestamp,
       }));
 
@@ -2390,7 +2390,7 @@ async function handleRequest(
         signal: r.signal,
         warning: r.warning,
         method: r.method,
-        applications: r.applications.length,
+        applications: (r.applications || []).length,
         timestamp: r.timestamp,
       }));
 
