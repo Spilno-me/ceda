@@ -421,7 +421,7 @@
                     ${renderUsageMeter('Patterns', usage.patterns.used, usage.patterns.limit)}
                     ${renderUsageMeter('Queries', usage.queries.used, usage.queries.limit)}
                     ${renderUsageMeter('Projects', usage.projects.used, usage.projects.limit)}
-                    ${usage.plan === 'free' ? `<a href="https://app.getceda.com/billing" class="upgrade-link">Upgrade to Pro</a>` : ''}
+                    ${usage.plan === 'free' ? `<button onclick="upgradeToPro()" class="upgrade-link">Upgrade to Pro</button>` : ''}
                 </div>
             `;
         }
@@ -599,6 +599,28 @@
             const config = CEDA.generateHeraldConfig();
             const configJson = JSON.stringify(config, null, 2);
             CEDA.copyToClipboard(configJson, button);
+        }
+
+        async function upgradeToPro() {
+            try {
+                const token = localStorage.getItem('ceda_token');
+                const res = await fetch('/api/billing/checkout', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ plan: 'pro' })
+                });
+                const data = await res.json();
+                if (data.url) {
+                    window.location.href = data.url;
+                } else {
+                    alert(data.error || 'Failed to start checkout');
+                }
+            } catch (err) {
+                alert('Failed to start checkout: ' + err.message);
+            }
         }
 
         // Initialize on load
