@@ -1945,54 +1945,10 @@ async function handleRequest(
       insights.push(reflectionInsight);
       heraldStorage.saveInsights(insights);
 
-      // Store reflection with method tracking (meta-learning) - using sanitized values
-      const reflections = heraldStorage.loadReflections();
       // CEDA-96: Accept both org and company for backwards compatibility
       const reflectionOrg = body.org || body.company || 'default';
-      const reflection: HeraldReflection = {
-        id: reflectionId,
-        session: sanitizedSession,
-        feeling: body.feeling,
-        insight: sanitizedInsight || sanitizedSession,
-        method: captureMethod,
-        // AI-extracted fields - using sanitized values
-        signal: sanitizedSignal,
-        outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
-        reinforcement: sanitizedReinforcement,
-        warning: sanitizedWarning,
-        // Context (CEDA-96: renamed from company to org)
-        org: reflectionOrg,
-        project: body.project || 'default',
-        user: body.user || 'default',
-        // Tracking
-        applications: [],
-        timestamp,
-      };
-      reflections.push(reflection);
-      heraldStorage.saveReflections(reflections);
 
-      // CEDA-42: Persist to Upstash Redis for durability across redeploys
-      if (upstashRedis.isEnabled()) {
-        await upstashRedis.storeReflection({
-          id: reflectionId,
-          session: sanitizedSession,
-          feeling: body.feeling,
-          insight: sanitizedInsight || sanitizedSession,
-          method: captureMethod,
-          signal: sanitizedSignal,
-          outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
-          reinforcement: sanitizedReinforcement,
-          warning: sanitizedWarning,
-          org: body.company || 'default',
-          project: body.project || 'default',
-          user: body.user || 'default',
-          vault: body.vault,
-          timestamp,
-        });
-        console.log(`[Herald] Reflection ${reflectionId} persisted to Upstash`);
-      }
-
-      // CEDA-42: Persist to PlanetScale (source of truth)
+      // CEDA-101: PlanetScale is the ONLY storage for reflections (Upstash = ephemeral state only)
       try {
         await db.reflections.insert({
           id: reflectionId,
@@ -2004,7 +1960,7 @@ async function handleRequest(
           outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
           reinforcement: sanitizedReinforcement,
           warning: sanitizedWarning,
-          org: body.org || body.company || 'default',
+          org: reflectionOrg,
           project: body.project || 'default',
           user: body.user || 'default',
           vault: body.vault,
@@ -2012,8 +1968,8 @@ async function handleRequest(
         });
         console.log(`[Herald] Reflection ${reflectionId} persisted to PlanetScale`);
       } catch (planetscaleErr) {
-        // Log but don't fail - Upstash is still the cache
         console.error(`[Herald] PlanetScale write failed for reflection ${reflectionId}:`, planetscaleErr);
+        throw planetscaleErr;
       }
 
       const response = {
@@ -2426,7 +2382,7 @@ async function handleRequest(
       // Dashboard sends "org/project" but Herald MCP sends just "project"
       const project = rawProject?.includes('/') ? rawProject.split('/').pop() : rawProject;
 
-      // CEDA-42: Query from PlanetScale first (source of truth)
+      // CEDA-101: PlanetScale is the ONLY storage for reflections (Upstash = ephemeral state only)
       let reflections: HeraldReflection[] = [];
 
       if (company) {
@@ -2459,58 +2415,6 @@ async function handleRequest(
           console.error(`[Herald] PlanetScale query failed for ${company}:`, planetscaleErr);
         }
       }
-
-      // CEDA-42: Merge with Upstash (cache layer) for any recent data not yet in PlanetScale
-      if (upstashRedis.isEnabled() && company) {
-        try {
-          const upstashReflections = await upstashRedis.getReflections(company, {
-            project: project || undefined,
-            feeling: feeling as 'stuck' | 'success' | undefined,
-            limit,
-          });
-          // Merge Upstash results (PlanetScale takes precedence)
-          const seenIds = new Set(reflections.map(r => r.id));
-          for (const r of upstashReflections as HeraldReflection[]) {
-            if (!seenIds.has(r.id)) {
-              reflections.push(r);
-              seenIds.add(r.id);
-            }
-          }
-          console.log(`[Herald] Merged Upstash reflections for ${company}`);
-        } catch (upstashErr) {
-          console.error(`[Herald] Upstash query failed for ${company}:`, upstashErr);
-        }
-      }
-
-      // Also load from file storage (for backwards compatibility and recent in-memory data)
-      const fileReflections = heraldStorage.loadReflections();
-
-      // Filter file reflections
-      // CEDA-96: Use org instead of company for filtering
-      let filteredFileReflections = fileReflections;
-      if (company) {
-        filteredFileReflections = filteredFileReflections.filter(r => r.org === company);
-      }
-      if (project) {
-        filteredFileReflections = filteredFileReflections.filter(r => r.project === project);
-      }
-      if (feeling) {
-        filteredFileReflections = filteredFileReflections.filter(r => r.feeling === feeling);
-      }
-
-      // Merge file reflections (PlanetScale/Upstash take precedence)
-      const seenIds = new Set(reflections.map(r => r.id));
-      for (const r of filteredFileReflections) {
-        if (!seenIds.has(r.id)) {
-          reflections.push(r);
-          seenIds.add(r.id);
-        }
-      }
-
-      // Sort by timestamp descending, most recent first
-      reflections = reflections
-        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-        .slice(0, limit);
 
       // CEDA-95: Filter by minimum level if specified
       if (minLevel > 0) {
