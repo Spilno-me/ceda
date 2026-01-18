@@ -108,7 +108,11 @@ export class GraduationService {
       return null;
     }
 
-    if (toLevel > currentLevel + 1) {
+    // CEDA-95: Allow legacy graduation path (PROJECT -> GLOBAL) for backwards compatibility
+    // The new 6-level model has ORG (3) and CROSS_ORG (4) between PROJECT (2) and GLOBAL (5)
+    // but existing code expects direct PROJECT -> GLOBAL graduation
+    const isLegacyGlobalGraduation = currentLevel === PatternLevel.PROJECT && toLevel === PatternLevel.GLOBAL;
+    if (toLevel > currentLevel + 1 && !isLegacyGlobalGraduation) {
       this.logger.warn(`Cannot graduate: Cannot skip levels (${currentLevel} -> ${toLevel})`);
       return null;
     }
