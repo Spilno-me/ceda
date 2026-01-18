@@ -9,7 +9,7 @@ describe('SessionHistoryService', () => {
     const now = new Date();
     return {
       id: 'test-session-1',
-      company: 'test-company',
+      org: 'test-company',
       project: 'test-project',
       user: 'test-user',
       context: [],

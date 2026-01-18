@@ -35,12 +35,13 @@ export interface SessionMessage {
 
 /**
  * Persistent session stored in Qdrant
+ * CEDA-96: Renamed company to org for Git-native naming
  */
 export interface Session {
   /** Unique session ID */
   id: string;
-  /** Company identifier for multi-tenant filtering */
-  company: string;
+  /** Org identifier for multi-tenant filtering (CEDA-96: renamed from company) */
+  org: string;
   /** Project identifier */
   project: string;
   /** User identifier */
@@ -67,12 +68,13 @@ export interface Session {
 
 /**
  * Request payload for creating a new session
+ * CEDA-96: Renamed company to org for Git-native naming
  */
 export interface CreateSessionRequest {
   /** Optional session ID (auto-generated if not provided) */
   id?: string;
-  /** Company identifier (required) */
-  company: string;
+  /** Org identifier (required) */
+  org: string;
   /** Project identifier */
   project?: string;
   /** User identifier */
@@ -101,10 +103,11 @@ export interface UpdateSessionRequest {
 
 /**
  * Filter options for listing sessions
+ * CEDA-96: Renamed company to org for Git-native naming
  */
 export interface SessionListFilter {
-  /** Filter by company */
-  company?: string;
+  /** Filter by org */
+  org?: string;
   /** Filter by project */
   project?: string;
   /** Filter by user */

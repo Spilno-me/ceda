@@ -45,7 +45,7 @@ describe('SessionService', () => {
       expect(session).toBeDefined();
       expect(session.id).toBe(sessionId);
       expect(session.originalSignal).toBe(originalSignal);
-      expect(session.company).toBe(company);
+      expect(session.org).toBe(company);
       expect(session.status).toBe('active');
       expect(session.messages).toHaveLength(0);
       expect(session.context).toHaveLength(0);
@@ -65,14 +65,14 @@ describe('SessionService', () => {
 
     it('should create session with async create method', async () => {
       const session = await service.create({
-        company: 'acme-corp',
+        org: 'acme-corp',
         project: 'safety-project',
         user: 'user-123',
         originalSignal: 'create a permit form',
       });
 
       expect(session).toBeDefined();
-      expect(session.company).toBe('acme-corp');
+      expect(session.org).toBe('acme-corp');
       expect(session.project).toBe('safety-project');
       expect(session.user).toBe('user-123');
       expect(session.status).toBe('active');
@@ -82,7 +82,7 @@ describe('SessionService', () => {
 
     it('should set default TTL of 24 hours', async () => {
       const session = await service.create({
-        company: 'test-company',
+        org: 'test-company',
       });
 
       const expectedExpiry = Date.now() + 24 * 60 * 60 * 1000;
@@ -95,7 +95,7 @@ describe('SessionService', () => {
     it('should allow custom TTL', async () => {
       const customTTL = 1 * 60 * 60 * 1000; // 1 hour
       const session = await service.create({
-        company: 'test-company',
+        org: 'test-company',
         ttlMs: customTTL,
       });
 
@@ -195,9 +195,9 @@ describe('SessionService', () => {
 
   describe('session listing', () => {
     beforeEach(async () => {
-      await service.create({ company: 'company-a', project: 'project-1', user: 'user-1' });
-      await service.create({ company: 'company-a', project: 'project-2', user: 'user-2' });
-      await service.create({ company: 'company-b', project: 'project-1', user: 'user-1' });
+      await service.create({ org: 'company-a', project: 'project-1', user: 'user-1' });
+      await service.create({ org: 'company-a', project: 'project-2', user: 'user-2' });
+      await service.create({ org: 'company-b', project: 'project-1', user: 'user-1' });
     });
 
     it('should list all sessions', async () => {
@@ -207,10 +207,10 @@ describe('SessionService', () => {
     });
 
     it('should filter sessions by company', async () => {
-      const sessions = await service.list({ company: 'company-a' });
+      const sessions = await service.list({ org: 'company-a' });
 
       expect(sessions.length).toBe(2);
-      sessions.forEach(s => expect(s.company).toBe('company-a'));
+      sessions.forEach(s => expect(s.org).toBe('company-a'));
     });
 
     it('should filter sessions by project', async () => {
@@ -359,7 +359,7 @@ describe('SessionService', () => {
   describe('session expiration', () => {
     it('should expire sessions past TTL', async () => {
       const session = await service.create({
-        company: 'test-company',
+        org: 'test-company',
         ttlMs: -1000,
       });
 
@@ -401,8 +401,8 @@ describe('SessionService', () => {
 
   describe('active session count', () => {
     it('should return count of active sessions', async () => {
-      await service.create({ company: 'company-count-1' });
-      await service.create({ company: 'company-count-2' });
+      await service.create({ org: 'company-count-1' });
+      await service.create({ org: 'company-count-2' });
 
       const count = service.getActiveSessionCount();
 
