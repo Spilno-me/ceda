@@ -33,6 +33,7 @@ import { usageService, type UsageStats, type LimitCheckResult } from './services
 import { LinkingService } from './services/linking.service';
 import { AnomalyDetectionService } from './services/anomaly-detection.service';
 import { AnalyticsService } from './services/analytics.service';
+import { upstashRedis } from './services/upstash-redis.service';
 import { bootstrapTenants } from './scripts/bootstrap-tenants';
 import { GitHubService } from './auth/github.service';
 import { GitIdentityService } from './auth/git-identity.service';
@@ -1909,6 +1910,27 @@ async function handleRequest(
       reflections.push(reflection);
       heraldStorage.saveReflections(reflections);
 
+      // CEDA-42: Persist to Upstash Redis for durability across redeploys
+      if (upstashRedis.isEnabled()) {
+        await upstashRedis.storeReflection({
+          id: reflectionId,
+          session: sanitizedSession,
+          feeling: body.feeling,
+          insight: sanitizedInsight || sanitizedSession,
+          method: captureMethod,
+          signal: sanitizedSignal,
+          outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
+          reinforcement: sanitizedReinforcement,
+          warning: sanitizedWarning,
+          company: body.company || 'default',
+          project: body.project || 'default',
+          user: body.user || 'default',
+          vault: body.vault,
+          timestamp,
+        });
+        console.log(`[Herald] Reflection ${reflectionId} persisted to Upstash`);
+      }
+
       const response = {
         reflectionId,
         feeling: body.feeling,
@@ -2308,21 +2330,42 @@ async function handleRequest(
       const feeling = urlObj.searchParams.get('feeling'); // 'stuck' or 'success'
       const limit = parseInt(urlObj.searchParams.get('limit') || '20', 10);
 
-      let reflections = heraldStorage.loadReflections();
+      // CEDA-42: Query from Upstash first (persistent), fall back to file storage
+      let reflections: HeraldReflection[] = [];
 
-      // Filter by company
+      if (upstashRedis.isEnabled() && company) {
+        // Query from Upstash (persistent storage)
+        const upstashReflections = await upstashRedis.getReflections(company, {
+          project: project || undefined,
+          feeling: feeling as 'stuck' | 'success' | undefined,
+          limit,
+        });
+        reflections = upstashReflections as HeraldReflection[];
+        console.log(`[Herald] Loaded ${reflections.length} reflections from Upstash for ${company}`);
+      }
+
+      // Also load from file storage (for backwards compatibility and recent in-memory data)
+      const fileReflections = heraldStorage.loadReflections();
+
+      // Filter file reflections
+      let filteredFileReflections = fileReflections;
       if (company) {
-        reflections = reflections.filter(r => r.company === company);
+        filteredFileReflections = filteredFileReflections.filter(r => r.company === company);
       }
-
-      // Filter by project
       if (project) {
-        reflections = reflections.filter(r => r.project === project);
+        filteredFileReflections = filteredFileReflections.filter(r => r.project === project);
+      }
+      if (feeling) {
+        filteredFileReflections = filteredFileReflections.filter(r => r.feeling === feeling);
       }
 
-      // Filter by feeling (pattern vs antipattern)
-      if (feeling) {
-        reflections = reflections.filter(r => r.feeling === feeling);
+      // Merge and dedupe by ID (Upstash takes precedence)
+      const seenIds = new Set(reflections.map(r => r.id));
+      for (const r of filteredFileReflections) {
+        if (!seenIds.has(r.id)) {
+          reflections.push(r);
+          seenIds.add(r.id);
+        }
       }
 
       // Sort by timestamp descending, most recent first

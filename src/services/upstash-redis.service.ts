@@ -404,6 +404,183 @@ class UpstashRedisService {
   }
 
   // ============================================
+  // HERALD REFLECTIONS STORAGE (CEDA-42)
+  // ============================================
+
+  /**
+   * Store a reflection persistently
+   */
+  async storeReflection(reflection: {
+    id: string;
+    session: string;
+    feeling: 'stuck' | 'success';
+    insight: string;
+    method?: string;
+    signal?: string;
+    outcome?: string;
+    reinforcement?: string;
+    warning?: string;
+    company: string;
+    project: string;
+    user: string;
+    vault?: string;
+    timestamp: string;
+  }): Promise<boolean> {
+    const key = `reflection:${reflection.id}`;
+    const result = await this.execute(['SET', key, JSON.stringify(reflection)]);
+
+    // Add to company index
+    if (result !== null) {
+      await this.execute(['SADD', `company:${reflection.company}:reflections`, reflection.id]);
+      await this.execute(['SADD', `project:${reflection.company}:${reflection.project}:reflections`, reflection.id]);
+
+      // Add to type index (pattern vs antipattern)
+      const type = reflection.feeling === 'stuck' ? 'antipattern' : 'pattern';
+      await this.execute(['SADD', `company:${reflection.company}:${type}s`, reflection.id]);
+    }
+
+    return result !== null;
+  }
+
+  /**
+   * Get all reflections for a company
+   */
+  async getReflections(company: string, options?: {
+    project?: string;
+    feeling?: 'stuck' | 'success';
+    limit?: number;
+  }): Promise<unknown[]> {
+    // Get reflection IDs from index
+    let setKey = `company:${company}:reflections`;
+
+    if (options?.project) {
+      setKey = `project:${company}:${options.project}:reflections`;
+    }
+
+    if (options?.feeling) {
+      const type = options.feeling === 'stuck' ? 'antipattern' : 'pattern';
+      setKey = `company:${company}:${type}s`;
+    }
+
+    const ids = await this.execute<string[]>(['SMEMBERS', setKey]);
+    if (!ids || ids.length === 0) return [];
+
+    // Fetch all reflections
+    const commands = ids.map(id => ['GET', `reflection:${id}`]);
+    const results = await this.pipeline<string>(commands);
+
+    if (!results) return [];
+
+    const reflections = results
+      .filter(r => r !== null)
+      .map(r => {
+        try {
+          return JSON.parse(r);
+        } catch {
+          return null;
+        }
+      })
+      .filter(r => r !== null);
+
+    // Sort by timestamp descending
+    reflections.sort((a, b) =>
+      new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+
+    return options?.limit ? reflections.slice(0, options.limit) : reflections;
+  }
+
+  /**
+   * Delete a reflection (GDPR Art 17)
+   */
+  async deleteReflection(id: string, company: string, project: string): Promise<boolean> {
+    // Get the reflection first to know its type
+    const data = await this.execute<string>(['GET', `reflection:${id}`]);
+    if (!data) return false;
+
+    try {
+      const reflection = JSON.parse(data);
+      const type = reflection.feeling === 'stuck' ? 'antipattern' : 'pattern';
+
+      // Remove from all indexes
+      await this.execute(['SREM', `company:${company}:reflections`, id]);
+      await this.execute(['SREM', `project:${company}:${project}:reflections`, id]);
+      await this.execute(['SREM', `company:${company}:${type}s`, id]);
+
+      // Delete the reflection itself
+      const result = await this.execute(['DEL', `reflection:${id}`]);
+      return result !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Store an insight
+   */
+  async storeInsight(insight: {
+    id: string;
+    fromContext: string;
+    toContext: string;
+    topic: string;
+    insight: string;
+    timestamp: string;
+  }): Promise<boolean> {
+    const key = `insight:${insight.id}`;
+    const result = await this.execute(['SET', key, JSON.stringify(insight)]);
+
+    if (result !== null) {
+      // Index by topic
+      await this.execute(['SADD', `insights:topic:${insight.topic}`, insight.id]);
+      // Index by context
+      await this.execute(['SADD', `insights:context:${insight.toContext}`, insight.id]);
+    }
+
+    return result !== null;
+  }
+
+  /**
+   * Get insights by topic or context
+   */
+  async getInsights(options?: { topic?: string; context?: string }): Promise<unknown[]> {
+    let setKey = 'insights:all';
+
+    if (options?.topic) {
+      setKey = `insights:topic:${options.topic}`;
+    } else if (options?.context) {
+      setKey = `insights:context:${options.context}`;
+    }
+
+    const ids = await this.execute<string[]>(['SMEMBERS', setKey]);
+    if (!ids || ids.length === 0) return [];
+
+    const commands = ids.map(id => ['GET', `insight:${id}`]);
+    const results = await this.pipeline<string>(commands);
+
+    if (!results) return [];
+
+    return results
+      .filter(r => r !== null)
+      .map(r => {
+        try {
+          return JSON.parse(r);
+        } catch {
+          return null;
+        }
+      })
+      .filter(r => r !== null);
+  }
+
+  /**
+   * Count reflections for a company
+   */
+  async countReflections(company: string): Promise<{ patterns: number; antipatterns: number }> {
+    const patterns = await this.execute<number>(['SCARD', `company:${company}:patterns`]) || 0;
+    const antipatterns = await this.execute<number>(['SCARD', `company:${company}:antipatterns`]) || 0;
+    return { patterns, antipatterns };
+  }
+
+  // ============================================
   // HEALTH & DIAGNOSTICS
   // ============================================
 
