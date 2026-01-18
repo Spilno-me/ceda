@@ -38,7 +38,7 @@ export interface RecallResult {
 export interface HeraldConfig {
   baseUrl?: string;
   token?: string;
-  company?: string;
+  org?: string;
   project?: string;
   user?: string;
 }
@@ -144,13 +144,13 @@ function deriveTags(): string[] {
   }
 }
 
-function deriveContext(): { company: string; project: string; user: string } {
+function deriveContext(): { org: string; project: string; user: string } {
   const gitInfo = getGitRemote();
   const user = deriveUser();
 
   if (gitInfo.org && gitInfo.repo) {
     return {
-      company: gitInfo.org,
+      org: gitInfo.org,
       project: gitInfo.repo,
       user,
     };
@@ -158,7 +158,7 @@ function deriveContext(): { company: string; project: string; user: string } {
 
   const tags = deriveTags();
   return {
-    company: tags[0] || "default",
+    org: tags[0] || "default",
     project: tags[1] || tags[0] || "default",
     user,
   };
@@ -179,10 +179,10 @@ function getToken(): string | undefined {
   return sdkConfig.token || process.env.CEDA_TOKEN || process.env.HERALD_API_TOKEN;
 }
 
-function getContext(): { company: string; project: string; user: string } {
-  if (sdkConfig.company && sdkConfig.project && sdkConfig.user) {
+function getContext(): { org: string; project: string; user: string } {
+  if (sdkConfig.org && sdkConfig.project && sdkConfig.user) {
     return {
-      company: sdkConfig.company,
+      org: sdkConfig.org,
       project: sdkConfig.project,
       user: sdkConfig.user,
     };
@@ -190,7 +190,7 @@ function getContext(): { company: string; project: string; user: string } {
 
   const derived = deriveContext();
   return {
-    company: sdkConfig.company || derived.company,
+    org: sdkConfig.org || derived.org,
     project: sdkConfig.project || derived.project,
     user: sdkConfig.user || derived.user,
   };
@@ -209,7 +209,7 @@ async function callApi(
 
   if (method === "GET") {
     const separator = endpoint.includes("?") ? "&" : "?";
-    url += `${separator}company=${encodeURIComponent(context.company)}&project=${encodeURIComponent(context.project)}&user=${encodeURIComponent(context.user)}`;
+    url += `${separator}org=${encodeURIComponent(context.org)}&project=${encodeURIComponent(context.project)}&user=${encodeURIComponent(context.user)}`;
   }
 
   const headers: Record<string, string> = {
@@ -224,7 +224,7 @@ async function callApi(
   if (method === "POST" && body) {
     enrichedBody = {
       ...body,
-      company: context.company,
+      org: context.org,
       project: context.project,
       user: context.user,
     };

@@ -171,9 +171,11 @@ interface TagSet {
 
 function deriveTagSet(): TagSet {
   // 1. Check env vars (explicit override)
-  if (process.env.HERALD_COMPANY) {
+  // HERALD_ORG is primary, HERALD_COMPANY for backwards compat
+  const envOrg = process.env.HERALD_ORG || process.env.HERALD_COMPANY;
+  if (envOrg) {
     return {
-      tags: [process.env.HERALD_COMPANY, process.env.HERALD_PROJECT].filter(Boolean) as string[],
+      tags: [envOrg, process.env.HERALD_PROJECT].filter(Boolean) as string[],
       trust: 'LOW',  // Env vars can be set by anyone
       source: 'env',
       propagates: false
@@ -288,9 +290,11 @@ function loadOrDeriveContext(): LoadedContext {
   const user = process.env.HERALD_USER || deriveUser();
 
   // 1. Check env vars (explicit override - highest priority, but LOW trust)
-  if (process.env.HERALD_COMPANY) {
+  // HERALD_ORG is primary, HERALD_COMPANY for backwards compat
+  const envOrg = process.env.HERALD_ORG || process.env.HERALD_COMPANY;
+  if (envOrg) {
     return {
-      tags: [process.env.HERALD_COMPANY, process.env.HERALD_PROJECT].filter(Boolean) as string[],
+      tags: [envOrg, process.env.HERALD_PROJECT].filter(Boolean) as string[],
       user,
       trust: 'LOW',
       source: 'env',
@@ -342,7 +346,7 @@ let HERALD_USER = LOADED_CONTEXT.user;
 
 // Tags from context (env > stored > git > path) - can be refreshed
 let HERALD_TAGS = LOADED_CONTEXT.tags;
-let HERALD_COMPANY = HERALD_TAGS[0] || "";
+let HERALD_ORG = HERALD_TAGS[0] || "";
 let HERALD_PROJECT = HERALD_TAGS[1] || HERALD_TAGS[0] || "";
 
 // ADR-001: Trust level determines pattern propagation
@@ -355,7 +359,7 @@ const GIT_REMOTE = LOADED_CONTEXT.gitRemote;
 // Server-verified context (set after /api/auth/verify call)
 let VERIFIED_CONTEXT: {
   verified: boolean;
-  company?: string;
+  org?: string;
   project?: string;
   trust?: TrustLevel;
   tags?: string[];
@@ -403,7 +407,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
 // Session persistence - context-isolated paths
 function getHeraldDir(): string {
-  return join(homedir(), ".herald", HERALD_COMPANY, HERALD_PROJECT, HERALD_USER);
+  return join(homedir(), ".herald", HERALD_ORG, HERALD_PROJECT, HERALD_USER);
 }
 
 function getSessionFile(): string {
@@ -419,7 +423,7 @@ interface BufferedInsight {
   topic?: string;
   targetVault?: string;
   sourceVault?: string;
-  company: string;
+  org: string;
   project: string;
   user: string;
   bufferedAt: string;
@@ -554,7 +558,7 @@ function clearSession(): void {
 }
 
 function getContextString(): string {
-  return `${HERALD_COMPANY}:${HERALD_PROJECT}:${HERALD_USER}`;
+  return `${HERALD_ORG}:${HERALD_PROJECT}:${HERALD_USER}`;
 }
 
 const HERALD_SYSTEM_PROMPT = `You are Herald, the voice of CEDA (Cognitive Event-Driven Architecture).
@@ -857,7 +861,7 @@ async function callCedaAPI(endpoint: string, method = "GET", body?: Record<strin
                             endpoint.startsWith("/api/observations");
   if (method === "GET" && needsTenantParams) {
     const separator = endpoint.includes("?") ? "&" : "?";
-    url += `${separator}company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}`;
+    url += `${separator}org=${HERALD_ORG}&project=${HERALD_PROJECT}&user=${HERALD_USER}`;
   }
 
   const headers: Record<string, string> = {
@@ -873,7 +877,7 @@ async function callCedaAPI(endpoint: string, method = "GET", body?: Record<strin
   if (method === "POST" && body && typeof body === "object") {
     enrichedBody = {
       ...body,
-      company: HERALD_COMPANY,
+      org: HERALD_ORG,
       project: HERALD_PROJECT,
       user: HERALD_USER,
     };
@@ -1306,7 +1310,7 @@ Example flow:
     inputSchema: {
       type: "object",
       properties: {
-        company: { type: "string", description: "Filter by company (optional, defaults to HERALD_COMPANY)" },
+        org: { type: "string", description: "Filter by org (optional, defaults to HERALD_ORG)" },
         project: { type: "string", description: "Filter by project (optional)" },
         user: { type: "string", description: "Filter by user (optional)" },
         status: { type: "string", description: "Filter by status: active, archived, or expired (optional)" },
@@ -1646,9 +1650,9 @@ async function fetchPatternsWithCascade(): Promise<{patterns: string[], antipatt
   const antipatterns: string[] = [];
 
   const queries = [
-    { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100` },
-    { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=100` },
-    { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=100` },
+    { scope: "user", url: `/api/herald/reflections?org=${HERALD_ORG}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100` },
+    { scope: "project", url: `/api/herald/reflections?org=${HERALD_ORG}&project=${HERALD_PROJECT}&limit=100` },
+    { scope: "org", url: `/api/herald/reflections?org=${HERALD_ORG}&limit=100` },
   ];
 
   for (const { scope, url } of queries) {
@@ -1676,7 +1680,7 @@ async function fetchPatternsWithCascade(): Promise<{patterns: string[], antipatt
     }
   }
 
-  return { patterns, antipatterns, context: `${HERALD_USER}→${HERALD_PROJECT}→${HERALD_COMPANY}` };
+  return { patterns, antipatterns, context: `${HERALD_USER}→${HERALD_PROJECT}→${HERALD_ORG}` };
 }
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
@@ -1684,7 +1688,7 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
     {
       uri: "herald://patterns",
       name: "Herald Learned Patterns",
-      description: `Patterns and antipatterns learned from past sessions for ${HERALD_USER}→${HERALD_PROJECT}→${HERALD_COMPANY}. READ THIS AT SESSION START.`,
+      description: `Patterns and antipatterns learned from past sessions for ${HERALD_USER}→${HERALD_PROJECT}→${HERALD_ORG}. READ THIS AT SESSION START.`,
       mimeType: "text/plain",
     },
     {
@@ -1749,7 +1753,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 
   if (uri === "herald://context") {
     const context = {
-      company: HERALD_COMPANY,
+      org: HERALD_ORG,
       project: HERALD_PROJECT,
       user: HERALD_USER,
       vault: HERALD_VAULT || null,
@@ -1784,7 +1788,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 Welcome to Herald - your AI-native interface to CEDA (Cognitive Event-Driven Architecture).
 
 ## Current Context
-- Company: ${HERALD_COMPANY}
+- Company: ${HERALD_ORG}
 - Project: ${HERALD_PROJECT}
 - User: ${HERALD_USER}
 
@@ -1847,7 +1851,7 @@ Herald will:
 
         const config = {
           cedaUrl: CEDA_API_URL,
-          company: HERALD_COMPANY,
+          org: HERALD_ORG,
           project: HERALD_PROJECT,
           user: HERALD_USER,
           vault: HERALD_VAULT || "(not set)",
@@ -1897,7 +1901,7 @@ Herald will:
           // Update module-level variables directly
           HERALD_USER = newContext.user;
           HERALD_TAGS = newContext.tags;
-          HERALD_COMPANY = newContext.tags[0] || "";
+          HERALD_ORG = newContext.tags[0] || "";
           HERALD_PROJECT = newContext.tags[1] || newContext.tags[0] || "";
           TRUST_LEVEL = newContext.trust;
           CONTEXT_SOURCE = newContext.source;
@@ -1909,7 +1913,7 @@ Herald will:
               text: JSON.stringify({
                 refreshed: true,
                 context: {
-                  company: HERALD_COMPANY,
+                  org: HERALD_ORG,
                   project: HERALD_PROJECT,
                   user: HERALD_USER,
                   tags: HERALD_TAGS,
@@ -1932,7 +1936,7 @@ Herald will:
             type: "text",
             text: JSON.stringify({
               context: {
-                company: HERALD_COMPANY,
+                org: HERALD_ORG,
                 project: HERALD_PROJECT,
                 user: HERALD_USER,
                 tags: HERALD_TAGS,
@@ -2104,7 +2108,7 @@ Herald will:
           topic,
           targetVault,
           sourceVault: HERALD_VAULT || undefined,
-          company: HERALD_COMPANY,
+          org: HERALD_ORG,
           project: HERALD_PROJECT,
           user: HERALD_USER,
         };
@@ -2117,7 +2121,7 @@ Herald will:
             insight,
             toContext: targetVault || "all",  // Required by CEDA, default to broadcast
             topic,
-            fromContext: HERALD_VAULT || `${HERALD_COMPANY}/${HERALD_PROJECT}`,
+            fromContext: HERALD_VAULT || `${HERALD_ORG}/${HERALD_PROJECT}`,
           });
 
           // Check if API returned an error
@@ -2266,7 +2270,7 @@ Herald will:
         const limit = args?.limit as number | undefined;
 
         const params = new URLSearchParams();
-        params.set("company", company || HERALD_COMPANY);
+        params.set("company", company || HERALD_ORG);
         if (project) params.set("project", project);
         if (user) params.set("user", user);
         if (status) params.set("status", status);
@@ -2406,7 +2410,7 @@ Herald will:
             feeling,
             insight: sanitizedInsight,  // Sanitized - no PII/secrets transmitted
             method: "direct",  // Track capture method for meta-learning
-            company: HERALD_COMPANY,
+            org: HERALD_ORG,
             project: HERALD_PROJECT,
             user: HERALD_USER,
             vault: HERALD_VAULT || undefined,
@@ -2417,7 +2421,7 @@ Herald will:
             bufferInsight({
               insight: `[REFLECT:${feeling}] ${sanitizedInsight} | Context: ${sanitizedSession}`,
               topic: feeling === "stuck" ? "antipattern" : "pattern",
-              company: HERALD_COMPANY,
+              org: HERALD_ORG,
               project: HERALD_PROJECT,
               user: HERALD_USER,
             });
@@ -2451,7 +2455,7 @@ Herald will:
                   ? `Antipattern captured: "${insight}"`
                   : `Pattern captured: "${insight}"`,
                 context: {
-                  company: HERALD_COMPANY,
+                  org: HERALD_ORG,
                   project: HERALD_PROJECT,
                   tags: HERALD_TAGS,
                   trust: TRUST_LEVEL,
@@ -2466,7 +2470,7 @@ Herald will:
           bufferInsight({
             insight: `[REFLECT:${feeling}] ${sanitizedInsight} | Context: ${sanitizedSession}`,
             topic: feeling === "stuck" ? "antipattern" : "pattern",
-            company: HERALD_COMPANY,
+            org: HERALD_ORG,
             project: HERALD_PROJECT,
             user: HERALD_USER,
           });
@@ -2509,9 +2513,9 @@ Herald will:
           // CEDA-95: Cascade queries with minLevel=1 to only return graduated patterns (not observations)
           // Observations (level 0) are raw captures; patterns (level 1+) are validated
           const queries = [
-            { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100&minLevel=1` },
-            { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=100&minLevel=1` },
-            { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=100&minLevel=1` },
+            { scope: "user", url: `/api/herald/reflections?org=${HERALD_ORG}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100&minLevel=1` },
+            { scope: "project", url: `/api/herald/reflections?org=${HERALD_ORG}&project=${HERALD_PROJECT}&limit=100&minLevel=1` },
+            { scope: "org", url: `/api/herald/reflections?org=${HERALD_ORG}&limit=100&minLevel=1` },
           ];
 
           const patterns: PatternEntry[] = [];
@@ -2535,7 +2539,7 @@ Herald will:
           const metaPatterns = (metaResult.metaPatterns as Array<{recommendedMethod: string; confidence: number}>) || [];
 
           // Build readable summary with scope indicators
-          let summary = `## Learned Patterns for ${HERALD_USER}→${HERALD_PROJECT}→${HERALD_COMPANY}\n\n`;
+          let summary = `## Learned Patterns for ${HERALD_USER}→${HERALD_PROJECT}→${HERALD_ORG}\n\n`;
 
           if (antipatterns.length > 0) {
             summary += `### ⚠️ Antipatterns (avoid these)\n`;
@@ -2566,7 +2570,7 @@ Herald will:
           }
 
           if (patterns.length === 0 && antipatterns.length === 0) {
-            summary = `No patterns learned yet for ${HERALD_USER}→${HERALD_PROJECT}→${HERALD_COMPANY}.\n\nCapture patterns with "herald reflect" or "herald simulate" when you notice friction or flow.`;
+            summary = `No patterns learned yet for ${HERALD_USER}→${HERALD_PROJECT}→${HERALD_ORG}.\n\nCapture patterns with "herald reflect" or "herald simulate" when you notice friction or flow.`;
           }
 
           return {
@@ -2660,7 +2664,7 @@ Herald will:
             outcome: extracted.outcome,
             reinforcement: sanitizedReinforcement,
             warning: sanitizedWarning,
-            company: HERALD_COMPANY,
+            org: HERALD_ORG,
             project: HERALD_PROJECT,
             user: HERALD_USER,
             vault: HERALD_VAULT || undefined,
@@ -2671,7 +2675,7 @@ Herald will:
             bufferInsight({
               insight: `[SIMULATE:${feeling}] Signal: ${sanitizedSignal} | Insight: ${simSanitizedInsight} | ${extracted.outcome === "pattern" ? `Reinforce: ${sanitizedReinforcement}` : `Warn: ${sanitizedWarning}`}`,
               topic: extracted.outcome,
-              company: HERALD_COMPANY,
+              org: HERALD_ORG,
               project: HERALD_PROJECT,
               user: HERALD_USER,
             });
@@ -2787,7 +2791,7 @@ Herald will:
             patternText,
             outcome,
             helped: outcome === "helped",
-            company: HERALD_COMPANY,
+            org: HERALD_ORG,
             project: HERALD_PROJECT,
             user: HERALD_USER,
           });
@@ -2841,7 +2845,7 @@ Herald will:
             insight,
             scope,
             topic,
-            sourceCompany: HERALD_COMPANY,
+            sourceCompany: HERALD_ORG,
             sourceProject: HERALD_PROJECT,
             sourceUser: HERALD_USER,
             sourceVault: HERALD_VAULT || undefined,
@@ -2917,7 +2921,7 @@ Herald will:
             patternId,
             sessionId,
             all: deleteAll,
-            company: HERALD_COMPANY,
+            org: HERALD_ORG,
             project: HERALD_PROJECT,
             user: HERALD_USER,
           });
@@ -2941,7 +2945,7 @@ Herald will:
           } else if (sessionId) {
             message = `All patterns from session ${sessionId} deleted`;
           } else if (deleteAll) {
-            message = `All patterns for ${HERALD_COMPANY}/${HERALD_PROJECT}/${HERALD_USER} deleted`;
+            message = `All patterns for ${HERALD_ORG}/${HERALD_PROJECT}/${HERALD_USER} deleted`;
           }
 
           return {
@@ -2974,7 +2978,7 @@ Herald will:
 
         try {
           const result = await callCedaAPI(
-            `/api/herald/export?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&format=${format}`
+            `/api/herald/export?org=${HERALD_ORG}&project=${HERALD_PROJECT}&user=${HERALD_USER}&format=${format}`
           );
 
           if (result.error) {
@@ -2998,7 +3002,7 @@ Herald will:
                 message: `Data exported in ${format.toUpperCase()} format (GDPR Art. 20)`,
                 gdprArticle: "Article 20 - Right to Data Portability",
                 format,
-                context: `${HERALD_COMPANY}/${HERALD_PROJECT}/${HERALD_USER}`,
+                context: `${HERALD_ORG}/${HERALD_PROJECT}/${HERALD_USER}`,
                 ...result,
               }, null, 2)
             }],
@@ -3095,7 +3099,7 @@ async function verifyWithCeda(): Promise<void> {
       const ctx = result.context as Record<string, unknown>;
       VERIFIED_CONTEXT = {
         verified: true,
-        company: ctx.company as string,
+        org: (ctx.org || ctx.company) as string,
         project: ctx.project as string,
         trust: ctx.trust as TrustLevel,
         tags: ctx.tags as string[],
@@ -3106,7 +3110,7 @@ async function verifyWithCeda(): Promise<void> {
       PROPAGATES = true;
       CONTEXT_SOURCE = 'verified';
 
-      console.error(`[Herald] Verified with CEDA: ${VERIFIED_CONTEXT.company}/${VERIFIED_CONTEXT.project} (trust: HIGH)`);
+      console.error(`[Herald] Verified with CEDA: ${VERIFIED_CONTEXT.org}/${VERIFIED_CONTEXT.project} (trust: HIGH)`);
     } else {
       // Not verified - user not registered or no access to this repo
       // Keep local trust level (which may be HIGH from git, but unverified)
@@ -3159,7 +3163,7 @@ async function runMCP(): Promise<void> {
   console.error(`User: ${HERALD_USER} | Tags: [${HERALD_TAGS.join(", ")}]`);
   console.error(`Trust: ${TRUST_LEVEL} (${CONTEXT_SOURCE})${PROPAGATES ? " | Propagates: YES" : ""}`);
   if (VERIFIED_CONTEXT?.verified) {
-    console.error(`Context: ${VERIFIED_CONTEXT.company}/${VERIFIED_CONTEXT.project} (server-verified)`);
+    console.error(`Context: ${VERIFIED_CONTEXT.org}/${VERIFIED_CONTEXT.project} (server-verified)`);
   }
 
   // Send startup heartbeat for visibility (non-blocking)
