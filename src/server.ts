@@ -1993,7 +1993,7 @@ async function handleRequest(
           outcome: body.outcome || (body.feeling === 'stuck' ? 'antipattern' : 'pattern'),
           reinforcement: sanitizedReinforcement,
           warning: sanitizedWarning,
-          company: body.company || 'default',
+          org: body.org || body.company || 'default',
           project: body.project || 'default',
           user: body.user || 'default',
           vault: body.vault,
@@ -2437,13 +2437,13 @@ async function handleRequest(
             outcome: r.outcome || undefined,
             reinforcement: r.reinforcement || undefined,
             warning: r.warning || undefined,
-            org: r.company,
+            org: r.org,
             project: r.project,
             user: r.user_id,
             applications: [],
             timestamp: r.created_at.toISOString(),
           }));
-          console.log(`[Herald] Loaded ${reflections.length} reflections from PlanetScale for ${company}`);
+          console.log(`[Herald] Loaded ${reflections.length} reflections from PlanetScale for org=${company}`);
         } catch (planetscaleErr) {
           console.error(`[Herald] PlanetScale query failed for ${company}:`, planetscaleErr);
         }
@@ -5520,10 +5520,10 @@ async function handleRequest(
           email: dbUser.email || `${user.login}@github.local`,
           passwordHash: '', // OAuth users don't have passwords
           company: companySlug,
-          roles: dbUser.roles as UserRole[],
+          roles: [UserRole.CONTRIBUTOR], // Default role - roles now managed via user_orgs
           createdAt: dbUser.created_at.toISOString(),
-          lastLoginAt: dbUser.last_login_at.toISOString(),
-          isActive: dbUser.is_active,
+          lastLoginAt: dbUser.last_login_at?.toISOString() || new Date().toISOString(),
+          isActive: true, // Active by default - deactivation via user_orgs
           gitIdentityId: gitIdentity.id,
         };
 

@@ -37,7 +37,7 @@ export { schema };
 export async function healthCheck(): Promise<boolean> {
   if (!db) return false;
   try {
-    await db.execute`SELECT 1`;
+    await db.execute('SELECT 1');
     return true;
   } catch {
     return false;

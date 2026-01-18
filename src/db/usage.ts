@@ -53,8 +53,8 @@ export async function recordBySlug(
   metric: UsageMetric,
   count: number = 1
 ): Promise<void> {
-  const { company } = await companies.upsertBySlug(companySlug);
-  await record(company.id, metric, count);
+  const { org } = await companies.upsertBySlug(companySlug);
+  await record(org.id, metric, count);
 }
 
 /**
