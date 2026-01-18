@@ -153,7 +153,7 @@ export async function recordStripeEvent(eventId: string, eventType: string): Pro
   if (!isEnabled()) return;
 
   await getPool().query(
-    'INSERT INTO stripe_events (id, type, processed_at) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
+    'INSERT INTO stripe_events (id, event_type, processed_at) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
     [eventId, eventType, new Date()]
   );
 }
