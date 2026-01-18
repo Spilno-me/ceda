@@ -5275,7 +5275,7 @@ async function handleRequest(
               permission: repo.permission || 'read',
             })),
           } : {
-            organizations: userOrgs.map(o => ({ login: o.org_login, role: o.role })),
+            organizations: userOrgs.map(o => ({ login: o.org_slug, role: o.role })),
             repositories: [],
           },
           preferences,

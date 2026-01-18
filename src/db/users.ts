@@ -40,12 +40,12 @@ export interface DbUserWithToken extends DbUser {
 }
 
 /**
- * User organization membership
+ * User organization membership (user_orgs joined with orgs)
  */
 export interface DbUserOrg {
   user_id: string;
-  org_login: string;
-  org_id: number;
+  org_id: string; // UUID FK to orgs
+  org_slug: string; // From orgs table
   role: string;
 }
 
@@ -217,7 +217,10 @@ export async function upsertFromGitHub(
  */
 export async function getUserOrganizations(userId: string): Promise<DbUserOrg[]> {
   const result = await query<DbUserOrg>(
-    'SELECT * FROM user_organizations WHERE user_id = $1',
+    `SELECT uo.user_id, uo.org_id, o.slug as org_slug, uo.role
+     FROM user_orgs uo
+     JOIN orgs o ON uo.org_id = o.id
+     WHERE uo.user_id = $1`,
     [userId]
   );
   return result.rows;
