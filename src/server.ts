@@ -724,7 +724,15 @@ async function checkRateLimitAndRespond(
 }
 
 // CEDA-81: User preferences storage (in-memory for simplicity, could use Redis)
-const userPreferences = new Map<string, { defaultOrg?: string; defaultProject?: string; customTags?: string[] }>();
+// CEDA-86: Added selectedOrgs and primaryOrg for multi-org selection
+const userPreferences = new Map<string, { 
+  defaultOrg?: string; 
+  defaultProject?: string; 
+  selectedOrgs?: string[];
+  primaryOrg?: string;
+  selectedRepos?: string[];
+  customTags?: string[];
+}>();
 
 /**
  * CEDA-81: Serve static files from /public directory
@@ -5253,6 +5261,8 @@ async function handleRequest(
         const body = await parseBody<{
           defaultOrg?: string;
           defaultProject?: string;
+          selectedOrgs?: string[];
+          primaryOrg?: string;
           selectedRepos?: string[];
           customTags?: string[];
         }>(req);
@@ -5277,6 +5287,8 @@ async function handleRequest(
           ...existingPrefs,
           ...(body.defaultOrg !== undefined && { defaultOrg: body.defaultOrg }),
           ...(body.defaultProject !== undefined && { defaultProject: body.defaultProject }),
+          ...(body.selectedOrgs !== undefined && { selectedOrgs: body.selectedOrgs }),
+          ...(body.primaryOrg !== undefined && { primaryOrg: body.primaryOrg }),
           ...(body.selectedRepos !== undefined && { selectedRepos: body.selectedRepos }),
           ...(body.customTags !== undefined && { customTags: body.customTags }),
         };
