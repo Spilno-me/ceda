@@ -340,7 +340,9 @@ function getStripeClient(): Stripe {
 
 // Stripe price IDs from environment
 const STRIPE_PRICE_PRO = process.env.STRIPE_PRICE_PRO;
+const STRIPE_PRICE_STARTUP = process.env.STRIPE_PRICE_STARTUP;
 const STRIPE_PRICE_TEAM = process.env.STRIPE_PRICE_TEAM;
+const STRIPE_PRICE_ORG = process.env.STRIPE_PRICE_ORG;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 // OAuth state storage (in-memory for simplicity, could use Redis)
@@ -5638,11 +5640,12 @@ async function handleRequest(
           return;
         }
 
-        if (body.plan !== 'pro' && body.plan !== 'team') {
+        const validPlans = ['pro', 'startup', 'team', 'org'];
+        if (!validPlans.includes(body.plan)) {
           sendJson(res, 400, {
             error: 'Invalid plan',
-            message: 'Plan must be "pro" or "team"',
-            validPlans: ['pro', 'team'],
+            message: 'Plan must be one of: pro, startup, team, org',
+            validPlans,
           });
           return;
         }
@@ -5656,7 +5659,14 @@ async function handleRequest(
           return;
         }
 
-        const priceId = body.plan === 'pro' ? STRIPE_PRICE_PRO : STRIPE_PRICE_TEAM;
+        // Get price ID for the selected plan
+        const priceMap: Record<string, string | undefined> = {
+          pro: STRIPE_PRICE_PRO,
+          startup: STRIPE_PRICE_STARTUP,
+          team: STRIPE_PRICE_TEAM,
+          org: STRIPE_PRICE_ORG,
+        };
+        const priceId = priceMap[body.plan];
         if (!priceId) {
           sendJson(res, 503, {
             error: 'Stripe price not configured',
