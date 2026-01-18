@@ -34,8 +34,8 @@ export function isEnabled(): boolean {
 
 export interface SubscriptionRow {
   id: string;
-  customer_id: string | null;
-  company: string;
+  stripe_customer_id: string | null;
+  org_id: string;
   status: string;
   plan: string;
   stripe_subscription_id: string | null;
@@ -49,7 +49,7 @@ export async function getSubscriptionByUserId(userId: string): Promise<Subscript
   if (!isEnabled()) return null;
 
   const result = await getPool().query<SubscriptionRow>(
-    'SELECT * FROM subscriptions WHERE company = $1',
+    'SELECT * FROM subscriptions WHERE org_id = $1',
     [userId]
   );
   return result.rows[0] || null;
@@ -59,7 +59,7 @@ export async function getSubscriptionByStripeCustomerId(stripeCustomerId: string
   if (!isEnabled()) return null;
 
   const result = await getPool().query<SubscriptionRow>(
-    'SELECT * FROM subscriptions WHERE customer_id = $1',
+    'SELECT * FROM subscriptions WHERE stripe_customer_id = $1',
     [stripeCustomerId]
   );
   return result.rows[0] || null;
@@ -76,7 +76,7 @@ export async function getSubscriptionByStripeSubscriptionId(stripeSubscriptionId
 }
 
 export async function upsertSubscription(
-  userId: string,
+  orgId: string,
   plan: string,
   status: string,
   stripeCustomerId?: string,
@@ -90,10 +90,10 @@ export async function upsertSubscription(
   const now = new Date();
 
   await getPool().query(
-    `INSERT INTO subscriptions (id, company, customer_id, stripe_subscription_id, plan, status, current_period_end, seats, created_at, updated_at)
+    `INSERT INTO subscriptions (id, org_id, stripe_customer_id, stripe_subscription_id, plan, status, current_period_end, seats, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT (company) DO UPDATE SET
-       customer_id = COALESCE($3, subscriptions.customer_id),
+     ON CONFLICT (org_id) DO UPDATE SET
+       stripe_customer_id = COALESCE($3, subscriptions.stripe_customer_id),
        stripe_subscription_id = COALESCE($4, subscriptions.stripe_subscription_id),
        plan = $5,
        status = $6,
@@ -102,7 +102,7 @@ export async function upsertSubscription(
        updated_at = $10`,
     [
       id,
-      userId,
+      orgId,
       stripeCustomerId || null,
       stripeSubscriptionId || null,
       plan,
@@ -115,12 +115,12 @@ export async function upsertSubscription(
   );
 }
 
-export async function updateSubscriptionStatus(userId: string, status: string): Promise<void> {
+export async function updateSubscriptionStatus(orgId: string, status: string): Promise<void> {
   if (!isEnabled()) return;
 
   await getPool().query(
-    'UPDATE subscriptions SET status = $1, updated_at = $2 WHERE company = $3',
-    [status, new Date(), userId]
+    'UPDATE subscriptions SET status = $1, updated_at = $2 WHERE org_id = $3',
+    [status, new Date(), orgId]
   );
 }
 

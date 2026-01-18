@@ -100,10 +100,10 @@ const subscriptionStorage = new Map<string, UserSubscription>();
 
 function rowToSubscription(row: postgresService.SubscriptionRow): UserSubscription {
   return {
-    userId: row.company,
+    userId: row.org_id,
     plan: row.plan as Plan,
     status: row.status as SubscriptionStatus,
-    stripeCustomerId: row.customer_id || undefined,
+    stripeCustomerId: row.stripe_customer_id || undefined,
     stripeSubscriptionId: row.stripe_subscription_id || undefined,
     currentPeriodEnd: row.current_period_end?.toISOString(),
     seats: row.seats || undefined,
