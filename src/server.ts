@@ -966,6 +966,14 @@ async function handleRequest(
       }
     }
 
+    // CEDA-91: Handle paths without .html extension (e.g., /billing/success → /billing/success.html)
+    if (method === 'GET' && !urlPath.startsWith('/api/') && !urlPath.includes('.')) {
+      const htmlPath = urlPath.startsWith('/') ? urlPath.substring(1) + '.html' : urlPath + '.html';
+      if (serveStaticFile(htmlPath, res)) {
+        return;
+      }
+    }
+
     // Health check
     if (url === '/health' && method === 'GET') {
       const health = orchestrator.getHealthStatus();
