@@ -25,7 +25,7 @@ describe("herald SDK", () => {
     herald.configure({
       baseUrl: undefined,
       token: undefined,
-      company: undefined,
+      org: undefined,
       project: undefined,
       user: undefined,
     });
@@ -136,9 +136,9 @@ describe("herald SDK", () => {
       expect(options.headers).toHaveProperty("Authorization", "Bearer test-token-123");
     });
 
-    it("should use configured company/project/user in requests", async () => {
+    it("should use configured org/project/user in requests", async () => {
       herald.configure({
-        company: "acme",
+        org: "acme",
         project: "backend",
         user: "developer",
       });
@@ -147,7 +147,7 @@ describe("herald SDK", () => {
 
       const { options } = capturedRequests[0];
       const body = JSON.parse(options.body as string);
-      expect(body.company).toBe("acme");
+      expect(body.org).toBe("acme");
       expect(body.project).toBe("backend");
       expect(body.user).toBe("developer");
     });
