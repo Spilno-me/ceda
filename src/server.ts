@@ -5099,8 +5099,16 @@ async function handleRequest(
         // Get user organizations from DB
         const userOrgs = await db.users.getUserOrganizations(dbUser.id);
 
-        // Get user preferences
-        const preferences = userPreferences.get(userInfo.userId) || {};
+        // Get user preferences - try Upstash first (persistent), fall back to memory
+        let preferences = userPreferences.get(userInfo.userId);
+        if (!preferences && upstashRedis.isEnabled()) {
+          preferences = await upstashRedis.getUserPreferences(userInfo.userId) || {};
+          // Cache in memory for faster access
+          if (Object.keys(preferences).length > 0) {
+            userPreferences.set(userInfo.userId, preferences);
+          }
+        }
+        preferences = preferences || {};
 
         // Build profile response
         const profileResponse = {
@@ -5157,8 +5165,13 @@ async function handleRequest(
           customTags?: string[];
         }>(req);
 
-        // Get existing preferences and merge with new ones
-        const existingPrefs = userPreferences.get(userInfo.userId) || {};
+        // Get existing preferences (from memory or Upstash) and merge with new ones
+        let existingPrefs = userPreferences.get(userInfo.userId);
+        if (!existingPrefs && upstashRedis.isEnabled()) {
+          existingPrefs = await upstashRedis.getUserPreferences(userInfo.userId) || {};
+        }
+        existingPrefs = existingPrefs || {};
+
         const updatedPrefs = {
           ...existingPrefs,
           ...(body.defaultOrg !== undefined && { defaultOrg: body.defaultOrg }),
@@ -5167,8 +5180,14 @@ async function handleRequest(
           ...(body.customTags !== undefined && { customTags: body.customTags }),
         };
 
-        // Store updated preferences
+        // Store updated preferences - dual write to memory and Upstash
         userPreferences.set(userInfo.userId, updatedPrefs);
+
+        // CEDA-42: Persist to Upstash for durability across redeploys
+        if (upstashRedis.isEnabled()) {
+          await upstashRedis.setUserPreferences(userInfo.userId, updatedPrefs);
+          console.log(`[CEDA-81] Preferences persisted to Upstash for user ${userInfo.userId}`);
+        }
 
         console.log(`[CEDA-81] Preferences updated for user ${userInfo.userId}: ${JSON.stringify(updatedPrefs)}`);
 

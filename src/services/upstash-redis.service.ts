@@ -581,6 +581,53 @@ class UpstashRedisService {
   }
 
   // ============================================
+  // USER PREFERENCES (CEDA-42)
+  // ============================================
+
+  /**
+   * Store user preferences persistently
+   */
+  async setUserPreferences(userId: string, preferences: {
+    defaultOrg?: string;
+    defaultProject?: string;
+    selectedRepos?: string[];
+    customTags?: string[];
+  }): Promise<boolean> {
+    const key = `user:${userId}:preferences`;
+    const result = await this.execute(['SET', key, JSON.stringify(preferences)]);
+    return result !== null;
+  }
+
+  /**
+   * Get user preferences
+   */
+  async getUserPreferences(userId: string): Promise<{
+    defaultOrg?: string;
+    defaultProject?: string;
+    selectedRepos?: string[];
+    customTags?: string[];
+  } | null> {
+    const key = `user:${userId}:preferences`;
+    const result = await this.execute<string>(['GET', key]);
+    if (!result) return null;
+
+    try {
+      return JSON.parse(result);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Delete user preferences (GDPR Art 17)
+   */
+  async deleteUserPreferences(userId: string): Promise<boolean> {
+    const key = `user:${userId}:preferences`;
+    const result = await this.execute(['DEL', key]);
+    return result !== null;
+  }
+
+  // ============================================
   // HEALTH & DIAGNOSTICS
   // ============================================
 
