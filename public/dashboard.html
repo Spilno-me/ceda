@@ -346,10 +346,12 @@
 
         async function fetchPatterns() {
             try {
-                const { defaultOrg, defaultProject } = profile.preferences;
+                const { defaultOrg, selectedRepos } = profile.preferences;
                 const params = new URLSearchParams();
+                // CEDA-100: Query by org only to aggregate patterns across ALL tracked repos
+                // Don't filter by project - we want to see everything in the org
                 if (defaultOrg) params.append('company', defaultOrg);
-                if (defaultProject) params.append('project', defaultProject);
+                // Note: Removed project filter to show patterns from all repos in org
                 params.append('limit', '100');
 
                 const response = await fetch(`/api/herald/reflections?${params}`, {
