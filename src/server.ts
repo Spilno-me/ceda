@@ -320,8 +320,7 @@ const gitIdentityService = new GitIdentityService();
 const heraldVerifyService = new HeraldVerifyService(gitIdentityService);
 const authService = new AuthService();
 
-// CEDA-91: Initialize Stripe billing services
-const usageService = new UsageService();
+// CEDA-91: Stripe billing services (usageService imported from usage.service.ts)
 
 // Stripe client - initialized lazily when STRIPE_SECRET_KEY is available
 let stripeClient: Stripe | null = null;
