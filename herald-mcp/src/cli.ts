@@ -2506,11 +2506,12 @@ Herald will:
             }).map(item => ({ ...item, scope }));
           };
 
-          // Cascade queries: user (most specific) → project → company (broadest)
+          // CEDA-95: Cascade queries with minLevel=1 to only return graduated patterns (not observations)
+          // Observations (level 0) are raw captures; patterns (level 1+) are validated
           const queries = [
-            { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100` },
-            { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=100` },
-            { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=100` },
+            { scope: "user", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100&minLevel=1` },
+            { scope: "project", url: `/api/herald/reflections?company=${HERALD_COMPANY}&project=${HERALD_PROJECT}&limit=100&minLevel=1` },
+            { scope: "company", url: `/api/herald/reflections?company=${HERALD_COMPANY}&limit=100&minLevel=1` },
           ];
 
           const patterns: PatternEntry[] = [];

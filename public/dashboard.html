@@ -167,6 +167,24 @@
         .pattern-card.pattern {
             border-left: 3px solid #22c55e;
         }
+        .pattern-card.observation {
+            border-left: 3px solid #6b7280;
+        }
+        /* CEDA-95: Level badges */
+        .level-badge {
+            display: inline-block;
+            padding: 0.125rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .level-badge.level-0 { background: #6b7280; color: white; }
+        .level-badge.level-1 { background: #3b82f6; color: white; }
+        .level-badge.level-2 { background: #8b5cf6; color: white; }
+        .level-badge.level-3 { background: #f59e0b; color: white; }
+        .level-badge.level-4 { background: #10b981; color: white; }
+        .level-badge.level-5 { background: #ef4444; color: white; }
         .pattern-insight {
             color: var(--text-primary);
             margin-bottom: 0.5rem;
@@ -258,9 +276,10 @@
     <script>
         let profile = null;
         let usage = null;
-        let patterns = [];
+        let observations = [];  // Level 0 items (raw captures)
+        let patterns = [];      // Level 1+ items (graduated patterns)
         let antipatterns = [];
-        let activeTab = 'patterns';
+        let activeTab = 'observations';
 
         async function init() {
             // Initialize page and check auth
@@ -323,7 +342,7 @@
                 const params = new URLSearchParams();
                 if (defaultOrg) params.append('company', defaultOrg);
                 if (defaultProject) params.append('project', defaultProject);
-                params.append('limit', '50');
+                params.append('limit', '100');
 
                 const response = await fetch(`/api/herald/reflections?${params}`, {
                     headers: {
@@ -332,10 +351,23 @@
                 });
                 if (!response.ok) throw new Error('Failed to fetch patterns');
                 const data = await response.json();
-                patterns = data.patterns || [];
-                antipatterns = data.antipatterns || [];
+                
+                // CEDA-95: Separate observations (level 0) from patterns (level >= 1)
+                const allPatterns = data.patterns || [];
+                const allAntipatterns = data.antipatterns || [];
+                
+                // Observations are level 0 items (raw captures)
+                observations = [
+                    ...allPatterns.filter(p => (p.level || 0) === 0),
+                    ...allAntipatterns.filter(p => (p.level || 0) === 0)
+                ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                
+                // Patterns are level 1+ items (graduated)
+                patterns = allPatterns.filter(p => (p.level || 0) >= 1);
+                antipatterns = allAntipatterns.filter(p => (p.level || 0) >= 1);
             } catch (error) {
                 console.error('Failed to fetch patterns:', error);
+                observations = [];
                 patterns = [];
                 antipatterns = [];
             }
@@ -437,12 +469,22 @@
         }
 
         function renderPatternsSection() {
-            const total = patterns.length + antipatterns.length;
-            const currentList = activeTab === 'patterns' ? patterns : antipatterns;
+            // CEDA-95: Three tabs - Observations (level 0), Patterns (level 1+), Antipatterns
+            let currentList;
+            if (activeTab === 'observations') {
+                currentList = observations;
+            } else if (activeTab === 'patterns') {
+                currentList = patterns;
+            } else {
+                currentList = antipatterns;
+            }
 
             return `
                 <div class="patterns-section">
                     <div class="patterns-tabs">
+                        <button class="patterns-tab ${activeTab === 'observations' ? 'active' : ''}" data-tab="observations">
+                            Observations <span class="count">${observations.length}</span>
+                        </button>
                         <button class="patterns-tab ${activeTab === 'patterns' ? 'active' : ''}" data-tab="patterns">
                             Patterns <span class="count">${patterns.length}</span>
                         </button>
@@ -459,24 +501,39 @@
 
         function renderPatternsList(list, type) {
             if (list.length === 0) {
+                const emptyMessage = type === 'observations' 
+                    ? 'No observations yet. Use <code>herald_reflect()</code> in your sessions to capture insights.'
+                    : type === 'patterns'
+                    ? 'No graduated patterns yet. Observations graduate to patterns after meeting criteria (3+ observations, 70% helpful).'
+                    : 'No antipatterns yet. Use <code>herald_reflect()</code> with feeling="stuck" to capture what went wrong.';
                 return `
                     <div class="empty-state">
                         <h4>No ${type} yet</h4>
-                        <p>Use <code>herald_reflect()</code> in your sessions to capture ${type}.</p>
+                        <p>${emptyMessage}</p>
                     </div>
                 `;
             }
 
-            return list.map(item => `
-                <div class="pattern-card ${type === 'antipatterns' ? 'antipattern' : 'pattern'}">
-                    <div class="pattern-insight">${escapeHtml(item.insight)}</div>
-                    <div class="pattern-meta">
-                        <span>${formatDate(item.timestamp)}</span>
-                        ${item.method ? `<span>via ${item.method}</span>` : ''}
-                        ${item.applications ? `<span>${item.applications} applications</span>` : ''}
+            // CEDA-95: Level names for badges
+            const levelNames = ['Observation', 'User', 'Project', 'Org', 'Cross-Org', 'Global'];
+
+            return list.map(item => {
+                const level = item.level || 0;
+                const levelName = levelNames[level] || 'Unknown';
+                const cardClass = type === 'antipatterns' ? 'antipattern' : (type === 'observations' ? 'observation' : 'pattern');
+                
+                return `
+                    <div class="pattern-card ${cardClass}">
+                        <div class="pattern-insight">${escapeHtml(item.insight)}</div>
+                        <div class="pattern-meta">
+                            <span class="level-badge level-${level}">${levelName}</span>
+                            <span>${formatDate(item.timestamp)}</span>
+                            ${item.method ? `<span>via ${item.method}</span>` : ''}
+                            ${item.applications ? `<span>${item.applications} applications</span>` : ''}
+                        </div>
                     </div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         function switchTab(tab) {
@@ -484,7 +541,15 @@
             document.querySelectorAll('.patterns-tab').forEach(t => {
                 t.classList.toggle('active', t.dataset.tab === tab);
             });
-            const list = tab === 'patterns' ? patterns : antipatterns;
+            // CEDA-95: Handle three tabs
+            let list;
+            if (tab === 'observations') {
+                list = observations;
+            } else if (tab === 'patterns') {
+                list = patterns;
+            } else {
+                list = antipatterns;
+            }
             document.getElementById('patterns-list').innerHTML = renderPatternsList(list, tab);
         }
 
