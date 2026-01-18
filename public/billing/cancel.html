@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Cancelled - CEDA</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+        .cancel-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 2rem;
+        }
+        .cancel-card {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 3rem;
+            max-width: 480px;
+            border: 1px solid var(--border);
+        }
+        .cancel-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+        .cancel-card h1 {
+            margin-bottom: 1rem;
+        }
+        .cancel-card p {
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+        }
+        .btn-back {
+            display: inline-block;
+            background: var(--surface-hover);
+            color: var(--text);
+            padding: 0.875rem 2rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: background 0.2s;
+            border: 1px solid var(--border);
+        }
+        .btn-back:hover {
+            background: var(--border);
+        }
+    </style>
+</head>
+<body>
+    <div class="cancel-container">
+        <div class="cancel-card">
+            <div class="cancel-icon">←</div>
+            <h1>Payment Cancelled</h1>
+            <p>No worries! Your free tier is still active. Upgrade anytime.</p>
+            <a href="/dashboard.html" class="btn-back">Back to Dashboard</a>
+        </div>
+    </div>
+</body>
+</html>

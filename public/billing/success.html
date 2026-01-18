@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Successful - CEDA</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+        .success-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 2rem;
+        }
+        .success-card {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 3rem;
+            max-width: 480px;
+            border: 1px solid var(--border);
+        }
+        .success-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+        .success-card h1 {
+            color: var(--success, #10b981);
+            margin-bottom: 1rem;
+        }
+        .success-card p {
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+        }
+        .btn-dashboard {
+            display: inline-block;
+            background: var(--accent);
+            color: white;
+            padding: 0.875rem 2rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: opacity 0.2s;
+        }
+        .btn-dashboard:hover {
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+    <div class="success-container">
+        <div class="success-card">
+            <div class="success-icon">✓</div>
+            <h1>Payment Successful!</h1>
+            <p>Your subscription is now active. Welcome to CEDA Pro!</p>
+            <a href="/dashboard.html" class="btn-dashboard">Go to Dashboard</a>
+        </div>
+    </div>
+    <script>
+        // Sync subscription status
+        const sessionId = new URLSearchParams(window.location.search).get('session_id');
+        if (sessionId) {
+            fetch('/api/billing/verify-session', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('ceda_token')}`
+                },
+                body: JSON.stringify({ sessionId })
+            }).catch(console.error);
+        }
+    </script>
+</body>
+</html>
