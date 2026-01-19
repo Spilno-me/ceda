@@ -11,7 +11,7 @@ import { eq } from 'drizzle-orm';
 
 const GOPRINT_MEMBERS = [
   {
-    userEmail: 'oleksii.orlov@gmail.com',
+    userEmail: 'asorloff07@gmail.com',
     userProvider: 'google',
     org: 'goprint',
     role: 'admin',
