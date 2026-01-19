@@ -16,6 +16,7 @@ export const memberships = pgTable('memberships', {
   userEmail: text('user_email').notNull(),
   userProvider: text('user_provider').notNull().default('google'), // 'google', 'github'
   userId: text('user_id'), // provider-specific ID
+  telegramId: text('telegram_id'), // Telegram user ID for bot verification
 
   // Context
   org: text('org').notNull(),

@@ -43,6 +43,7 @@ import { HeraldVerifyService } from './auth/herald-verify.service';
 import { AuthService } from './auth/auth.service';
 import { JwtGuard, AuthenticatedRequest } from './auth/jwt.guard';
 import * as db from './db/repositories';
+import { query } from './db/index';
 import { HeraldVerifyRequest, OAuthCallbackResponse } from './auth/github.interface';
 import { UserRecord, UserRole } from './auth/auth.interface';
 import * as crypto from 'crypto';
@@ -5635,6 +5636,54 @@ async function handleRequest(
         });
         return;
       }
+    }
+
+    // ============================================
+    // Axis Verification Endpoint
+    // ============================================
+
+    // GET /api/axis/verify - Verify Telegram user is member of org
+    if (url.startsWith('/api/axis/verify') && method === 'GET') {
+      const urlParams = new URL(req.url || '', `http://${req.headers.host}`).searchParams;
+      const telegramId = urlParams.get('telegramId');
+      const org = urlParams.get('org');
+
+      if (!telegramId || !org) {
+        sendJson(res, 400, {
+          error: 'Missing required params',
+          required: ['telegramId', 'org'],
+        });
+        return;
+      }
+
+      try {
+        const result = await query(
+          'SELECT * FROM memberships WHERE telegram_id = $1 AND org = $2',
+          [telegramId, org]
+        );
+
+        if (result.rows.length > 0) {
+          const member = result.rows[0];
+          sendJson(res, 200, {
+            verified: true,
+            member: {
+              email: member.user_email,
+              role: member.role,
+              org: member.org,
+              project: member.project,
+            },
+          });
+        } else {
+          sendJson(res, 200, {
+            verified: false,
+            message: 'Telegram user not found in org',
+          });
+        }
+      } catch (err) {
+        console.error('[Axis] Verify error:', err);
+        sendJson(res, 500, { error: 'Verification failed' });
+      }
+      return;
     }
 
     // ============================================
