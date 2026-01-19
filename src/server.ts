@@ -5523,6 +5523,178 @@ async function handleRequest(
     }
 
     // ============================================
+    // Google OAuth Routes (Wave/Business Users)
+    // ============================================
+
+    // GET /api/auth/google - Start Google OAuth flow
+    if (urlPath === '/api/auth/google' && method === 'GET') {
+      const { getGoogleService } = await import('./auth/google.service');
+      const googleService = getGoogleService();
+
+      if (!googleService.isConfigured()) {
+        sendJson(res, 503, {
+          error: 'Google OAuth not configured',
+          message: 'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set',
+        });
+        return;
+      }
+
+      // Parse query params for redirect support
+      const urlObj = new URL(url, `http://${req.headers.host || 'localhost'}`);
+      const redirectTo = urlObj.searchParams.get('redirect') || '/';
+
+      // Generate state for CSRF protection
+      const state = crypto.randomBytes(16).toString('hex');
+      oauthStates.set(state, {
+        createdAt: Date.now(),
+        cliCallback: redirectTo, // Reuse cliCallback field for redirect URL
+      });
+
+      // Redirect to Google authorization
+      const authUrl = googleService.getAuthorizationUrl(state);
+      res.writeHead(302, { Location: authUrl });
+      res.end();
+      return;
+    }
+
+    // GET /api/auth/google/callback - Handle Google OAuth callback
+    if (urlPath === '/api/auth/google/callback' && method === 'GET') {
+      const { getGoogleService } = await import('./auth/google.service');
+      const googleService = getGoogleService();
+
+      const urlObj = new URL(url, `http://${req.headers.host || 'localhost'}`);
+      const code = urlObj.searchParams.get('code');
+      const state = urlObj.searchParams.get('state');
+      const error = urlObj.searchParams.get('error');
+
+      // Handle OAuth errors from Google
+      if (error) {
+        const errorDescription = urlObj.searchParams.get('error_description') || 'Unknown error';
+        sendJson(res, 400, {
+          error: 'Google OAuth error',
+          message: errorDescription,
+        });
+        return;
+      }
+
+      // Validate required parameters
+      if (!code || !state) {
+        sendJson(res, 400, {
+          error: 'Missing parameters',
+          message: 'code and state are required',
+        });
+        return;
+      }
+
+      // Verify state for CSRF protection
+      const stateData = oauthStates.get(state);
+      if (!stateData) {
+        sendJson(res, 400, {
+          error: 'Invalid state',
+          message: 'OAuth state is invalid or expired',
+        });
+        return;
+      }
+      const redirectTo = stateData.cliCallback || '/';
+      oauthStates.delete(state);
+
+      try {
+        // Exchange code for access token
+        const tokenResponse = await googleService.exchangeCode(code);
+
+        // Fetch Google user profile
+        const googleUser = await googleService.getUserProfile(tokenResponse.access_token);
+
+        // Create/update user in database
+        // For now, create a simple user record (Wave will expand this)
+        const userId = `google_${googleUser.id}`;
+
+        // Generate JWT token
+        const { accessToken: token } = authService.generateTokenPair({
+          id: userId,
+          email: googleUser.email,
+          passwordHash: '',
+          company: 'wave', // Default company for Wave users
+          roles: [UserRole.CONTRIBUTOR],
+          createdAt: new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+          isActive: true,
+        });
+
+        // Redirect with token (Wave will handle this)
+        const waveUrl = process.env.WAVE_URL || 'https://wave.getceda.com';
+        const redirectUrl = `${waveUrl}/auth/callback?token=${token}&redirect=${encodeURIComponent(redirectTo)}`;
+        res.writeHead(302, { Location: redirectUrl });
+        res.end();
+        return;
+      } catch (err) {
+        console.error('[Google OAuth] Error:', err);
+        sendJson(res, 500, {
+          error: 'Google OAuth failed',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
+    // ============================================
+    // Herald Chat Endpoint (Cooperation Protocol)
+    // ============================================
+
+    // POST /api/herald/chat - Process message through Claude with playbook
+    if (url === '/api/herald/chat' && method === 'POST') {
+      const { getHeraldChatService } = await import('./services/herald-chat.service');
+      const chatService = getHeraldChatService();
+
+      if (!chatService.isReady()) {
+        sendJson(res, 503, {
+          error: 'Herald Chat not ready',
+          message: 'ANTHROPIC_API_KEY must be set',
+        });
+        return;
+      }
+
+      const body = await parseBody<{
+        message: string;
+        surface?: 'telegram' | 'slack' | 'wave' | 'mcp' | 'api';
+        org: string;
+        project: string;
+        user_id?: string;
+        session_id?: string;
+        metadata?: Record<string, any>;
+      }>(req);
+
+      if (!body.message || !body.org || !body.project) {
+        sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['message', 'org', 'project'],
+        });
+        return;
+      }
+
+      try {
+        const response = await chatService.chat({
+          message: body.message,
+          surface: body.surface || 'api',
+          org: body.org,
+          project: body.project,
+          user_id: body.user_id || 'anonymous',
+          session_id: body.session_id,
+          metadata: body.metadata,
+        });
+
+        sendJson(res, 200, response);
+      } catch (err) {
+        console.error('[Herald Chat] Error:', err);
+        sendJson(res, 500, {
+          error: 'Chat processing failed',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+
+    // ============================================
     // CEDA-91: Stripe Billing Endpoints
     // ============================================
 
