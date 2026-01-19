@@ -49,6 +49,7 @@ export { AuthService } from './auth.service';
 export { GitHubService } from './github.service';
 export { GitIdentityService } from './git-identity.service';
 export { HeraldVerifyService } from './herald-verify.service';
+export { WorkOSService, getWorkOSService, WorkOSUser, WorkOSAuthResult } from './workos.service';
 
 // Guards
 export {

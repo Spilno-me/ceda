@@ -5639,6 +5639,148 @@ async function handleRequest(
     }
 
     // ============================================
+    // WorkOS AuthKit Routes (Wave Enterprise SSO)
+    // ============================================
+
+    // GET /api/auth/workos - Start WorkOS OAuth flow
+    if (urlPath === '/api/auth/workos' && method === 'GET') {
+      const { getWorkOSService } = await import('./auth/workos.service');
+      const workosService = getWorkOSService();
+
+      if (!workosService.isConfigured()) {
+        sendJson(res, 503, {
+          error: 'WorkOS not configured',
+          message: 'WORKOS_API_KEY and WORKOS_CLIENT_ID must be set',
+        });
+        return;
+      }
+
+      // Parse query params
+      const urlObj = new URL(url, `http://${req.headers.host || 'localhost'}`);
+      const organizationId = urlObj.searchParams.get('organization') || undefined;
+      const redirectTo = urlObj.searchParams.get('redirect') || '/';
+
+      // Generate state for CSRF protection
+      const state = crypto.randomBytes(16).toString('hex');
+      oauthStates.set(state, {
+        cliCallback: redirectTo,
+        createdAt: Date.now(),
+      });
+
+      // Redirect to WorkOS authorization
+      const authUrl = workosService.getAuthorizationUrl(state, organizationId);
+      res.writeHead(302, { Location: authUrl });
+      res.end();
+      return;
+    }
+
+    // GET /api/auth/workos/callback - Handle WorkOS OAuth callback
+    if (urlPath === '/api/auth/workos/callback' && method === 'GET') {
+      const { getWorkOSService } = await import('./auth/workos.service');
+      const workosService = getWorkOSService();
+
+      const urlObj = new URL(url, `http://${req.headers.host || 'localhost'}`);
+      const code = urlObj.searchParams.get('code');
+      const state = urlObj.searchParams.get('state');
+      const error = urlObj.searchParams.get('error');
+
+      // Handle OAuth errors from WorkOS
+      if (error) {
+        const errorDescription = urlObj.searchParams.get('error_description') || 'Unknown error';
+        sendJson(res, 400, {
+          error: 'WorkOS OAuth error',
+          message: errorDescription,
+        });
+        return;
+      }
+
+      // Validate required parameters
+      if (!code || !state) {
+        sendJson(res, 400, {
+          error: 'Missing parameters',
+          message: 'code and state are required',
+        });
+        return;
+      }
+
+      // Verify state for CSRF protection
+      const stateData = oauthStates.get(state);
+      if (!stateData) {
+        sendJson(res, 400, {
+          error: 'Invalid state',
+          message: 'OAuth state is invalid or expired',
+        });
+        return;
+      }
+      const redirectTo = stateData.cliCallback || '/';
+      oauthStates.delete(state);
+
+      try {
+        // Authenticate with WorkOS
+        const authResult = await workosService.authenticateWithCode(code);
+        const { user: workosUser, accessToken: workosToken } = authResult;
+
+        // Create/update user in database with organization context
+        const userId = `workos_${workosUser.id}`;
+        const company = workosUser.organizationId || 'wave';
+
+        // Generate JWT token for CEDA
+        const { accessToken: token } = authService.generateTokenPair({
+          id: userId,
+          email: workosUser.email,
+          passwordHash: '',
+          company,
+          roles: [UserRole.CONTRIBUTOR],
+          createdAt: new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+          isActive: true,
+        });
+
+        console.log(`[WorkOS] OAuth successful for ${workosUser.email} (org: ${company})`);
+
+        // Redirect to Wave with token
+        const waveUrl = process.env.WAVE_URL || 'https://wave.getceda.com';
+        const redirectUrl = `${waveUrl}/auth/callback?token=${token}&redirect=${encodeURIComponent(redirectTo)}`;
+        res.writeHead(302, { Location: redirectUrl });
+        res.end();
+        return;
+      } catch (err) {
+        console.error('[WorkOS] OAuth error:', err);
+        sendJson(res, 500, {
+          error: 'WorkOS OAuth failed',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
+    // GET /api/auth/workos/organizations - List available organizations
+    if (urlPath === '/api/auth/workos/organizations' && method === 'GET') {
+      const { getWorkOSService } = await import('./auth/workos.service');
+      const workosService = getWorkOSService();
+
+      if (!workosService.isConfigured()) {
+        sendJson(res, 503, {
+          error: 'WorkOS not configured',
+        });
+        return;
+      }
+
+      try {
+        const organizations = await workosService.listOrganizations();
+        sendJson(res, 200, { organizations });
+        return;
+      } catch (err) {
+        console.error('[WorkOS] Failed to list organizations:', err);
+        sendJson(res, 500, {
+          error: 'Failed to list organizations',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+        return;
+      }
+    }
+
+    // ============================================
     // Axis Verification Endpoint
     // ============================================
 
