@@ -1655,10 +1655,11 @@ async function fetchPatternsWithCascade(): Promise<{patterns: string[], antipatt
   const patterns: string[] = [];
   const antipatterns: string[] = [];
 
+  // CEDA-102: Use company param for backwards compat with deployed CEDA server
   const queries = [
-    { scope: "user", url: `/api/herald/reflections?org=${HERALD_ORG}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100` },
-    { scope: "project", url: `/api/herald/reflections?org=${HERALD_ORG}&project=${HERALD_PROJECT}&limit=100` },
-    { scope: "org", url: `/api/herald/reflections?org=${HERALD_ORG}&limit=100` },
+    { scope: "user", url: `/api/herald/reflections?company=${HERALD_ORG}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100` },
+    { scope: "project", url: `/api/herald/reflections?company=${HERALD_ORG}&project=${HERALD_PROJECT}&limit=100` },
+    { scope: "org", url: `/api/herald/reflections?company=${HERALD_ORG}&limit=100` },
   ];
 
   for (const { scope, url } of queries) {
@@ -2543,12 +2544,13 @@ Herald will:
             }).map(item => ({ ...item, scope }));
           };
 
-          // CEDA-95: Cascade queries with minLevel=1 to only return graduated patterns (not observations)
-          // Observations (level 0) are raw captures; patterns (level 1+) are validated
+          // CEDA-95: Cascade queries - use company param for backwards compat with deployed server
+          // CEDA-102: User reflections now saved with level=1, so minLevel=1 is appropriate
+          // But we also query without minLevel to catch level=0 reflections from before the fix
           const queries = [
-            { scope: "user", url: `/api/herald/reflections?org=${HERALD_ORG}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100&minLevel=1` },
-            { scope: "project", url: `/api/herald/reflections?org=${HERALD_ORG}&project=${HERALD_PROJECT}&limit=100&minLevel=1` },
-            { scope: "org", url: `/api/herald/reflections?org=${HERALD_ORG}&limit=100&minLevel=1` },
+            { scope: "user", url: `/api/herald/reflections?company=${HERALD_ORG}&project=${HERALD_PROJECT}&user=${HERALD_USER}&limit=100` },
+            { scope: "project", url: `/api/herald/reflections?company=${HERALD_ORG}&project=${HERALD_PROJECT}&limit=100` },
+            { scope: "org", url: `/api/herald/reflections?company=${HERALD_ORG}&limit=100` },
           ];
 
           const patterns: PatternEntry[] = [];
