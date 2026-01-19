@@ -1950,6 +1950,7 @@ async function handleRequest(
       const reflectionOrg = body.org || body.company || 'default';
 
       // CEDA-101: PlanetScale is the ONLY storage for reflections (Upstash = ephemeral state only)
+      // CEDA-102: User reflections are user-validated, so start at level 1 (not observation level 0)
       try {
         await db.reflections.insert({
           id: reflectionId,
@@ -1966,8 +1967,9 @@ async function handleRequest(
           user: body.user || 'default',
           vault: body.vault,
           timestamp,
+          level: 1, // CEDA-102: User reflections are pre-validated (level 1), not raw observations (level 0)
         });
-        console.log(`[Herald] Reflection ${reflectionId} persisted to PlanetScale`);
+        console.log(`[Herald] Reflection ${reflectionId} persisted to PlanetScale with level=1`);
       } catch (planetscaleErr) {
         console.error(`[Herald] PlanetScale write failed for reflection ${reflectionId}:`, planetscaleErr);
         throw planetscaleErr;
